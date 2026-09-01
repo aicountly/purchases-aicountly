@@ -6,7 +6,7 @@ declare(strict_types=1);
  * Purchases API — front controller.
  *
  * Deployed to <document root>/api, so it is same-origin with the React app on
- * both purchases.aicountly.com and purchases.gh.aicountly.com.
+ * both purchase.aicountly.com and purchase.gh.aicountly.com.
  *
  * Routes:
  *   GET  /api/health          liveness + which environment answered

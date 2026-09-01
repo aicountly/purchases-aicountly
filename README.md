@@ -5,8 +5,8 @@ with a small PHP API alongside it. Both halves deploy to cPanel.
 
 | Environment | App | API |
 | --- | --- | --- |
-| Production | https://purchases.aicountly.com | https://purchases.aicountly.com/api |
-| Sandbox | https://purchases.gh.aicountly.com | https://purchases.gh.aicountly.com/api |
+| Production | https://purchase.aicountly.com | https://purchase.aicountly.com/api |
+| Sandbox | https://purchase.gh.aicountly.com | https://purchase.gh.aicountly.com/api |
 
 ## What this app does today
 
@@ -42,7 +42,7 @@ npm run dev
 
 The dev server runs on http://localhost:5173 and signs in through the **sandbox**
 portal. Point `VITE_API_BASE_URL` at the deployed sandbox API
-(`https://purchases.gh.aicountly.com/api`) so the token exchange has somewhere to
+(`https://purchase.gh.aicountly.com/api`) so the token exchange has somewhere to
 go — and add `http://localhost:5173` to `CORS_ALLOWED_ORIGINS` in that server's
 `api/.env`, since localhost is the one case where the app and API are not
 same-origin.

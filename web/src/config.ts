@@ -17,7 +17,7 @@ const CONFIGURED_API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').trim()
  * Base URL of this product's own PHP API.
  *
  * server-php is deployed into `<document root>/api`, so the API is same-origin
- * with the app on both purchases.aicountly.com and purchases.gh.aicountly.com. That
+ * with the app on both purchase.aicountly.com and purchase.gh.aicountly.com. That
  * is what the fallback below assumes, and being same-origin is exactly what
  * keeps the auth relay free of CORS.
  */

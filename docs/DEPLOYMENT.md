@@ -12,8 +12,8 @@ docs/         this file, plus the auth notes
 
 | Workflow | Deploys | Destination | Reachable at |
 | --- | --- | --- | --- |
-| Deploy to cPanel Production | `web/dist/` then `server-php/` | `<remote root>/` and `<remote root>/api/` | https://purchases.aicountly.com (+ `/api`) |
-| Deploy to cPanel Sandbox | `web/dist/` then `server-php/` | `<remote root>/` and `<remote root>/api/` | https://purchases.gh.aicountly.com (+ `/api`) |
+| Deploy to cPanel Production | `web/dist/` then `server-php/` | `<remote root>/` and `<remote root>/api/` | https://purchase.aicountly.com (+ `/api`) |
+| Deploy to cPanel Sandbox | `web/dist/` then `server-php/` | `<remote root>/` and `<remote root>/api/` | https://purchase.gh.aicountly.com (+ `/api`) |
 
 `<remote root>` is the `*_SSH_REMOTE_ROOT` secret for that environment,
 normally `public_html` (or the subdomain's own document root).
@@ -98,7 +98,7 @@ set `DB_HOST=localhost` (on cPanel the database is on the same machine).
 ### Protecting the API's .env over HTTP
 
 Because `api/` sits inside the document root, `.env` would be fetchable at
-`https://purchases.aicountly.com/api/.env` unless Apache is told otherwise.
+`https://purchase.aicountly.com/api/.env` unless Apache is told otherwise.
 `server-php/.htaccess` ships the rule that denies it:
 
 ```apache

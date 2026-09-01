@@ -33,5 +33,5 @@
 </IfModule>
 
 # The API's .env sits inside the document root, so without this it would be
-# fetchable over HTTP at https://purchases.aicountly.com/api/.env.
+# fetchable over HTTP at https://purchase.aicountly.com/api/.env.
 RedirectMatch 404 /\.(?!well-known)

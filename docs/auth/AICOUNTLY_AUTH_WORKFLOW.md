@@ -22,7 +22,7 @@ another AICOUNTLY product would have to sign in again.
 
 ## Login flow
 
-1. User opens `purchases.aicountly.com` (or `purchases.gh.aicountly.com`).
+1. User opens `purchase.aicountly.com` (or `purchase.gh.aicountly.com`).
 2. No `auth_token` → redirect to
    `{portal}/login/authentication_jump/purchases?returnUrl={origin}/auth/callback`.
    The portal reuses an existing portal web session — this is what makes moving
@@ -43,8 +43,8 @@ alive and the next visit signs the user straight back in.
 
 | Purchases host | Login redirect | Auth API | Product API |
 |---|---|---|---|
-| `purchases.aicountly.com` | `my.aicountly.com` | `my.aicountly.com` | `purchases.aicountly.com/api` |
-| `purchases.gh.aicountly.com` | `sandbox.aicountly.com` | `my.aicountly.com` | `purchases.gh.aicountly.com/api` |
+| `purchase.aicountly.com` | `my.aicountly.com` | `my.aicountly.com` | `purchase.aicountly.com/api` |
+| `purchase.gh.aicountly.com` | `sandbox.aicountly.com` | `my.aicountly.com` | `purchase.gh.aicountly.com/api` |
 
 **`sandbox.aicountly.com` is for the login redirect only.** `seskey`,
 `seskey/refresh` and `validatesession` always answer on `my.aicountly.com`, in
@@ -87,14 +87,14 @@ verified end to end in each environment.
 
 ```bash
 # 1. The API is up and says which environment it is
-curl https://purchases.gh.aicountly.com/api/health
+curl https://purchase.gh.aicountly.com/api/health
 
 # 2. The relay reaches the portal (401 without a token is the correct answer —
 #    a 404 means the API is not deployed, a 504 means it cannot reach the portal)
-curl -i -X POST https://purchases.gh.aicountly.com/api/global/seskey
+curl -i -X POST https://purchase.gh.aicountly.com/api/global/seskey
 
 # 3. Unrelayed paths are refused
-curl -i -X POST https://purchases.gh.aicountly.com/api/global/login   # expect 404
+curl -i -X POST https://purchase.gh.aicountly.com/api/global/login   # expect 404
 ```
 
 In the browser: open the site, expect a jump to the portal, sign in, expect to

@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Deploy Purchases to cPanel Sandbox  (https://purchases.gh.aicountly.com)
+# Deploy Purchases to cPanel Sandbox  (https://purchase.gh.aicountly.com)
 #
 # MANUAL ONLY. The single trigger is workflow_dispatch — merging or pushing
 # never deploys. Add no push/pull_request/schedule triggers to this file.
@@ -106,7 +106,7 @@ jobs:
         working-directory: web
         run: |
           if [ -z "$VITE_API_BASE_URL" ]; then
-            echo "::notice::SANDBOX_API_BASE_URL is not set — the app will call https://purchases.gh.aicountly.com/api (same origin), which is where this workflow deploys server-php below."
+            echo "::notice::SANDBOX_API_BASE_URL is not set — the app will call https://purchase.gh.aicountly.com/api (same origin), which is where this workflow deploys server-php below."
           else
             echo "Building against API base URL: $VITE_API_BASE_URL"
           fi
@@ -303,7 +303,7 @@ jobs:
       # than from the app's login screen. /health needs no credentials.
       - name: Smoke-test the deployed API
         run: |
-          url="https://purchases.gh.aicountly.com/api/health"
+          url="https://purchase.gh.aicountly.com/api/health"
           code=$(curl -fsS -o /tmp/health.json -w '%{http_code}' --max-time 20 "$url" || echo "000")
           if [ "$code" = "200" ]; then
             echo "GET $url → 200"
@@ -324,7 +324,7 @@ jobs:
             echo ""
             echo "| | |"
             echo "|---|---|"
-            echo "| Target | https://purchases.gh.aicountly.com |"
+            echo "| Target | https://purchase.gh.aicountly.com |"
             echo "| Web | \`web/dist/\` → document root |"
             echo "| API | \`server-php/\` → \`api/\` in the document root |"
             echo "| Commit | \`${GITHUB_SHA:0:7}\` |"

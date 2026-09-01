@@ -12,10 +12,28 @@ const LEGACY_SANDBOX_RE = /^gh-[a-z0-9-]+\.aicountly\.com$/i
  * Product key used in the portal `authentication_jump/{key}` URL.
  *
  * Normally derived from the hostname, so one build serves both
- * purchases.aicountly.com and purchases.gh.aicountly.com. This is the fallback for
+ * purchase.aicountly.com and purchase.gh.aicountly.com. This is the fallback for
  * hosts the pattern does not cover — localhost above all.
  */
 export const PRODUCT_KEY = (import.meta.env.VITE_PRODUCT_KEY ?? 'purchases').trim() || 'purchases'
+
+/**
+ * Host labels whose jump key is not simply the label itself.
+ *
+ * This product is served from `purchase.aicountly.com` — singular — but the
+ * portal registers it under the plural key `purchases`, in both
+ * ProductRegistry::PRODUCT_CALLBACKS and Manage's app catalog. That split is
+ * deliberate upstream: the singular host is what users see and the only origin
+ * the callback registry accepts, while the plural key is already compiled into
+ * other deployed bundles and is the icon storage id.
+ *
+ * Without this map the hostname would yield `purchase`, which
+ * canonicalJumpKey() does not resolve, so authentication_jump could not deliver
+ * the user and sign-in would fail outright.
+ */
+const HOST_LABEL_JUMP_KEYS: Record<string, string> = {
+  purchase: 'purchases',
+}
 
 /** Login portal — renders the sign-in form and performs the SSO jump. */
 export const PORTAL_LOGIN_PRODUCTION = 'https://my.aicountly.com'
@@ -52,22 +70,28 @@ export function isSandboxHost(hostname: string = currentHost()): boolean {
 }
 
 /**
- * `purchases.aicountly.com` and `purchases.gh.aicountly.com` both resolve to
+ * `purchase.aicountly.com` and `purchase.gh.aicountly.com` both resolve to
  * `purchases`, which is what the portal expects in authentication_jump.
  */
 export function resolveProductKeyFromHost(hostname: string = currentHost()): string {
   const host = normalizeHost(hostname)
 
   const ghZone = host.match(/^([a-z0-9-]+)\.gh\.aicountly\.com$/i)
-  if (ghZone) return ghZone[1].toLowerCase()
+  if (ghZone) return jumpKeyForLabel(ghZone[1])
 
   const legacy = host.match(/^gh-([a-z0-9-]+)\.aicountly\.com$/i)
-  if (legacy) return legacy[1].toLowerCase()
+  if (legacy) return jumpKeyForLabel(legacy[1])
 
   const prod = host.match(/^([a-z0-9-]+)\.aicountly\.com$/i)
-  if (prod) return prod[1].toLowerCase()
+  if (prod) return jumpKeyForLabel(prod[1])
 
   return PRODUCT_KEY
+}
+
+/** The portal's jump key for a hostname label, which is usually the label. */
+function jumpKeyForLabel(label: string): string {
+  const normalized = label.toLowerCase()
+  return HOST_LABEL_JUMP_KEYS[normalized] ?? normalized
 }
 
 /** Where the user signs in: sandbox portal for sandbox hosts, my. for production. */
