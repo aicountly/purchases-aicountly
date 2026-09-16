@@ -1,0 +1,229 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Search } from 'lucide-react'
+import { api } from '../services/api'
+import type { CatalogSupplier, CatalogItem } from '../services/types'
+
+/**
+ * Type-ahead pickers for records another product owns.
+ *
+ * Every keystroke asks Inventory (items) or Books (customers) through this
+ * product's read-through endpoint. Nothing is prefetched into a local list and
+ * nothing is kept after the user has chosen: what is kept is the id.
+ *
+ * That is why the search is debounced and why it needs two characters — the
+ * cost of asking is a network call, so we do not make one per keystroke.
+ */
+
+function useDebounced<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), ms)
+    return () => clearTimeout(timer)
+  }, [value, ms])
+  return debounced
+}
+
+interface PickerProps<T> {
+  label: string
+  placeholder?: string
+  selectedLabel?: string | null
+  onPick: (record: T) => void
+}
+
+function Picker<T>({
+  label,
+  placeholder,
+  selectedLabel,
+  onPick,
+  search,
+  renderOption,
+  keyOf,
+}: PickerProps<T> & {
+  search: (term: string, signal: AbortSignal) => Promise<T[]>
+  renderOption: (record: T) => string
+  keyOf: (record: T) => string | number
+}) {
+  const [term, setTerm] = useState('')
+  const [options, setOptions] = useState<T[]>([])
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const debounced = useDebounced(term, 250)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (debounced.trim().length < 2) {
+      setOptions([])
+      return
+    }
+
+    const controller = new AbortController()
+    setBusy(true)
+    setFailed(false)
+
+    search(debounced.trim(), controller.signal)
+      .then((rows) => setOptions(rows))
+      .catch(() => {
+        if (!controller.signal.aborted) setFailed(true)
+      })
+      .finally(() => setBusy(false))
+
+    return () => controller.abort()
+  }, [debounced, search])
+
+  useEffect(() => {
+    function onClickAway(event: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onClickAway)
+    return () => document.removeEventListener('mousedown', onClickAway)
+  }, [])
+
+  return (
+    <div ref={boxRef} style={{ position: 'relative' }}>
+      <span style={{ display: 'block', fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>{label}</span>
+      <div style={{ position: 'relative' }}>
+        <Search
+          size={14}
+          aria-hidden
+          style={{ position: 'absolute', left: '0.5rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }}
+        />
+        <input
+          value={term}
+          placeholder={selectedLabel ?? placeholder ?? 'Type to search…'}
+          onChange={(event) => {
+            setTerm(event.target.value)
+            setOpen(true)
+          }}
+          onFocus={() => setOpen(true)}
+          style={{
+            width: '100%',
+            padding: '0.4rem 0.55rem 0.4rem 1.7rem',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--surface)',
+          }}
+        />
+      </div>
+
+      {open && term.trim().length >= 2 && (
+        <div
+          style={{
+            position: 'absolute',
+            zIndex: 20,
+            top: '100%',
+            left: 0,
+            right: 0,
+            marginTop: '0.2rem',
+            background: 'var(--surface)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: 'var(--radius-sm)',
+            boxShadow: 'var(--shadow-lg)',
+            maxHeight: '16rem',
+            overflowY: 'auto',
+          }}
+        >
+          {busy && <div style={{ padding: '0.6rem', color: 'var(--muted)' }}>Searching…</div>}
+          {failed && (
+            <div style={{ padding: '0.6rem', color: 'var(--danger)' }}>
+              Could not reach the app that owns this list. Try again in a moment.
+            </div>
+          )}
+          {!busy && !failed && options.length === 0 && (
+            <div style={{ padding: '0.6rem', color: 'var(--muted)' }}>No matches.</div>
+          )}
+          {options.map((option) => (
+            <button
+              key={keyOf(option)}
+              type="button"
+              onClick={() => {
+                onPick(option)
+                setTerm('')
+                setOpen(false)
+              }}
+              style={{
+                display: 'block',
+                width: '100%',
+                textAlign: 'left',
+                padding: '0.45rem 0.6rem',
+                border: 'none',
+                background: 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              {renderOption(option)}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function ItemPicker({ onPick, selectedLabel }: { onPick: (item: CatalogItem) => void; selectedLabel?: string | null }) {
+  const search = useMemo(
+    () => async (term: string, signal: AbortSignal) => {
+      const response = await api.list<CatalogItem>('v1/catalog/items/search', { q: term }, signal)
+      return response.data
+    },
+    [],
+  )
+
+  return (
+    <Picker
+      label="Item"
+      placeholder="Search Inventory…"
+      selectedLabel={selectedLabel}
+      onPick={onPick}
+      search={search}
+      keyOf={(item) => item.item_id}
+      renderOption={(item) => (item.item_sku ? `${item.item_name} · ${item.item_sku}` : item.item_name)}
+    />
+  )
+}
+
+/**
+ * Suppliers come back as Books' party ledgers, decorated with OUR procurement
+ * profile — two facts about one party, from two owners, joined at read time.
+ *
+ * The approval status is shown in the option because a buyer choosing a
+ * suspended supplier should find out before they have typed the whole order,
+ * not when the API refuses it.
+ */
+export function SupplierPicker({
+  onPick,
+  selectedLabel,
+}: {
+  onPick: (supplier: CatalogSupplier) => void
+  selectedLabel?: string | null
+}) {
+  const search = useMemo(
+    () => async (term: string, signal: AbortSignal) => {
+      const response = await api.list<CatalogSupplier>('v1/catalog/suppliers', { q: term }, signal)
+      return response.data
+    },
+    [],
+  )
+
+  return (
+    <Picker
+      label="Supplier"
+      placeholder="Search Books party ledgers…"
+      selectedLabel={selectedLabel}
+      onPick={onPick}
+      search={search}
+      keyOf={(supplier) => supplier.acc_id}
+      renderOption={(supplier) => {
+        const status = supplier.procurement_profile?.qualification_status
+        const suffix =
+          status === 'approved'
+            ? ' · approved'
+            : status
+              ? ` · ${status.replace(/_/g, ' ')}`
+              : ' · no procurement profile'
+
+        return (supplier.gstin ? `${supplier.acc_name} · ${supplier.gstin}` : supplier.acc_name) + suffix
+      }}
+    />
+  )
+}
