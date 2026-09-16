@@ -8,6 +8,7 @@ use Aicountly\Api\Controllers\BillsController;
 use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
 use Aicountly\Api\Controllers\DashboardController;
+use Aicountly\Api\Controllers\ManageController;
 use Aicountly\Api\Controllers\PurchaseOrdersController;
 use Aicountly\Api\Controllers\RequisitionsController;
 use Aicountly\Api\Controllers\ReturnsController;
@@ -25,6 +26,11 @@ final class Routes
 {
     public static function register(Router $router): void
     {
+        // The company switcher. Live reads from Manage, NOT company-scoped --
+        // this is what the caller uses to choose the company in the first place.
+        $router->get('v1/manage/companies', [ManageController::class, 'companies']);
+        $router->get('v1/manage/companyinfo', [ManageController::class, 'companyInfo']);
+
         $router->get('v1/session', [SettingsController::class, 'session']);
         $router->get('v1/permissions', [SettingsController::class, 'permissions']);
         $router->get('v1/settings', [SettingsController::class, 'show']);
