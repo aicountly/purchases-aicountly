@@ -8,6 +8,7 @@ use Aicountly\Api\Controllers\BillsController;
 use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
 use Aicountly\Api\Controllers\DashboardController;
+use Aicountly\Api\Controllers\DashboardsController;
 use Aicountly\Api\Controllers\ManageController;
 use Aicountly\Api\Controllers\PurchaseOrdersController;
 use Aicountly\Api\Controllers\RequisitionsController;
@@ -111,7 +112,13 @@ final class Routes
         $router->get('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);
         $router->post('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);
 
-        // Dashboard and inboxes.
+        // The five dashboards. The view is in the path so a link to one is a
+        // link to that one, and Back behaves.
+        $router->get('v1/dashboards/{view}', [DashboardsController::class, 'show']);
+        $router->get('v1/dashboards/{view}/export', [DashboardsController::class, 'export']);
+        $router->post('v1/insights/ask', [DashboardsController::class, 'ask']);
+
+        // The original summary endpoint, kept for anything already calling it.
         $router->get('v1/dashboard', [DashboardController::class, 'index']);
         $router->get('v1/approvals', [DashboardController::class, 'approvals']);
         $router->get('v1/match-exceptions', [DashboardController::class, 'exceptions']);

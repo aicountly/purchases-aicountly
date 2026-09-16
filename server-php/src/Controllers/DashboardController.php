@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Controllers;
 
-use Aicountly\Api\Clients\BooksClient;
+use Aicountly\Api\Dashboards\BooksReader;
+use Aicountly\Api\Dashboards\Decimal;
+use Aicountly\Api\Dashboards\Period;
 use Aicountly\Api\Db;
 use Aicountly\Api\Http;
 use Aicountly\Api\IntegrationCommand;
@@ -104,37 +106,32 @@ final class DashboardController extends Controller
         );
 
         // --- Books, live. Failure degrades these cards only. ---------------
+        //
+        // Read from Books' own purchase dashboard. It was previously read from
+        // reports/bill-by-bill with no acc_id, which that endpoint refuses with
+        // a 400 (ReportsController::billByBill requires a single account id) —
+        // so this card could never have shown a figure against the real Books
+        // API, only the "Books did not answer" state.
         $financial = ['available' => false, 'reason' => null];
         if (Permissions::allows($ctx, $auth, 'reports.view')) {
-            $books = (new BooksClient())->withSession($auth->sesKey());
-            $payables = $books->billByBill($ctx, ['party_type' => 'creditor', 'as_on' => $to]);
+            $summary = (new BooksReader($ctx, $auth->sesKey()))->purchaseSummary(
+                Period::forDates($from, $to),
+            );
 
-            if ($payables['ok']) {
-                $rows = (array) ($payables['body']['data'] ?? []);
-                $total = 0.0;
-                $overdue = 0.0;
-                $today = new \DateTimeImmutable('today');
-                foreach ($rows as $row) {
-                    $balance = (float) ($row['balance'] ?? $row['outstanding'] ?? 0);
-                    $total += $balance;
-                    $due = $row['due_date'] ?? null;
-                    if (is_string($due) && $due !== '') {
-                        try {
-                            if (new \DateTimeImmutable($due) < $today) {
-                                $overdue += $balance;
-                            }
-                        } catch (\Throwable) {
-                            // An unparseable due date is not an overdue bill.
-                        }
-                    }
-                }
+            if ($summary['ok']) {
+                $kpis = $summary['kpis'];
+                $ageing = $summary['ageing'];
                 $financial['available'] = true;
-                $financial['payable_total'] = round($total, 2);
-                $financial['payable_overdue'] = round($overdue, 2);
-                $financial['payable_count'] = count($rows);
+                // Exact decimal strings, not floats: these are payables.
+                $financial['payable_total'] = $kpis['payables'] ?? Decimal::ZERO;
+                $financial['payable_overdue'] = $kpis['overdue_payables'] ?? Decimal::ZERO;
+                $financial['net_purchases'] = $kpis['total_purchases'] ?? Decimal::ZERO;
+                $financial['ageing'] = $ageing;
             } else {
-                $financial['reason'] = 'Books did not answer in time.';
+                $financial['reason'] = (string) $summary['error'];
             }
+        } else {
+            $financial['reason'] = 'Payable figures need the reports.view permission.';
         }
 
         Http::data([

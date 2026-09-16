@@ -26,6 +26,17 @@ use Aicountly\Api\Domain\RequisitionService;
 use Aicountly\Api\Domain\ReturnClaimService;
 use Aicountly\Api\Domain\SourcingService;
 use Aicountly\Api\Domain\ThreeWayMatchService;
+use Aicountly\Api\Ai\AskEngine;
+use Aicountly\Api\Controllers\DashboardsController;
+use Aicountly\Api\Dashboards\BillsDashboard;
+use Aicountly\Api\Dashboards\BooksReader;
+use Aicountly\Api\Dashboards\Decimal;
+use Aicountly\Api\Dashboards\Filters;
+use Aicountly\Api\Dashboards\InsightsDashboard;
+use Aicountly\Api\Dashboards\OverviewDashboard;
+use Aicountly\Api\Dashboards\Period;
+use Aicountly\Api\Dashboards\ProcurementDashboard;
+use Aicountly\Api\Dashboards\SuppliersDashboard;
 
 $passed = 0;
 $failed = 0;
@@ -155,6 +166,55 @@ function stubRequests(): array
     }
 
     return $out;
+}
+
+/**
+ * Build a dashboard with an explicit request, the way an HTTP call would.
+ *
+ * The query string is what Period and Filters read, so setting it here is what
+ * makes these tests exercise the same code path a browser does.
+ *
+ * @param array<string, string> $query
+ */
+function dashboardFor(string $view, Context $ctx, Auth $auth, array $query = []): array
+{
+    $_GET = $query + ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => (string) $ctx->boId];
+
+    $period = Period::fromRequest();
+    $filters = Filters::fromRequest();
+
+    $dashboard = match ($view) {
+        'procurement'    => new ProcurementDashboard($ctx, $auth, $period, $filters),
+        'suppliers'      => new SuppliersDashboard($ctx, $auth, $period, $filters),
+        'bills-payables' => new BillsDashboard($ctx, $auth, $period, $filters),
+        'ai-insights'    => new InsightsDashboard($ctx, $auth, $period, $filters),
+        default          => new OverviewDashboard($ctx, $auth, $period, $filters),
+    };
+
+    return $dashboard->build();
+}
+
+/** @param array<string, mixed> $payload */
+function metric(array $payload, string $id): array
+{
+    foreach ($payload['metrics'] as $candidate) {
+        if ($candidate['id'] === $id) {
+            return $candidate;
+        }
+    }
+    throw new \RuntimeException('no metric "' . $id . '" on the ' . $payload['view'] . ' dashboard');
+}
+
+/** @param array<string, mixed> $payload */
+function sourceStatus(array $payload, string $id): string
+{
+    foreach ($payload['sources'] as $source) {
+        if ($source['id'] === $id) {
+            return (string) $source['status'];
+        }
+    }
+
+    return 'absent';
 }
 
 function poInput(array $overrides = []): array
@@ -823,6 +883,693 @@ check('a query for another company returns nothing', function () use ($ctx, $aut
     $other = freshContext(999);
     $result = (new PurchaseOrderService($other, $auth))->search([], 50, 0, 'po_date', 'DESC');
     assertSame(0, $result['total'], 'company 999 sees none of company 88 rows');
+});
+
+echo "\nDashboards — the metric contract\n";
+
+check('unavailable is never rendered as zero', function () use ($ctx, $auth) {
+    resetDatabase();
+    stubFail('dashboard/purchase', 503);
+
+    $overview = dashboardFor('overview', $ctx, $auth);
+    $net = metric($overview, 'net_purchases');
+
+    assertSame('unavailable', $net['status'], 'net purchases with Books down');
+    assertSame(null, $net['raw_value'], 'an unavailable metric has no value');
+    assertSame(null, $net['formatted_value'], 'an unavailable metric has no formatted value');
+    assertTrue(str_contains((string) $net['unavailable_reason'], 'Smart Books'), 'the reason names the product that did not answer');
+    assertSame('Comparison unavailable', $net['comparison_text'], 'no comparison without a value');
+    assertSame('unavailable', sourceStatus($overview, 'books'), 'the source list says Books is unavailable');
+
+    stubRecover();
+});
+
+check('our own figures keep working when Books is down', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    stubFail('dashboard/purchase', 503);
+    $overview = dashboardFor('overview', $ctx, $auth);
+    stubRecover();
+
+    $commitment = metric($overview, 'open_commitment');
+    assertSame('ready', $commitment['status'], 'commitment is ours and survives Books being down');
+    // 100 x 250 + 40 x 900 = 61000, exactly.
+    assertSame('61000', $commitment['raw_value'], 'open commitment is exact');
+    assertSame('ready', sourceStatus($overview, 'purchases'), 'our own source stays ready');
+});
+
+check('money crosses the wire as an exact decimal string, never a float', function () use ($ctx, $auth) {
+    resetDatabase();
+    $overview = dashboardFor('overview', $ctx, $auth);
+    $net = metric($overview, 'net_purchases');
+
+    assertSame('ready', $net['status'], 'Books answered');
+    // The stub sends 4860000.4567 as a JSON number. If it were carried as a
+    // PHP float this would come back as 4860000.4567000002 or similar.
+    assertSame('4860000.4567', $net['raw_value'], 'the paise survive the round trip');
+    assertTrue(is_string($net['raw_value']), 'raw values are strings');
+    assertSame('₹48,60,000.46', $net['formatted_value'], 'Indian grouping, two places');
+});
+
+check('a comparison states its direction and its baseline', function () use ($ctx, $auth) {
+    resetDatabase();
+    $overview = dashboardFor('overview', $ctx, $auth, ['preset' => 'this_month']);
+
+    $net = metric($overview, 'net_purchases');
+    assertTrue($net['comparison']['available'], 'a previous period was compared');
+    assertSame('4339285', $net['comparison']['previous_raw'], 'the baseline is carried, not just the delta');
+    assertTrue(str_contains((string) $net['comparison_text'], '12.0%'), 'the change reads 12.0%, got: ' . $net['comparison_text']);
+
+    // Overdue dues fell, and falling is good news, so the tone is positive even
+    // though the number went down.
+    $overdue = metric($overview, 'overdue_dues');
+    assertSame('lower_is_better', $overdue['direction'], 'overdue dues are better when lower');
+    assertSame('is-positive', $overdue['change_tone'], 'a fall in overdue dues reads as good');
+});
+
+check('a zero baseline gives an absolute change, not a percentage', function () {
+    assertSame(null, Decimal::percentChange('0', '500', 1), 'no percentage against nothing');
+    assertSame('25', Decimal::percentChange('200', '250', 1), 'a real baseline still gives one');
+});
+
+check('every metric explains itself and can be opened', function () use ($ctx, $auth) {
+    resetDatabase();
+    foreach (DashboardsController::VIEWS as $view) {
+        $payload = dashboardFor($view, $ctx, $auth);
+        assertSame($view, $payload['view'], 'the payload names its view');
+        assertTrue($payload['metrics'] !== [], $view . ' has metrics');
+
+        foreach ($payload['metrics'] as $m) {
+            assertTrue(($m['basis'] ?? '') !== '', $view . '/' . $m['id'] . ' states its basis');
+            assertTrue(in_array($m['direction'], ['higher_is_better', 'lower_is_better', 'neutral'], true), $view . '/' . $m['id'] . ' says which way is better');
+            assertTrue(($m['comparison_text'] ?? '') !== '', $view . '/' . $m['id'] . ' has a comparison line or says it has none');
+            if ($m['status'] === 'unavailable') {
+                assertTrue(($m['unavailable_reason'] ?? '') !== '', $view . '/' . $m['id'] . ' says why it is unavailable');
+            }
+        }
+    }
+});
+
+check('the dashboard scope never leaks another company', function () use ($auth) {
+    resetDatabase();
+    $ours = freshContext(88);
+    $orders = new PurchaseOrderService($ours, $auth);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $theirs = dashboardFor('overview', freshContext(999), $auth);
+    assertSame('0', metric($theirs, 'open_commitment')['raw_value'], 'company 999 sees none of company 88 commitment');
+});
+
+echo "\nDashboard 1 — Overview\n";
+
+check('the briefing is ranked, actionable and labelled as rules-based', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $overview = dashboardFor('overview', $ctx, $auth);
+    $briefing = $overview['panels']['briefing'];
+
+    assertSame('rules', $briefing['method'], 'no model was claimed');
+    assertTrue(str_contains($briefing['method_label'], 'no AI model'), 'the label says so in words');
+    assertTrue(count($briefing['items']) <= 5, 'at most five issues');
+    assertTrue($briefing['items'] !== [], 'a late order produced an issue');
+
+    foreach ($briefing['items'] as $item) {
+        assertTrue($item['explanation'] !== '', 'each issue explains itself');
+        assertTrue($item['action_label'] !== '', 'each issue offers a next action');
+        assertTrue($item['route'] !== '', 'each issue can be opened');
+    }
+});
+
+check('supplier concentration states the denominator it used', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $overview = dashboardFor('overview', $ctx, $auth);
+    $concentration = $overview['panels']['concentration'];
+
+    assertTrue($concentration['available'], 'the panel rendered');
+    assertSame('books', $concentration['base_source'], 'posted purchases are the base when Books answers');
+    assertTrue(str_contains($concentration['basis'], 'net posted purchases'), 'the base is named in the basis text');
+});
+
+check('concentration refuses to add two currencies together', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $orders->create(poInput());
+    $orders->create(poInput(['currency_code' => 'USD', 'exchange_rate' => 83]));
+
+    $overview = dashboardFor('overview', $ctx, $auth);
+    $concentration = $overview['panels']['concentration'];
+
+    assertSame(false, $concentration['available'], 'a mixed-currency base is not shown');
+    assertTrue(str_contains($concentration['reason'], 'more than one currency'), 'and it says why');
+    assertSame(null, $overview['scope']['reporting_currency'], 'no single reporting currency is claimed');
+});
+
+echo "\nDashboard 2 — Procurement\n";
+
+check('the workbench separates delayed from merely open', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+
+    $late = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $late['po_id']);
+    $orders->issue((int) $late['po_id']);
+
+    $future = $orders->create(poInput(['promised_date' => '2099-01-01']));
+    $orders->submit((int) $future['po_id']);
+    $orders->issue((int) $future['po_id']);
+
+    $delayed = dashboardFor('procurement', $ctx, $auth, ['view' => 'delayed']);
+    assertSame(1, $delayed['panels']['workbench']['total'], 'one delayed order');
+    assertSame('delayed', $delayed['panels']['workbench']['view'], 'the view is echoed back');
+    assertSame('Chase the supplier', $delayed['panels']['workbench']['rows'][0]['next_action'], 'the row says what to do');
+
+    $open = dashboardFor('procurement', $ctx, $auth, ['view' => 'open_orders']);
+    assertSame(2, $open['panels']['workbench']['total'], 'both orders are open');
+
+    assertSame('1', metric($delayed, 'overdue_orders')['raw_value'], 'the card agrees with the table');
+});
+
+check('quantities keep their unit and are never added across units', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    // Inside the delivery horizon, which is capped at 90 days: the timeline is
+    // "what is coming soon", not the whole order book.
+    $po = $orders->create(poInput(['promised_date' => gmdate('Y-m-d', strtotime('+10 days'))]));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $procurement = dashboardFor('procurement', $ctx, $auth, ['horizon' => '30']);
+    $groups = $procurement['panels']['delivery_timeline']['groups'];
+    assertTrue($groups !== [], 'the timeline has a group');
+
+    foreach ($groups as $group) {
+        foreach ($group['lines'] as $line) {
+            assertTrue(array_key_exists('unit', $line), 'every line carries its unit');
+            assertTrue(str_contains((string) $line['remaining_label'], 'Nos'), 'the label carries the unit: ' . $line['remaining_label']);
+        }
+    }
+    // There is no total quantity anywhere on the panel, by design.
+    assertTrue(!array_key_exists('total_qty', $procurement['panels']['delivery_timeline']), 'no cross-unit quantity total');
+});
+
+check('reorder suggestions deduct what is already on order', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput([
+        'promised_date' => '2099-01-01',
+        'lines' => [['item_id' => 7001, 'unit_id' => 1, 'ordered_qty' => 400, 'agreed_rate' => 300]],
+    ]));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $reorder = dashboardFor('procurement', $ctx, $auth)['panels']['reorder'];
+    assertTrue($reorder['available'], 'Inventory answered');
+
+    $cement = null;
+    foreach ($reorder['rows'] as $row) {
+        if ($row['item_id'] === 7001) {
+            $cement = $row;
+        }
+    }
+    assertTrue($cement !== null, 'the short item is listed');
+    assertSame('1000', $cement['inventory_suggested_qty'], 'Inventory suggested 1000');
+    assertSame('400', $cement['on_order_qty'], '400 is already on order');
+    assertSame('600', $cement['suggested_qty'], 'so 600 is what remains to order');
+    assertTrue(str_contains($cement['basis'], 'already on order'), 'and the row explains the deduction');
+});
+
+check('reorder degrades honestly when Inventory is unreachable', function () use ($ctx, $auth) {
+    resetDatabase();
+    stubFail('replenishment', 503);
+    $procurement = dashboardFor('procurement', $ctx, $auth);
+    stubRecover();
+
+    $reorder = $procurement['panels']['reorder'];
+    assertSame(false, $reorder['available'], 'no suggestions without live stock');
+    assertTrue(str_contains($reorder['reason'], 'Inventory'), 'the reason names Inventory');
+    assertTrue(str_contains($reorder['reason'], 'nothing is estimated'), 'and refuses to guess from purchase history');
+    assertSame('unavailable', sourceStatus($procurement, 'inventory'), 'the source list agrees');
+});
+
+check('the approval inbox never shows a document you raised', function () use ($ctx) {
+    resetDatabase();
+    $raiser = authFor('user-raiser', 2);
+    Db::run(
+        "INSERT INTO purchase_permission_profiles (cmp_id, profile_name, permissions)
+         VALUES (88, 'Buyer', '[\"po.view\",\"po.create\",\"po.approve\"]'::jsonb)",
+    );
+    $profileId = (int) Db::scalar('SELECT profile_id FROM purchase_permission_profiles LIMIT 1');
+    Db::run(
+        'INSERT INTO purchase_permission_assignments (cmp_id, user_uuid, profile_id) VALUES (88, :u, :p)',
+        ['u' => 'user-raiser', 'p' => $profileId],
+    );
+    Db::run('UPDATE purchase_settings SET po_approval_above_amount = 1 WHERE cmp_id = 88');
+    Db::run('INSERT INTO purchase_settings (cmp_id, po_approval_above_amount) VALUES (88, 1) ON CONFLICT (cmp_id) DO UPDATE SET po_approval_above_amount = 1');
+
+    $orders = new PurchaseOrderService($ctx, $raiser);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+
+    $pending = (int) Db::scalar("SELECT COUNT(*) FROM purchase_approval_requests WHERE status = 'PENDING'");
+    assertTrue($pending > 0, 'an approval was raised');
+
+    $inbox = dashboardFor('procurement', $ctx, $raiser)['panels']['approval_inbox'];
+    assertSame(0, $inbox['total'], 'the raiser does not see their own document');
+    assertSame('0', metric(dashboardFor('overview', $ctx, $raiser), 'my_approvals')['raw_value'], 'nor on the overview card');
+});
+
+echo "\nDashboard 3 — Suppliers\n";
+
+check('a rate is not stated from too small a sample', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+    (new ReceiptService($ctx, $auth))->request((int) $po['po_id'], ['received_at' => '2026-09-18']);
+
+    // An explicit window, because the fixture's receipt date sits inside it —
+    // "this year to date" would end before the receipt and prove nothing.
+    $suppliers = dashboardFor('suppliers', $ctx, $auth, ['from' => '2026-09-01', 'to' => '2026-09-30']);
+    $onTime = metric($suppliers, 'on_time_delivery');
+
+    assertSame('unavailable', $onTime['status'], 'one receipt is not an on-time rate');
+    assertTrue(str_contains((string) $onTime['unavailable_reason'], 'fewer than the 3'), 'and it says how many are needed');
+
+    $row = $suppliers['panels']['matrix']['rows'][0];
+    assertSame(null, $row['on_time_pc'], 'the matrix agrees');
+    assertSame(1, $row['on_time_sample'], 'and shows the sample it had');
+    assertTrue(str_contains($row['on_time_label'], 'too few to rate'), 'in words as well');
+});
+
+check('the composite score publishes its weights and what was missing', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $suppliers = dashboardFor('suppliers', $ctx, $auth, ['preset' => 'this_year']);
+    assertSame(40, $suppliers['score_model']['weights']['on_time'], 'weights are published');
+    assertSame(3, $suppliers['score_model']['min_sample'], 'so is the minimum sample');
+
+    $row = $suppliers['panels']['matrix']['rows'][0];
+    assertTrue($row['score_components'] !== [], 'the components are itemised');
+    assertTrue($row['score_missing'] !== [], 'and what could not be scored is named');
+    foreach ($row['score_components'] as $component) {
+        assertTrue(array_key_exists('weight', $component), 'each component carries its weight');
+        assertTrue(array_key_exists('counted', $component), 'and whether it counted');
+    }
+});
+
+check('overdue lines that never arrived cannot vanish from the picture', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $trend = dashboardFor('suppliers', $ctx, $auth, ['preset' => 'this_year'])['panels']['delivery_trend'];
+    assertSame(2, $trend['still_waiting']['lines'], 'both lines are still waiting');
+    assertSame(1, $trend['still_waiting']['orders'], 'on one order');
+    assertTrue(str_contains($trend['still_waiting']['note'], 'cannot appear in an on-time rate'), 'and the note explains why they are counted separately');
+});
+
+check('price movement compares like with like', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    // Same item, same unit, three orders, rising rate.
+    foreach ([['2026-09-01', 250], ['2026-09-05', 265], ['2026-09-09', 290]] as [$date, $rate]) {
+        $orders->create(poInput([
+            'po_date' => $date,
+            'lines'   => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => $rate]],
+        ]));
+    }
+
+    $panel = dashboardFor('suppliers', $ctx, $auth, ['preset' => 'this_year'])['panels']['price_movement'];
+    assertTrue($panel['rows'] !== [], 'a movement was found');
+
+    $row = $panel['rows'][0];
+    assertSame(201, $row['item_id'], 'the right item');
+    assertSame('250', $row['first_rate'], 'first observed rate');
+    assertSame('290', $row['last_rate'], 'last observed rate');
+    assertSame('16', $row['change_pc'], 'a 16% rise');
+    assertSame(3, $row['observations'], 'over three observations');
+    assertTrue(str_contains($panel['basis'], 'before line discount, freight and tax'), 'the basis names what is excluded');
+    assertTrue(str_contains($panel['basis'], 'inventory cost'), 'and separates commercial rate from inventory valuation');
+});
+
+echo "\nDashboard 4 — Bills & Payables\n";
+
+check('payables ageing is Books own, with the missing-due-date caveat stated', function () use ($ctx, $auth) {
+    resetDatabase();
+    $ageing = dashboardFor('bills-payables', $ctx, $auth)['panels']['ageing'];
+
+    assertTrue($ageing['available'], 'the panel rendered');
+    assertSame('2240000.75', $ageing['total'], 'the total is Books figure, to the paisa');
+    assertSame('620000.75', $ageing['buckets'][4]['amount'], 'the over-90 bucket is carried through unchanged');
+    assertTrue(str_contains($ageing['caveat'], 'no due date'), 'the caveat names the limitation');
+    assertTrue(str_contains($ageing['caveat'], 'does not substitute the invoice date'), 'and refuses the usual shortcut');
+});
+
+check('due-in-N-days says why it cannot be answered rather than showing zero', function () use ($ctx, $auth) {
+    resetDatabase();
+    $due = metric(dashboardFor('bills-payables', $ctx, $auth), 'due_windows');
+
+    assertSame('unavailable', $due['status'], 'not answerable company-wide');
+    assertSame(null, $due['raw_value'], 'and certainly not zero');
+    assertTrue(str_contains((string) $due['unavailable_reason'], 'acc_id'), 'the reason names the exact upstream limitation');
+});
+
+check('payment planning reads real due dates and holds disputed bills back', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601,
+        'po_id' => (int) $po['po_id'],
+        'supplier_invoice_no' => 'DST/2026/1001',
+        'supplier_invoice_date' => '2026-09-20',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    Db::run("UPDATE purchase_bill_requests SET status = 'POSTED' WHERE request_id = :id", ['id' => (int) $bill['request_id']]);
+
+    $planning = dashboardFor('bills-payables', $ctx, $auth)['panels']['payment_planning'];
+    assertTrue($planning['available'], 'the planner ran');
+    assertTrue($planning['rows'] !== [], 'open items came back from Books');
+
+    // The stub returns one settled bill; it must not be planned for payment.
+    foreach ($planning['rows'] as $row) {
+        assertTrue($row['pending'] !== '0', 'a settled bill is not on the plan');
+        assertSame('not_proposed', $row['state'], 'nothing is proposed automatically');
+    }
+
+    $undated = array_values(array_filter($planning['rows'], static fn ($r) => $r['due_date'] === null));
+    assertTrue($undated !== [], 'the bill with no due date is still shown');
+    assertSame('No due date recorded', $undated[0]['due_label'], 'and is labelled honestly');
+    assertSame($undated[0]['pending'], $planning['windows']['undated']['amount'], 'undated money is kept out of the due windows');
+
+    assertTrue(str_contains($planning['pay_note'], 'Aicountly Pay is not integrated'), 'Pay is not claimed');
+    assertTrue(str_contains($planning['pay_note'], 'three separate states'), 'proposal, recorded and executed stay apart');
+    assertTrue(str_contains($planning['scope_note'], 'NOT the whole creditors ledger'), 'the bounded scope is stated');
+});
+
+check('the matching workbench keeps service and non-PO purchases out of failure', function () use ($ctx, $auth) {
+    resetDatabase();
+    $matching = dashboardFor('bills-payables', $ctx, $auth)['panels']['matching'];
+
+    assertTrue(isset($matching['counts']['service']), 'service purchases are their own category');
+    assertTrue(isset($matching['counts']['non_po']), 'so are non-PO purchases');
+    assertTrue(str_contains($matching['basis'], 'never blocked'), 'billing less than agreed is not an exception');
+    assertTrue(str_contains($matching['basis'], 'not a failure'), 'and a service bill is not a failed match');
+});
+
+check('an open exception carries the rule that failed and both endpoints to resolve it', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    (new BillService($ctx, $auth))->enter([
+        'supplier_account_id' => 601,
+        'po_id' => (int) $po['po_id'],
+        'supplier_invoice_no' => 'DST/2026/1002',
+        'supplier_invoice_date' => '2026-09-21',
+        // Billed above the agreed rate: an exception by policy.
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 400]],
+    ]);
+
+    $payload = dashboardFor('bills-payables', $ctx, $auth);
+    assertSame('1', metric($payload, 'bills_with_exceptions')['raw_value'], 'the card counts it');
+
+    $rows = $payload['panels']['matching']['rows'];
+    assertTrue($rows !== [], 'and the table lists it');
+    assertTrue($rows[0]['rule'] !== '', 'the failed rule is spelled out');
+    assertTrue(str_contains($rows[0]['accept_endpoint'], 'match-exceptions'), 'accept is offered');
+    assertTrue(str_contains($rows[0]['reject_endpoint'], 'match-exceptions'), 'reject is offered');
+});
+
+echo "\nDashboard 5 — AI Insights\n";
+
+check('with no model configured the screen still works and says so', function () use ($ctx, $auth) {
+    resetDatabase();
+    $insights = dashboardFor('ai-insights', $ctx, $auth);
+
+    assertSame(false, $insights['ai']['available'], 'no model is configured in this deployment');
+    assertTrue(str_contains((string) $insights['ai']['reason'], 'AI insights are currently unavailable'), 'the exact wording is used');
+    assertSame('rules', $insights['panels']['opportunities']['method'], 'opportunities are rules-based');
+    assertSame('rules', $insights['panels']['anomalies']['method'], 'so are anomalies');
+    assertTrue($insights['panels']['ask']['questions'] !== [], 'the questions still work');
+    assertTrue(str_contains($insights['panels']['ask']['security'], 'never writes a query'), 'the security position is on the screen');
+});
+
+check('an opportunity carries its baseline and its assumption', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    // The same item from two suppliers at different rates.
+    $orders->create(poInput(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250]]]));
+    $orders->create(poInput(['supplier_account_id' => 602, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 300]]]));
+
+    $cards = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year'])['panels']['opportunities']['cards'];
+    assertTrue($cards !== [], 'an opportunity was found');
+
+    $card = $cards[0];
+    assertSame('consolidation', $card['kind'], 'fragmented buying');
+    // 200 units bought for 55,000; at the lowest rate it would have been 50,000.
+    assertSame('55000', $card['baseline'], 'the baseline is what was actually spent');
+    assertSame('5000', $card['estimate'], 'and the estimate is the difference at the best rate');
+    assertTrue(str_contains($card['assumption'], 'Upper bound'), 'the assumption is stated as an upper bound');
+    assertTrue(str_contains($card['assumption'], 'not the inventory valuation'), 'and separated from inventory cost');
+});
+
+check('overlapping opportunities are not added into one misleading total', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    foreach ([[601, '2026-09-01', 250], [602, '2026-09-05', 300], [601, '2026-09-09', 350]] as [$supplier, $date, $rate]) {
+        $orders->create(poInput([
+            'supplier_account_id' => $supplier,
+            'po_date' => $date,
+            'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => $rate]],
+        ]));
+    }
+
+    $insights = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year']);
+    $total = metric($insights, 'opportunity_value');
+    $cards = $insights['panels']['opportunities']['cards'];
+
+    $consolidation = null;
+    foreach ($cards as $card) {
+        if ($card['kind'] === 'consolidation') {
+            $consolidation = $card;
+        }
+    }
+    assertTrue($consolidation !== null, 'the consolidation card is there');
+    // Only the consolidation card carries an estimate; the price card overlaps
+    // it and deliberately carries none, so the headline equals the one estimate.
+    assertSame($consolidation['estimate'], $total['raw_value'], 'the headline counts each rupee once');
+    assertTrue(str_contains($total['explanation'], 'upper bounds'), 'and says what kind of number it is');
+});
+
+check('a forecast is refused rather than extrapolated from too little history', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $forecast = dashboardFor('ai-insights', $ctx, $auth)['panels']['forecast']['spend_forecast'];
+    assertSame(false, $forecast['available'], 'one month is not a forecast');
+    assertTrue(str_contains($forecast['reason'], 'at least 4 complete months'), 'and it says how much is needed');
+    assertTrue(str_contains($forecast['reason'], 'Nothing is extrapolated'), 'and refuses to extrapolate');
+
+    assertSame('unavailable', metric(dashboardFor('ai-insights', $ctx, $auth), 'forecast_spend')['status'], 'the card agrees');
+});
+
+check('obligations and projections are never mixed together', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput(['promised_date' => '2099-06-01']));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $forecast = dashboardFor('ai-insights', $ctx, $auth)['panels']['forecast'];
+    assertSame('contractual', $forecast['obligations']['kind'], 'commitments are labelled as such');
+    assertSame('statistical', $forecast['spend_forecast']['kind'], 'the projection is labelled separately');
+    assertTrue(str_contains($forecast['obligations']['basis'], 'not a prediction'), 'obligations are not a forecast');
+    assertSame(false, $forecast['commentary']['available'], 'and commentary is absent with no model');
+});
+
+check('an anomaly is a review candidate, never an accusation', function () use ($ctx, $auth) {
+    resetDatabase();
+    $insights = dashboardFor('ai-insights', $ctx, $auth);
+    $panel = $insights['panels']['anomalies'];
+
+    assertTrue(str_contains($panel['disclaimer'], 'not a finding'), 'the disclaimer is explicit');
+    assertTrue(str_contains($panel['disclaimer'], 'not an accusation'), 'and says so twice for a reason');
+    foreach ($panel['rows'] as $row) {
+        assertTrue(str_contains($row['note'], 'not a finding'), 'so does each row');
+    }
+});
+
+check('near-identical invoice numbers are found without a database extension', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    foreach (['INV-2026-4471', 'INV-2026-4472'] as $reference) {
+        $bills->enter([
+            'supplier_account_id' => 601,
+            'po_id' => (int) $po['po_id'],
+            'supplier_invoice_no' => $reference,
+            'supplier_invoice_date' => '2026-09-20',
+            'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 1, 'rate' => 250]],
+        ]);
+    }
+
+    $rows = dashboardFor('ai-insights', $ctx, $auth)['panels']['anomalies']['rows'];
+    $found = false;
+    foreach ($rows as $row) {
+        if ($row['kind'] === 'duplicate') {
+            $found = true;
+            assertTrue(str_contains($row['detail'], 'single character'), 'the rule is stated');
+        }
+    }
+    assertTrue($found, 'the pair one character apart was found');
+});
+
+check('every proposed action opens a screen rather than doing something', function () use ($ctx, $auth) {
+    resetDatabase();
+    $actions = dashboardFor('ai-insights', $ctx, $auth)['panels']['actions'];
+
+    assertTrue(str_contains($actions['notice'], 'Nothing on this dashboard issues an order'), 'the notice is unambiguous');
+    foreach ($actions['actions'] as $action) {
+        assertTrue($action['route'] !== '', 'each action has a destination');
+        assertTrue($action['effect'] !== '', 'and says exactly what it will do');
+    }
+});
+
+echo "\nAsk Purchases\n";
+
+check('a permission is checked before any record is fetched', function () use ($ctx) {
+    resetDatabase();
+    $clerk = authFor('user-clerk', 2);
+    $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0'];
+
+    $answer = AskEngine::answer($ctx, $clerk, Period::fromRequest(), 'which suppliers increased prices?');
+    assertTrue($answer['understood'], 'the question was understood');
+    assertTrue(str_contains($answer['answer'], 'do not have permission'), 'and refused on permission');
+    assertSame([], $answer['records'], 'with no records fetched');
+});
+
+check('an answer carries its scope, sources, calculation and next action', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0'];
+    $answer = AskEngine::answer($ctx, $auth, Period::fromRequest(), 'which orders are delayed this week?');
+
+    assertSame('delayed_orders', $answer['intent'], 'the right question was matched');
+    assertSame('rules', $answer['method'], 'no model was used');
+    assertSame(88, $answer['scope']['company_id'], 'the scope is stated');
+    assertTrue($answer['records'] !== [], 'supporting records are returned');
+    assertTrue($answer['calculation'] !== null, 'the calculation is explained');
+    assertTrue($answer['uncertainty'] !== null, 'and what might be missing is named');
+    assertTrue($answer['next_action']['route'] !== '', 'with a safe next action');
+});
+
+check('a question outside the catalogue is refused with the list of what works', function () use ($ctx, $auth) {
+    resetDatabase();
+    $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0'];
+    $answer = AskEngine::answer($ctx, $auth, Period::fromRequest(), 'delete every purchase order');
+
+    assertSame(false, $answer['understood'], 'it was not understood, and nothing was run');
+    assertTrue($answer['suggestions'] !== [], 'the approved questions are offered instead');
+});
+
+echo "\nExport\n";
+
+check('an export says Unavailable rather than exporting a zero', function () use ($ctx, $auth) {
+    resetDatabase();
+    stubFail('dashboard/purchase', 503);
+    $payload = dashboardFor('overview', $ctx, $auth);
+    stubRecover();
+
+    $flatten = new \ReflectionMethod(DashboardsController::class, 'flatten');
+    $flatten->setAccessible(true);
+    $rows = $flatten->invoke(null, $payload);
+
+    $net = null;
+    foreach ($rows as $row) {
+        if (($row[1] ?? '') === 'Net posted purchases') {
+            $net = $row;
+        }
+    }
+    assertTrue($net !== null, 'the metric is in the export');
+    assertSame('Unavailable', $net[2], 'exported as the word, so nobody sums it');
+    assertSame('', $net[3], 'with no raw value');
+    assertTrue($net[6] !== '', 'and the basis travels with it');
+});
+
+check('an export cannot smuggle a spreadsheet formula', function () {
+    $csv = new \ReflectionMethod(DashboardsController::class, 'csv');
+    $csv->setAccessible(true);
+    $out = $csv->invoke(null, [['Supplier'], ['=cmd|/c calc']]);
+
+    assertTrue(str_contains($out, "'=cmd"), 'a leading = is neutralised');
+});
+
+check('the export agrees with the dashboard it came from', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $payload = dashboardFor('overview', $ctx, $auth);
+    $flatten = new \ReflectionMethod(DashboardsController::class, 'flatten');
+    $flatten->setAccessible(true);
+    $rows = $flatten->invoke(null, $payload);
+
+    $onScreen = metric($payload, 'open_commitment');
+    $inExport = null;
+    foreach ($rows as $row) {
+        if (($row[1] ?? '') === 'Open order commitment') {
+            $inExport = $row;
+        }
+    }
+    assertSame($onScreen['formatted_value'], $inExport[2], 'the same formatted figure');
+    assertSame($onScreen['raw_value'], $inExport[3], 'and the same exact value');
+});
+
+echo "\nBooks contract\n";
+
+check('open items are never asked for without an account id', function () use ($ctx, $auth) {
+    resetDatabase();
+    $reader = new BooksReader($ctx, $auth->sesKey());
+
+    // Books answers 400 to bill-by-bill with no acc_id, and the stub enforces
+    // that. Asking for one supplier must therefore succeed.
+    $result = $reader->openItems(601, '2026-09-30');
+    assertTrue($result['ok'], 'a request with acc_id is accepted: ' . (string) $result['error']);
+    assertTrue($result['rows'] !== [], 'and returns open items');
+    assertSame('120000.5', $result['rows'][0]['pending_amount'], 'to the paisa');
+});
+
+check('a settled bill is excluded and an undated one is kept visible', function () use ($ctx, $auth) {
+    resetDatabase();
+    $rows = (new BooksReader($ctx, $auth->sesKey()))->openItems(601, '2026-09-30')['rows'];
+
+    foreach ($rows as $row) {
+        assertTrue($row['pending_amount'] !== '0', 'nothing settled is carried');
+    }
+    $undated = array_values(array_filter($rows, static fn ($r) => !$r['has_due_date']));
+    assertSame(1, count($undated), 'the bill with no due date is still there');
+    assertSame(null, $undated[0]['days_overdue'], 'and is not called overdue');
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";

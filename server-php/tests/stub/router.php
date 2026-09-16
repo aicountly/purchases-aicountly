@@ -142,14 +142,95 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
     exit;
 }
 
+if (str_contains($path, '/v1/items/bulk-lookup')) {
+    $ids = $body['ids'] ?? [];
+    echo json_encode(['data' => array_map(static fn ($id) => [
+        'item_id'   => (int) $id,
+        'item_name' => 'Stub Item ' . $id,
+        'item_code' => 'SKU-' . $id,
+        'uom'       => 'Nos',
+        'group_name' => 'Stub Group',
+    ], $ids)]);
+    exit;
+}
+if (str_contains($path, '/v1/reports/replenishment')) {
+    echo json_encode(['data' => [
+        'as_of' => gmdate('Y-m-d'),
+        'rows'  => [
+            ['item_id' => 7001, 'item_name' => 'OPC Cement 50kg', 'uom' => 'Bags', 'available_qty' => 320.0, 'reorder_level' => 500.0, 'safety_stock' => 200.0, 'suggested_qty' => 1000.0, 'lead_days' => 6],
+            ['item_id' => 7002, 'item_name' => 'TMT Steel 12mm',  'uom' => 'MT',   'available_qty' => 1.2,   'reorder_level' => 5.0,   'safety_stock' => 2.0,   'suggested_qty' => 5.0,    'lead_days' => 4],
+            ['item_id' => 7003, 'item_name' => 'Wire 2.5 sqmm',   'uom' => 'Coils', 'available_qty' => 8.0,  'reorder_level' => 25.0,  'safety_stock' => 10.0,  'suggested_qty' => null,   'lead_days' => null],
+        ],
+    ]]);
+    exit;
+}
+if (str_contains($path, '/v1/warehouses')) {
+    echo json_encode(['data' => [
+        ['warehouse_id' => 1, 'warehouse_name' => 'Main Store'],
+        ['warehouse_id' => 2, 'warehouse_name' => 'Site Store'],
+    ]]);
+    exit;
+}
+
 // --- Books ----------------------------------------------------------------
 if (str_contains($path, '/masters/accounts/')) {
     echo json_encode(['data' => ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30]]);
     exit;
 }
+/**
+ * bill-by-bill, exactly as Books behaves: acc_id is REQUIRED and the endpoint
+ * answers 400 without one. Purchases once called it without an acc_id, so the
+ * stub enforcing this is what stops that regression coming back.
+ */
 if (str_contains($path, '/reports/bill-by-bill')) {
+    $accId = (int) ($_GET['acc_id'] ?? 0);
+    if ($accId <= 0) {
+        http_response_code(400);
+        echo json_encode(['error' => ['code' => 'bad_request', 'message' => 'acc_id required'], 'message' => 'acc_id required']);
+        exit;
+    }
+    echo json_encode(['data' => ['acc_id' => $accId, 'rows' => [
+        ['bill_ref' => 'INV/0001', 'bill_date' => '2026-08-01', 'due_date' => '2026-08-31', 'pending_amount' => 120000.5, 'amount' => 200000.0],
+        ['bill_ref' => 'INV/0002', 'bill_date' => '2026-08-10', 'due_date' => null,         'pending_amount' => 45000.25, 'amount' => 45000.25],
+        ['bill_ref' => 'INV/0003', 'bill_date' => '2026-08-15', 'due_date' => '2099-01-01', 'pending_amount' => 10000.0,  'amount' => 10000.0],
+        ['bill_ref' => 'INV/0004', 'bill_date' => '2026-08-20', 'due_date' => '2026-09-01', 'pending_amount' => 0.0,      'amount' => 5000.0],
+    ]]]);
+    exit;
+}
+
+// Books' purchase dashboard — the source for every posted purchase figure.
+if (str_contains($path, '/dashboard/purchase')) {
     echo json_encode(['data' => [
-        ['bill_no' => 'INV/0001', 'bill_date' => '2026-08-01', 'due_date' => '2026-08-31', 'balance' => 120000.0],
+        'context' => ['from' => $_GET['from'] ?? null, 'to' => $_GET['to'] ?? null, 'period_label' => 'Stub period'],
+        'kpis' => [
+            'total_purchases'   => 4860000.4567,
+            'taxable_purchases' => 4200000.0,
+            'input_gst'         => 660000.4567,
+            'total_invoices'    => 27,
+            'avg_invoice_value' => 180000.0,
+            'payables'          => 2240000.75,
+            'overdue_payables'  => 420000.25,
+            'purchase_returns'  => 35000.0,
+        ],
+        'prev_period_kpis' => [
+            'total_purchases'  => 4339285.0,
+            'payables'         => 1898305.0,
+            'overdue_payables' => 512195.0,
+        ],
+        'trend' => ['granularity' => 'day', 'points' => [
+            ['date' => '2026-09-01', 'amount' => 310000.0],
+            ['date' => '2026-09-02', 'amount' => 428000.5],
+            ['date' => '2026-09-03', 'amount' => 265000.0],
+        ]],
+        'top_suppliers' => [
+            ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'amount' => 1166400.0],
+            ['acc_id' => 502, 'acc_name' => 'Metro Electricals',     'amount' => 874800.0],
+        ],
+        'payables_ageing' => [
+            'not_due' => 1200000.0, 'b_0_30' => 320000.0, 'b_31_60' => 100000.0,
+            'b_61_90' => 0.0, 'b_90_plus' => 620000.75, 'total' => 2240000.75,
+        ],
+        'register_summary' => [],
     ]]);
     exit;
 }
