@@ -155,6 +155,25 @@ await check('a drilldown carries its filters to the records', async () => {
   ok(await page.getByRole('checkbox', { name: /Overdue only/ }).isChecked(), 'and the list shows it applied')
 })
 
+await check('a KPI and the records behind it agree', async () => {
+  await page.goto(`${BASE}/dashboard/procurement?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  // The card counts orders with an overdue quantity; the drill-down opens the
+  // order list filtered to exactly that. If the two ever disagree, one of them
+  // is lying and there is no way to tell which from the screen.
+  const card = page.locator('.purchase-metric', { hasText: 'Orders with overdue quantities' })
+  const onCard = Number.parseInt(((await card.locator('.purchase-metric__value').textContent()) || '0').replace(/[^0-9]/g, ''), 10)
+  ok(Number.isFinite(onCard), 'the card shows a count')
+
+  await card.getByRole('button').click()
+  await settle()
+  eq(new URL(page.url()).searchParams.get('view'), 'delayed', 'the workbench is filtered to delayed orders')
+
+  const inList = await page.locator('.purchase-panel', { hasText: 'Procurement workbench' }).locator('tbody tr').count()
+  eq(inList, onCard, 'the workbench holds exactly as many orders as the card counted')
+})
+
 await check('an unavailable figure never renders as a zero', async () => {
   await page.goto(`${BASE}/dashboard/bills-payables?preset=this_year`, { waitUntil: 'networkidle' })
   await settle()

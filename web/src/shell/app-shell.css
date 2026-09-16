@@ -53,7 +53,6 @@
  * it. Every other page gets the spacing it has always had.
  */
 .app-shell__content > *:not(.purchase-workspace) {
-  display: block;
   padding: 1.25rem;
 }
 
