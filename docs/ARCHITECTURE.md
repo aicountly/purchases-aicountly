@@ -113,6 +113,17 @@ to call back into whichever product is currently calling it. Not a recursion
 guard — see `books-react-app/docs/CROSS_SERVICE_CALL_RULES.md`. Every call has a
 **connect** bound as well as an overall one.
 
+## The five dashboards
+
+`docs/DASHBOARDS.md` covers them: the metric contract, why an unavailable
+figure is never a zero, how money stays decimal from PostgreSQL to the screen,
+and the two Smart Books gaps this product states rather than approximates.
+
+They compose the same way everything else here does — our workflow counts from
+our own tables, posted money from Books and stock from Inventory, both live, on
+the request that renders the screen. Each source reports its own status, so a
+dashboard degrades one panel at a time.
+
 ## Running the tests
 
 ```bash
