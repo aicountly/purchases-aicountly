@@ -53,8 +53,8 @@ final class InsightRules
                 null,
                 $stuck,
                 'Open the documents',
-                '/approvals',
-                ['tab' => 'commands'],
+                '/bills',
+                ['status' => 'FAILED'],
                 900,
             );
         }
@@ -541,10 +541,20 @@ final class InsightRules
         }
 
         $out = [];
+        // A run of references like 4460, 4461, 4462 is one thing to look at,
+        // not three: once a bill has been reported it is not paired again.
+        $reported = [];
+
         foreach ($bySupplier as $bills) {
             $count = count($bills);
             for ($i = 0; $i < $count && count($out) < 5; $i++) {
+                if (isset($reported[$bills[$i]['id']])) {
+                    continue;
+                }
                 for ($j = $i + 1; $j < $count; $j++) {
+                    if (isset($reported[$bills[$j]['id']])) {
+                        continue;
+                    }
                     if (!self::differsByOneCharacter($bills[$i]['no'], $bills[$j]['no'])) {
                         continue;
                     }
@@ -552,6 +562,8 @@ final class InsightRules
                     [$newer, $older] = $bills[$i]['id'] > $bills[$j]['id']
                         ? [$bills[$i], $bills[$j]]
                         : [$bills[$j], $bills[$i]];
+                    $reported[$newer['id']] = true;
+                    $reported[$older['id']] = true;
                     $out[] = [
                         'request_id' => $newer['id'],
                         'other_id'   => $older['id'],

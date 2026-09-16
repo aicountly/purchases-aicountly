@@ -4,6 +4,7 @@ import { Plus, Trash2, Wand2 } from 'lucide-react'
 import { api, ApiError } from '../services/api'
 import type { CatalogItem, Requisition } from '../services/types'
 import { useApi } from '../hooks/useApi'
+import { useUrlFilter } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { ItemPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
@@ -13,7 +14,7 @@ const STATUSES = ['', 'DRAFT', 'APPROVAL_PENDING', 'APPROVED', 'REJECTED', 'SOUR
 export function RequisitionsList() {
   const navigate = useNavigate()
   const { scope, can } = usePurchases()
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useUrlFilter('status')
 
   const { data, loading, error, reload } = useApi(
     (signal) => api.list<Requisition>('v1/requisitions', { status: status || undefined, limit: 100 }, signal),

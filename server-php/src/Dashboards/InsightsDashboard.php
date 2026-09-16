@@ -38,6 +38,9 @@ final class InsightsDashboard extends Dashboard
     {
         $currency = $this->documentCurrency() ?? 'INR';
         $ai = AiClient::status();
+        if (!$this->can('settings.manage')) {
+            $ai['admin_hint'] = null;
+        }
 
         $opportunities = $this->can('cost.view') || $this->can('reports.view')
             ? InsightRules::opportunities($this->ctx, $this->period, $currency)

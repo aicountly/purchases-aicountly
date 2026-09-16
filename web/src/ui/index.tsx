@@ -1,5 +1,5 @@
 /**
- * The Sales UI primitives.
+ * The Purchases UI primitives.
  *
  * Deliberately small and styled from the CSS variables in index.css, which are
  * the same tokens Books and Inventory use — a user who moves between products

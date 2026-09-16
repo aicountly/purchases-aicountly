@@ -4,7 +4,7 @@ import { useAuth } from './auth/AuthProvider'
 import { PurchasesProvider, usePurchases } from './context/PurchasesContext'
 import { AppShell } from './shell/AppShell'
 import SignIn from './pages/SignIn'
-import PurchasesDashboard from './pages/PurchasesDashboard'
+import PurchaseDashboards from './dashboards'
 import { RequisitionDetail, RequisitionEditor, RequisitionsList } from './pages/Requisitions'
 import { RfqDetail, RfqEditor, RfqList } from './pages/Sourcing'
 import { PurchaseOrderDetail, PurchaseOrderEditor, PurchaseOrderList } from './pages/PurchaseOrders'
@@ -72,7 +72,12 @@ export default function App() {
         <PageViews />
         <Routes>
           <Route element={<AppShell />}>
-            <Route index element={<RequireScope><PurchasesDashboard /></RequireScope>} />
+            {/* The dashboard is five screens behind one route. The view is in
+                the path so a link to one is a link to that one, and Back moves
+                between them rather than out of the product. */}
+            <Route index element={<Navigate to="/dashboard/overview" replace />} />
+            <Route path="dashboard" element={<Navigate to="/dashboard/overview" replace />} />
+            <Route path="dashboard/:view" element={<RequireScope><PurchaseDashboards /></RequireScope>} />
 
             <Route path="requisitions">
               <Route index element={<RequireScope><RequisitionsList /></RequireScope>} />

@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../services/api'
 import type { BillRequest, PurchaseOrder } from '../services/types'
 import { useApi } from '../hooks/useApi'
+import { useUrlFilter, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
@@ -13,11 +14,19 @@ export function BillsList() {
   const navigate = useNavigate()
   const { scope } = usePurchases()
   const [searchParams] = useSearchParams()
-  const [status, setStatus] = useState(searchParams.get('exceptions') === '1' ? 'EXCEPTION' : '')
+  // `exceptions=1` is the older spelling of the same thing and still works.
+  const [urlStatus, setStatus] = useUrlFilter('status')
+  const status = urlStatus === '' && searchParams.get('exceptions') === '1' ? 'EXCEPTION' : urlStatus
+  const supplierId = useUrlId('supplier_id')
 
   const { data, loading, error } = useApi(
-    (signal) => api.list<BillRequest>('v1/bills', { status: status || undefined, limit: 100 }, signal),
-    [scope?.cmp_id, scope?.fy_id, status],
+    (signal) =>
+      api.list<BillRequest>(
+        'v1/bills',
+        { status: status || undefined, supplier_account_id: supplierId, limit: 100 },
+        signal,
+      ),
+    [scope?.cmp_id, scope?.fy_id, status, supplierId],
     Boolean(scope),
   )
 

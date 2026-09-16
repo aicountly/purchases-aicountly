@@ -1,0 +1,124 @@
+/*
+ * The application frame.
+ *
+ * A fixed 15rem sidebar beside the content works from about 900px up. Below
+ * that it leaves 150px for a dashboard, which is why the sidebar becomes an
+ * off-canvas drawer instead of shrinking — a squeezed sidebar and a squeezed
+ * table are both unusable, and only one of them has to be on screen.
+ */
+
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.app-shell__sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.app-shell__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell__header {
+  min-height: var(--header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.app-shell__content {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+}
+
+/*
+ * Page padding, except for the dashboards.
+ *
+ * `.purchase-workspace` paints its own background to the edges and brings its
+ * own padding, so padding here would leave a border of the wrong colour around
+ * it. Every other page gets the spacing it has always had.
+ */
+.app-shell__content > *:not(.purchase-workspace) {
+  display: block;
+  padding: 1.25rem;
+}
+
+/* The menu button only exists on small screens. */
+.app-shell__menu {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.app-shell__scrim { display: none; }
+
+/* Only on a phone, where the sidebar is a drawer that has to be dismissed. */
+.app-shell__close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+@media (max-width: 900px) {
+  .app-shell__sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 70;
+    width: min(17rem, 82vw);
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+    box-shadow: 6px 0 28px rgb(15 35 18 / 14%);
+  }
+
+  .app-shell__sidebar.is-open { transform: translateX(0); }
+
+  .app-shell__menu,
+  .app-shell__close { display: inline-flex; }
+
+  .app-shell__scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 65;
+    background: rgb(12 30 16 / 34%);
+  }
+
+  /* The context strip wraps rather than pushing the header wider than the
+     screen, which is what was forcing a horizontal scrollbar. */
+  .app-shell__header { flex-wrap: wrap; row-gap: 0.5rem; }
+  .app-shell__context { min-width: 0; flex: 1 1 100%; order: 2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell__sidebar { transition: none; }
+}

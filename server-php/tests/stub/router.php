@@ -72,6 +72,25 @@ if ($key !== '' && isset($seen[$key])) {
 
 $n = count($seen) + 1;
 
+// --- Portal (my.aicountly.com) --------------------------------------------
+//
+// Only reached when PORTAL_AUTH_BASE points here, which is the local preview
+// harness. Deployed builds always talk to the real portal.
+if (str_contains($path, '/seskey')) {
+    echo json_encode(['ses_key' => 'preview-ses-key', 'expires_in' => 900]);
+    exit;
+}
+
+if (str_contains($path, '/validatesession')) {
+    echo json_encode([
+        'status'      => 1,
+        'uuid_aictly' => 'user-owner',
+        'acs_type'    => 1,
+        'name'        => 'Preview User',
+    ]);
+    exit;
+}
+
 // --- Manage ---------------------------------------------------------------
 if (str_contains($path, '/companyinfo')) {
     echo json_encode(['data' => ['cmp_id' => (int) ($_GET['comp_id'] ?? 0), 'cmp_name' => 'Stub Trading Co']]);

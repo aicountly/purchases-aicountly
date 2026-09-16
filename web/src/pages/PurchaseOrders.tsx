@@ -4,6 +4,7 @@ import { Plus, Trash2 } from 'lucide-react'
 import { api, ApiError } from '../services/api'
 import type { CatalogSupplier, PurchaseOrder } from '../services/types'
 import { useApi } from '../hooks/useApi'
+import { useUrlFilter, useUrlFlag, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
@@ -14,12 +15,27 @@ const STATUSES = ['', 'DRAFT', 'APPROVAL_PENDING', 'APPROVED', 'ISSUED', 'ACKNOW
 export function PurchaseOrderList() {
   const navigate = useNavigate()
   const { scope, can } = usePurchases()
-  const [status, setStatus] = useState('')
-  const [overdue, setOverdue] = useState(false)
+  // In the URL, so a drill-down from a dashboard arrives filtered and a
+  // narrowed list can be shared as a link.
+  const [status, setStatus] = useUrlFilter('status')
+  const [overdue, setOverdue] = useUrlFlag('overdue')
+  const [openOnly, setOpenOnly] = useUrlFlag('open_only')
+  const supplierId = useUrlId('supplier_id')
 
   const { data, loading, error } = useApi(
-    (signal) => api.list<PurchaseOrder>('v1/purchase-orders', { status: status || undefined, overdue: overdue ? 1 : undefined, limit: 100 }, signal),
-    [scope?.cmp_id, scope?.fy_id, status, overdue],
+    (signal) =>
+      api.list<PurchaseOrder>(
+        'v1/purchase-orders',
+        {
+          status: status || undefined,
+          overdue: overdue ? 1 : undefined,
+          open_only: openOnly ? 1 : undefined,
+          supplier_account_id: supplierId,
+          limit: 100,
+        },
+        signal,
+      ),
+    [scope?.cmp_id, scope?.fy_id, status, overdue, openOnly, supplierId],
     Boolean(scope),
   )
 
@@ -40,6 +56,9 @@ export function PurchaseOrderList() {
         title={`${data?.meta.total ?? 0} order${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}
         action={
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem' }}>
+              <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} /> Open only
+            </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem' }}>
               <input type="checkbox" checked={overdue} onChange={(e) => setOverdue(e.target.checked)} /> Overdue only
             </label>

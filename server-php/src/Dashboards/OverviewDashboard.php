@@ -149,7 +149,7 @@ final class OverviewDashboard extends Dashboard
                     'direction' => Metric::NEUTRAL,
                     'explanation' => 'What this company has committed to buy and not yet received. Tax is excluded: the tax actually charged is decided when the bill is entered.',
                     'comparison_unavailable_reason' => 'Commitment is a position as at today, not a figure for a period, so there is no previous period to compare it with.',
-                    'drilldown' => $this->drilldown('/purchase-orders', ['status' => 'open']),
+                    'drilldown' => $this->drilldown('/purchase-orders', ['open_only' => '1']),
                     'footnote'  => $commitment['order_count'] . ' open order' . ($commitment['order_count'] === 1 ? '' : 's') . '.',
                 ],
             ),
@@ -165,7 +165,7 @@ final class OverviewDashboard extends Dashboard
                     'direction' => Metric::LOWER_IS_BETTER,
                     'explanation' => 'Counted per order. The still-unreceived quantity stays visible here rather than dropping out of the picture when a line is partly delivered.',
                     'comparison_unavailable_reason' => 'Delay is measured against today, so a previous-period comparison would not mean the same thing.',
-                    'drilldown' => $this->drilldown('/purchase-orders', ['view' => 'delayed']),
+                    'drilldown' => $this->drilldown('/purchase-orders', ['overdue' => '1']),
                     'footnote'  => $delayed['lines'] . ' delayed line' . ($delayed['lines'] === 1 ? '' : 's') . ' across them.',
                 ],
             ),
@@ -321,14 +321,22 @@ final class OverviewDashboard extends Dashboard
             return $this->unavailablePanel((string) $books['error']);
         }
 
-        $points = (array) $books['trend'];
+        $currency = $this->documentCurrency() ?? 'INR';
+        $points = array_map(
+            static fn (array $point) => $point + [
+                'label'     => Format::date($point['date']),
+                'formatted' => Format::money((string) $point['amount'], $currency),
+            ],
+            (array) $books['trend'],
+        );
         $total = Decimal::sum(array_map(static fn ($p) => (string) $p['amount'], $points));
 
         return $this->panel([
             'granularity' => 'day',
-            'currency'    => $this->documentCurrency() ?? 'INR',
+            'currency'    => $currency,
             'points'      => $points,
             'total'       => $total,
+            'total_formatted' => Format::money($total, $currency),
             'basis'       => 'Net posted purchases per day from Smart Books, on the accounting date, for ' . $this->period->label() . '.',
             'comparison'  => [
                 'label'    => $this->period->comparisonLabel(),
@@ -399,7 +407,7 @@ final class OverviewDashboard extends Dashboard
                 ['id' => 'dispatch', 'label' => 'Orders awaiting dispatch', 'count' => $awaitingDispatch, 'route' => '/purchase-orders', 'filters' => ['status' => 'ISSUED']],
                 ['id' => 'partial', 'label' => 'Partly received', 'count' => $partiallyReceived, 'route' => '/purchase-orders', 'filters' => ['status' => 'PARTIALLY_RECEIVED']],
                 ['id' => 'matching', 'label' => 'Bills awaiting matching', 'count' => $awaitingMatch, 'route' => '/bills', 'filters' => ['status' => 'MATCHING']],
-                ['id' => 'posting', 'label' => 'Posting exceptions', 'count' => $postingExceptions, 'route' => '/approvals', 'filters' => ['tab' => 'commands']],
+                ['id' => 'posting', 'label' => 'Posting exceptions', 'count' => $postingExceptions, 'route' => '/bills', 'filters' => ['status' => 'FAILED']],
             ],
         ]);
     }
@@ -667,6 +675,9 @@ final class OverviewDashboard extends Dashboard
             'suppliers'     => $items,
             'others'        => [
                 'amount'    => Decimal::isNegative($others) ? Decimal::ZERO : $others,
+                // Formatted here, like every other amount: a raw decimal that
+                // reaches a legend is a legend reading "2818800.4567".
+                'formatted' => Format::money(Decimal::isNegative($others) ? Decimal::ZERO : $others, $currency),
                 'share_pc'  => Decimal::isNegative($others) ? '0' : Decimal::percentOf($others, $base, 1),
             ],
         ]);

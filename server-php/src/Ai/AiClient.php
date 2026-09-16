@@ -52,26 +52,31 @@ final class AiClient
     /**
      * What the screen may say about AI, with no secret in it.
      *
-     * @return array{available: bool, provider: ?string, model: ?string, reason: ?string}
+     * The setting's NAME goes in `admin_hint`, not in `reason`. Which variable
+     * to set is what an administrator needs; it is server configuration that a
+     * buyer reading a dashboard has no use for, so the caller shows it only to
+     * someone who could act on it.
+     *
+     * @return array{available: bool, provider: ?string, model: ?string, reason: ?string, admin_hint: ?string}
      */
     public static function status(): array
     {
         if (!self::isConfigured()) {
             return [
-                'available' => false,
-                'provider'  => null,
-                'model'     => null,
-                // Named so an administrator knows what to set, without naming a value.
-                'reason'    => 'AI insights are currently unavailable. No model is configured for this deployment ('
-                    . self::KEY_ENV . ' is not set on the server).',
+                'available'  => false,
+                'provider'   => null,
+                'model'      => null,
+                'reason'     => 'AI insights are currently unavailable. No model is configured for this deployment.',
+                'admin_hint' => 'Set ' . self::KEY_ENV . ' in the server environment to enable AI commentary.',
             ];
         }
 
         return [
-            'available' => true,
-            'provider'  => 'configured',
-            'model'     => self::model(),
-            'reason'    => null,
+            'available'  => true,
+            'provider'   => 'configured',
+            'model'      => self::model(),
+            'reason'     => null,
+            'admin_hint' => null,
         ];
     }
 
