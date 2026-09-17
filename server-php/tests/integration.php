@@ -27,6 +27,7 @@ use Aicountly\Api\Domain\ReturnClaimService;
 use Aicountly\Api\Domain\SourcingService;
 use Aicountly\Api\Domain\ThreeWayMatchService;
 use Aicountly\Api\Ai\AskEngine;
+use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\DashboardsController;
 use Aicountly\Api\Dashboards\BillsDashboard;
 use Aicountly\Api\Dashboards\BooksReader;
@@ -1570,6 +1571,369 @@ check('a settled bill is excluded and an undated one is kept visible', function 
     $undated = array_values(array_filter($rows, static fn ($r) => !$r['has_due_date']));
     assertSame(1, count($undated), 'the bill with no due date is still there');
     assertSame(null, $undated[0]['days_overdue'], 'and is not called overdue');
+});
+
+echo "\nAccess administration\n";
+
+/**
+ * Call a controller action the way the router would, and hand back the payload.
+ *
+ * Controllers answer by throwing ResponseSent under CLI, which is what lets a
+ * test assert on what a real endpoint produced rather than on a service method
+ * the endpoint happens to call.
+ *
+ * @param array<string, mixed> $body
+ * @return array{status:int, data:mixed, message:?string}
+ */
+function callAccess(string $action, Context $ctx, Auth $auth, array $body = [], array $args = []): array
+{
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => (string) $ctx->boId] + $body;
+
+    // Http::body() memoises php://input, which is empty under CLI, so the body
+    // travels in $_GET — Http::param() reads either.
+    $reflection = new \ReflectionClass(Http::class);
+    $cached = $reflection->getProperty('body');
+    $cached->setAccessible(true);
+    $cached->setValue(null, $body);
+
+    Auth::adopt($auth);
+    Permissions::forget();
+
+    try {
+        AccessController::$action(...$args);
+    } catch (ResponseSent $sent) {
+        $payload = $sent->payload;
+
+        return [
+            'status'  => $sent->status,
+            'data'    => $payload['data'] ?? null,
+            'message' => $payload['message'] ?? null,
+        ];
+    } finally {
+        Auth::adopt(null);
+        $cached->setValue(null, null);
+    }
+
+    throw new \RuntimeException("AccessController::{$action} returned without responding");
+}
+
+/** Give a user a profile directly, for tests that need a non-owner administrator. */
+function grantProfile(Context $ctx, string $uuid, string $name, array $permissions): int
+{
+    $profileId = (int) Db::insert('purchase_permission_profiles', [
+        'cmp_id'       => $ctx->cmpId,
+        'profile_name' => $name,
+        'permissions'  => json_encode($permissions),
+        'is_active'    => true,
+    ], 'profile_id');
+
+    Db::insert('purchase_permission_assignments', [
+        'cmp_id'     => $ctx->cmpId,
+        'user_uuid'  => $uuid,
+        'profile_id' => $profileId,
+    ], 'assignment_id');
+
+    Permissions::forget();
+
+    return $profileId;
+}
+
+check('a company with no profiles can be bootstrapped, once', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $first = callAccess('bootstrap', $ctx, $auth);
+    assertSame(4, count($first['data']['created']), 'four starter profiles');
+    assertSame([], $first['data']['skipped'], 'nothing skipped on a clean company');
+
+    // The starters separate the jobs this product separates: a buyer cannot
+    // approve their own order.
+    $names = array_column($first['data']['created'], 'profile_name');
+    assertTrue(in_array('Buyer', $names, true), 'a buyer profile');
+    assertTrue(in_array('Purchase approver', $names, true), 'an approver profile');
+
+    $buyer = null;
+    foreach ($first['data']['created'] as $profile) {
+        if ($profile['profile_name'] === 'Buyer') {
+            $buyer = $profile;
+        }
+    }
+    assertTrue(in_array('po.create', $buyer['permissions'], true), 'the buyer can raise an order');
+    assertTrue(!in_array('po.approve', $buyer['permissions'], true), 'and deliberately cannot approve one');
+
+    $second = callAccess('bootstrap', $ctx, $auth);
+    assertSame([], $second['data']['created'], 'a second bootstrap creates nothing');
+    assertSame(4, count($second['data']['skipped']), 'and says what it skipped');
+});
+
+check('a profile must name permissions this product actually has', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $result = callAccess('saveProfile', $ctx, $auth, [
+        'profile_name' => 'Invented',
+        'permissions'  => ['po.view', 'po.destroy_everything'],
+    ]);
+
+    assertSame(422, $result['status'], 'refused');
+    assertTrue(str_contains((string) $result['message'], 'po.destroy_everything'), 'and names the one it did not recognise');
+});
+
+check('a profile with no permissions is refused', function () use ($ctx, $auth) {
+    resetDatabase();
+    $result = callAccess('saveProfile', $ctx, $auth, ['profile_name' => 'Empty', 'permissions' => []]);
+
+    assertSame(422, $result['status'], 'refused');
+    assertTrue(str_contains((string) $result['message'], 'grants nothing'), 'and says why');
+});
+
+check('an administrator cannot grant a permission they do not hold', function () use ($ctx) {
+    resetDatabase();
+
+    // A non-owner administrator: they can manage access, and view orders.
+    $admin = authFor('user-admin', 2);
+    grantProfile($ctx, 'user-admin', 'Access admin', ['access.manage', 'po.view']);
+
+    $escalation = callAccess('saveProfile', $ctx, $admin, [
+        'profile_name' => 'Quietly powerful',
+        'permissions'  => ['po.view', 'bill.post'],
+    ]);
+
+    assertSame(403, $escalation['status'], 'refused: bill.post is beyond them');
+    assertTrue(str_contains((string) $escalation['message'], 'bill.post'), 'and names it');
+
+    // What they DO hold, they may hand out.
+    $allowed = callAccess('saveProfile', $ctx, $admin, [
+        'profile_name' => 'Order viewer',
+        'permissions'  => ['po.view'],
+    ]);
+    assertSame(200, $allowed['status'], 'granting what they hold is allowed');
+});
+
+check('the owner can grant anything', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $result = callAccess('saveProfile', $ctx, $auth, [
+        'profile_name' => 'Everything',
+        'permissions'  => ['bill.post', 'match.resolve', 'access.manage'],
+    ]);
+
+    assertSame(200, $result['status'], 'the owner is not bound by the escalation rule');
+    assertSame(3, $result['data']['permission_count'], 'all three granted');
+});
+
+check('editing a profile cannot smuggle a permission past the escalation rule', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    // The owner makes a powerful profile.
+    $powerful = callAccess('saveProfile', $ctx, $auth, [
+        'profile_name' => 'Payables lead',
+        'permissions'  => ['bill.post', 'match.resolve', 'po.view'],
+    ]);
+    $profileId = $powerful['data']['profile_id'];
+
+    // A lesser administrator tries to strip what they cannot grant, which would
+    // let them rewrite a profile they do not fully hold.
+    $admin = authFor('user-admin', 2);
+    grantProfile($ctx, 'user-admin', 'Access admin', ['access.manage', 'po.view']);
+
+    $rewrite = callAccess('saveProfile', $ctx, $admin, [
+        'profile_id'   => $profileId,
+        'profile_name' => 'Payables lead',
+        'permissions'  => ['po.view'],
+    ]);
+
+    assertSame(403, $rewrite['status'], 'refused');
+    assertTrue(str_contains((string) $rewrite['message'], 'cannot remove'), 'and explains that the removal is the problem');
+});
+
+check('assigning a profile is bound by the same rule as writing one', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $powerful = callAccess('saveProfile', $ctx, $auth, [
+        'profile_name' => 'Poster',
+        'permissions'  => ['bill.post'],
+    ]);
+
+    $admin = authFor('user-admin', 2);
+    grantProfile($ctx, 'user-admin', 'Access admin', ['access.manage', 'po.view']);
+
+    $result = callAccess('assign', $ctx, $admin, [
+        'user_uuid'  => 'user-newcomer',
+        'profile_id' => $powerful['data']['profile_id'],
+    ]);
+
+    assertSame(403, $result['status'], 'handing out a profile is handing out its permissions');
+});
+
+check('an assignment grants exactly what the profile says', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $profile = callAccess('saveProfile', $ctx, $auth, [
+        'profile_name' => 'Buyer',
+        'permissions'  => ['po.view', 'po.create'],
+    ]);
+
+    $clerk = authFor('user-clerk', 2);
+    assertTrue(!Permissions::allows($ctx, $clerk, 'po.create'), 'nothing before the assignment');
+
+    callAccess('assign', $ctx, $auth, [
+        'user_uuid'    => 'user-clerk',
+        'profile_id'   => $profile['data']['profile_id'],
+        'member_label' => 'Priya, production buyer',
+    ]);
+
+    Permissions::forget();
+    assertTrue(Permissions::allows($ctx, $clerk, 'po.create'), 'and the permission afterwards');
+    assertTrue(!Permissions::allows($ctx, $clerk, 'po.approve'), 'but nothing the profile did not name');
+});
+
+check('the members list groups by person and unions their profiles', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $a = callAccess('saveProfile', $ctx, $auth, ['profile_name' => 'Viewer', 'permissions' => ['po.view']]);
+    $b = callAccess('saveProfile', $ctx, $auth, ['profile_name' => 'Biller', 'permissions' => ['bill.enter']]);
+
+    callAccess('assign', $ctx, $auth, ['user_uuid' => 'user-two-hats', 'profile_id' => $a['data']['profile_id'], 'member_label' => 'Arun']);
+    callAccess('assign', $ctx, $auth, ['user_uuid' => 'user-two-hats', 'profile_id' => $b['data']['profile_id']]);
+
+    $members = callAccess('members', $ctx, $auth)['data'];
+    assertSame(1, count($members), 'one person, not two rows');
+    assertSame('Arun', $members[0]['label'], 'the label the administrator typed');
+    assertSame(2, count($members[0]['assignments']), 'both profiles listed');
+    assertSame(2, $members[0]['permission_count'], 'and the union of what they grant');
+});
+
+check('a label is a note the administrator typed, never a name fetched from the portal', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $profile = callAccess('saveProfile', $ctx, $auth, ['profile_name' => 'Viewer', 'permissions' => ['po.view']]);
+    callAccess('assign', $ctx, $auth, [
+        'user_uuid'    => 'user-labelled',
+        'profile_id'   => $profile['data']['profile_id'],
+        'member_label' => 'Sunil (night shift)',
+    ]);
+
+    $stored = Db::first('SELECT member_label FROM purchase_permission_assignments WHERE user_uuid = :u', ['u' => 'user-labelled']);
+    assertSame('Sunil (night shift)', $stored['member_label'], 'stored as typed');
+
+    // No outbound call was made to fetch it: the stub log has no portal lookup
+    // for this user.
+    foreach (stubRequests() as $request) {
+        assertTrue(
+            !str_contains((string) $request['path'], 'user-labelled'),
+            'no call went looking for this user: ' . $request['path'],
+        );
+    }
+});
+
+check('you cannot remove your own last grant of access management', function () use ($ctx) {
+    resetDatabase();
+
+    $admin = authFor('user-admin', 2);
+    grantProfile($ctx, 'user-admin', 'Access admin', ['access.manage']);
+    $assignment = Db::first("SELECT assignment_id FROM purchase_permission_assignments WHERE user_uuid = 'user-admin'");
+
+    $result = callAccess('unassign', $ctx, $admin, [], [(string) $assignment['assignment_id']]);
+
+    assertSame(409, $result['status'], 'refused');
+    assertTrue(str_contains((string) $result['message'], 'your own last grant'), 'and says exactly what it is protecting');
+    assertTrue(Permissions::allows($ctx, $admin, 'access.manage'), 'and the grant survives');
+});
+
+check('you can remove your own grant when somebody else still has one', function () use ($ctx) {
+    resetDatabase();
+
+    $admin = authFor('user-admin', 2);
+    grantProfile($ctx, 'user-admin', 'Access admin', ['access.manage']);
+    // A second grant to the same person, through another profile.
+    grantProfile($ctx, 'user-admin', 'Deputy admin', ['access.manage', 'po.view']);
+
+    $assignment = Db::first(
+        "SELECT a.assignment_id FROM purchase_permission_assignments a
+         JOIN purchase_permission_profiles p ON p.profile_id = a.profile_id
+         WHERE a.user_uuid = 'user-admin' AND p.profile_name = 'Access admin'",
+    );
+
+    $result = callAccess('unassign', $ctx, $admin, [], [(string) $assignment['assignment_id']]);
+    assertSame(200, $result['status'], 'allowed, because the other grant remains');
+});
+
+check('the owner is never locked out by this rule', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    grantProfile($ctx, $auth->uuid, 'Access admin', ['access.manage']);
+    $assignment = Db::first('SELECT assignment_id FROM purchase_permission_assignments WHERE user_uuid = :u', ['u' => $auth->uuid]);
+
+    $result = callAccess('unassign', $ctx, $auth, [], [(string) $assignment['assignment_id']]);
+    assertSame(200, $result['status'], 'the owner may remove it: their access comes from the portal');
+    assertTrue(Permissions::allows($ctx, $auth, 'access.manage'), 'and they still have it');
+});
+
+check('a profile in use cannot be deleted out from under people', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $profile = callAccess('saveProfile', $ctx, $auth, ['profile_name' => 'Viewer', 'permissions' => ['po.view']]);
+    callAccess('assign', $ctx, $auth, ['user_uuid' => 'user-someone', 'profile_id' => $profile['data']['profile_id']]);
+
+    $result = callAccess('deleteProfile', $ctx, $auth, [], [(string) $profile['data']['profile_id']]);
+    assertSame(409, $result['status'], 'refused while somebody holds it');
+    assertTrue(str_contains((string) $result['message'], '1 person'), 'and says how many');
+});
+
+check('every access change is written to the audit log', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $profile = callAccess('saveProfile', $ctx, $auth, ['profile_name' => 'Viewer', 'permissions' => ['po.view']]);
+    callAccess('assign', $ctx, $auth, ['user_uuid' => 'user-audited', 'profile_id' => $profile['data']['profile_id']]);
+
+    $actions = array_column(
+        Db::all("SELECT action FROM purchase_audit_log WHERE entity_type LIKE 'permission%' ORDER BY audit_id"),
+        'action',
+    );
+
+    assertTrue(in_array('access.profile_created', $actions, true), 'the profile creation');
+    assertTrue(in_array('access.profile_assigned', $actions, true), 'and the assignment');
+});
+
+check('access administration needs the access.manage permission', function () use ($ctx) {
+    resetDatabase();
+
+    $nobody = authFor('user-nobody', 2);
+    foreach (['profiles', 'members', 'people', 'catalogue'] as $action) {
+        assertSame(403, callAccess($action, $ctx, $nobody)['status'], $action . ' is refused');
+    }
+    assertSame(403, callAccess('saveProfile', $ctx, $nobody, ['profile_name' => 'X', 'permissions' => ['po.view']])['status'], 'and so is writing');
+});
+
+check('the catalogue tells an administrator what they may hand out', function () use ($ctx) {
+    resetDatabase();
+
+    $admin = authFor('user-admin', 2);
+    grantProfile($ctx, 'user-admin', 'Access admin', ['access.manage', 'po.view']);
+
+    $result = callAccess('catalogue', $ctx, $admin)['data'];
+    assertSame(false, $result['is_owner'], 'not the owner');
+    sort($result['grantable']);
+    assertSame(['access.manage', 'po.view'], $result['grantable'], 'grantable is exactly what they hold');
+    assertTrue(count($result['catalog']) > 0, 'the full catalogue is still shown, so the rest is visibly out of reach');
+});
+
+check('candidate people come from our own audit log, not a user directory', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    // Somebody acts in this company, which is how we know they exist.
+    (new PurchaseOrderService($ctx, authFor('user-seen', 1)))->create(poInput());
+
+    $people = callAccess('people', $ctx, $auth)['data'];
+    $uuids = array_column($people, 'user_uuid');
+    assertTrue(in_array('user-seen', $uuids, true), 'they are offered as a candidate');
+
+    // Once assigned they are no longer a candidate: the list answers "who could
+    // I add", not "who exists".
+    $profile = callAccess('saveProfile', $ctx, $auth, ['profile_name' => 'Viewer', 'permissions' => ['po.view']]);
+    callAccess('assign', $ctx, $auth, ['user_uuid' => 'user-seen', 'profile_id' => $profile['data']['profile_id']]);
+
+    $after = array_column(callAccess('people', $ctx, $auth)['data'], 'user_uuid');
+    assertTrue(!in_array('user-seen', $after, true), 'and drop off once assigned');
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";

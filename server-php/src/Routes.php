@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api;
 
+use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\BillsController;
 use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
@@ -38,6 +39,18 @@ final class Routes
         $router->put('v1/settings', [SettingsController::class, 'update']);
         $router->get('v1/settings/match-policies', [SettingsController::class, 'matchPolicies']);
         $router->post('v1/settings/match-policies', [SettingsController::class, 'saveMatchPolicy']);
+
+        // Who may do what. Every route here needs `access.manage`, and the
+        // escalation and self-lockout rules live in the controller, not the UI.
+        $router->get('v1/access/catalogue', [AccessController::class, 'catalogue']);
+        $router->get('v1/access/profiles', [AccessController::class, 'profiles']);
+        $router->post('v1/access/profiles', [AccessController::class, 'saveProfile']);
+        $router->post('v1/access/profiles/bootstrap', [AccessController::class, 'bootstrap']);
+        $router->delete('v1/access/profiles/{id}', [AccessController::class, 'deleteProfile']);
+        $router->get('v1/access/members', [AccessController::class, 'members']);
+        $router->post('v1/access/members', [AccessController::class, 'assign']);
+        $router->delete('v1/access/members/{id}', [AccessController::class, 'unassign']);
+        $router->get('v1/access/people', [AccessController::class, 'people']);
 
         // Read-through to the products that own the data. Pass-throughs:
         // nothing they return is stored.

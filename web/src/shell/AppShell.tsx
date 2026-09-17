@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ClipboardList,
   FileSearch,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -84,7 +85,10 @@ const NAV_GROUPS = [
   {
     id: 'administration',
     label: 'Administration',
-    items: [{ to: '/settings', label: 'Settings', icon: SettingsIcon }],
+    items: [
+      { to: '/access', label: 'Access', icon: KeyRound, permission: 'access.manage' },
+      { to: '/settings', label: 'Settings', icon: SettingsIcon },
+    ],
   },
 ] as const
 

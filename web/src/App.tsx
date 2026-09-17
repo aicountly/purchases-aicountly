@@ -14,6 +14,7 @@ import Claims from './pages/Claims'
 import Suppliers from './pages/Suppliers'
 import Approvals from './pages/Approvals'
 import Settings from './pages/Settings'
+import Access from './pages/Access'
 import { Notice } from './ui'
 import { initAnalytics, trackPageView } from './utils/analytics'
 import './App.css'
@@ -112,6 +113,7 @@ export default function App() {
             <Route path="suppliers" element={<RequireScope><Suppliers /></RequireScope>} />
             <Route path="approvals" element={<RequireScope><Approvals /></RequireScope>} />
             <Route path="settings" element={<RequireScope><Settings /></RequireScope>} />
+            <Route path="access" element={<RequireScope><Access /></RequireScope>} />
 
             {/* The portal callback lands here once AuthProvider has consumed the token. */}
             <Route path="auth/callback" element={<Navigate to="/" replace />} />

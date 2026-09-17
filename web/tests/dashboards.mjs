@@ -237,6 +237,52 @@ await check('the mobile menu opens and closes without trapping the page', async 
   await mobile.close()
 })
 
+await check('access administration bootstraps, assigns and shows its own rules', async () => {
+  await page.goto(`${BASE}/access`, { waitUntil: 'networkidle' })
+  await settle()
+
+  eq((await page.locator('h1').first().textContent())?.trim(), 'Access', 'the access screen opened')
+
+  // A company with no profiles says so, rather than looking merely empty: only
+  // the owner can do anything until one exists.
+  const bootstrap = page.getByRole('button', { name: /Create starter profiles/ })
+  if (await bootstrap.count()) {
+    ok(
+      (await page.locator('text=Nobody but the owner can do anything yet').count()) > 0,
+      'and explains why an empty company is a problem',
+    )
+    await bootstrap.click()
+    await page.waitForTimeout(1200)
+  }
+
+  const profiles = page.locator('table').first().locator('tbody tr')
+  ok((await profiles.count()) >= 4, 'the starter profiles exist')
+
+  // The starters separate the jobs this product separates.
+  const text = (await page.locator('table').first().textContent()) || ''
+  ok(text.includes('Buyer') && text.includes('Purchase approver'), 'buyer and approver are distinct profiles')
+  ok(text.includes('Cannot approve their own'), 'and the separation is stated on the screen')
+
+  // Candidates come from this product's own audit trail, not a user directory.
+  ok(
+    (await page.locator("text=from this product's own audit trail, not a user directory").count()) > 0,
+    'the candidate list says where it comes from',
+  )
+
+  // Assigning is the whole point: do it and check the person appears.
+  const before = await page.locator('table').nth(1).locator('tbody tr').count()
+  await page.locator('input[placeholder*="8f2c"]').fill('user-checked-by-test')
+  await page.locator('select').first().selectOption({ index: 1 })
+  await page.locator('input[placeholder*="Priya"]').fill('Test person')
+  await page.getByRole('button', { name: /Give access/ }).click()
+  await page.waitForTimeout(1200)
+
+  const after = await page.locator('table').nth(1).locator('tbody tr').count()
+  eq(after, before + 1, 'the person now holds a profile')
+  ok((await page.locator('text=Test person').count()) > 0, 'shown by the label the administrator typed')
+  ok((await page.locator('text=user-checked-by-test').count()) > 0, 'with the portal uuid as the real identity')
+})
+
 await browser.close()
 console.log(results.join('\n'))
 const failed = results.filter((r) => r.startsWith('  FAIL')).length

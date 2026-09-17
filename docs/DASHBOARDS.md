@@ -148,6 +148,65 @@ definitions were left behind on the screen is how two people argue about the
 same number. Cells beginning `=`, `+`, `-` or `@` are prefixed, so a supplier
 name cannot become a formula.
 
+## Access administration
+
+`Administration → Access`, at `/access`, backed by `GET|POST /api/v1/access/*`.
+
+The permission tables and the 27-permission catalogue have existed since the
+first migration. What was missing until now was any way to write to them: the
+company owner (the portal's `acs_type = 1`) held everything implicitly, and
+nobody else could be granted anything. A single-owner company never noticed;
+adding a buyer hit a wall no administrator could open.
+
+**Profiles** name a set of permissions. **People** hold profiles, and their
+permissions are the union across the active ones. A company with none is told
+so plainly, and offered four starter profiles shaped around the jobs this
+product already separates — a Buyer who can raise an order but not approve it,
+an Approver who can do the reverse, Accounts payable, and Read only.
+
+Two rules do the real work, and both are enforced in `AccessController`, not in
+React:
+
+**No escalation.** An administrator who is not the owner may grant only
+permissions they hold themselves — on a new profile, on an edit of an existing
+one, and on an assignment. Without it, `access.manage` is not one permission
+among twenty-seven; it is a key to all of them, and the segregation of duties
+enforced elsewhere would be one profile edit away from decorative. The profile
+editor greys out what the administrator cannot grant, so the rule reads as
+design rather than as a surprise rejection.
+
+**No self-lockout.** You cannot remove your own last grant of `access.manage`.
+The owner is exempt, because the owner is the recovery path: their access comes
+from the portal and nothing here can take it away.
+
+Every change is written to the append-only audit log, and a profile somebody
+holds cannot be deleted — cascading would strip their access silently and the
+administrator would find out when they could not post a bill.
+
+### Identity stays with the portal
+
+This product stores a **uuid**, a **label the administrator typed**, and the
+access decision. It never copies a name from my.aicountly.com: a copied name is
+wrong the day somebody marries, and user identity is not this product's to own.
+
+`GET /api/v1/access/people` offers candidates from **this product's own audit
+log** — the uuids that have actually acted in this company, with how recently.
+It is not a user directory and must not become one; it is the difference
+between an administrator typing a uuid from memory and picking one that has
+demonstrably signed in.
+
+### Missing upstream capability
+
+Manage provisions members into **Books** and **Auditor** only
+(`CompanyAccessService::provisionBooksAccess`, `AuditorProvisionService`). There
+is no Purchases equivalent, so an invitation accepted in Manage does not create
+anything here — an administrator assigns the profile in this screen.
+
+*What would close it:* a `PurchasesProvisionService` in Manage calling a
+provision hook on this product with `{user_uuid, profile}` when an invitation is
+accepted, mirroring the Books contract. That is a change to `manage-aicountly`
+and is deliberately not made here.
+
 ## Running the checks
 
 ```bash

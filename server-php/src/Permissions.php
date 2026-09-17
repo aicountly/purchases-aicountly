@@ -128,6 +128,45 @@ final class Permissions
         return self::$cache[$key] = array_keys($granted);
     }
 
+    /**
+     * Drop the memoised grants for a user.
+     *
+     * The cache is per-request, which is right for reads: `granted()` is called
+     * several times while rendering a screen. But an endpoint that CHANGES
+     * somebody's profile and then reports the result would answer from the
+     * grants it read before the change — including, when the caller edits their
+     * own access, telling them the edit did nothing.
+     */
+    public static function forget(?Context $ctx = null, ?Auth $auth = null): void
+    {
+        if ($ctx === null || $auth === null) {
+            self::$cache = [];
+
+            return;
+        }
+
+        unset(self::$cache[$ctx->cmpId . ':' . $auth->uuid]);
+    }
+
+    /**
+     * The permissions this caller may hand to somebody else.
+     *
+     * A company owner may grant anything. Anybody else may grant only what they
+     * themselves hold — otherwise `access.manage` is not a permission, it is a
+     * route to every other permission, and the segregation of duties the rest of
+     * this product enforces would be one profile edit away from meaningless.
+     *
+     * @return list<string>
+     */
+    public static function grantable(Context $ctx, Auth $auth): array
+    {
+        if ($auth->isService() || $auth->accessType() === 1) {
+            return self::all();
+        }
+
+        return self::granted($ctx, $auth);
+    }
+
     /** @return list<string> */
     public static function all(): array
     {

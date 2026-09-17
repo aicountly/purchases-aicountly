@@ -33,9 +33,34 @@ final class Auth
     ) {
     }
 
+    /**
+     * The caller a CLI test has stood in as.
+     *
+     * The same seam as ResponseSent, for the same reason: a controller resolves
+     * its caller from HTTP headers, which a test has none of. Rather than let
+     * tests reach past the controllers into the services — where the permission
+     * checks are not — they adopt an identity and call the real endpoint.
+     *
+     * CLI ONLY. Under a web SAPI this is ignored outright, so it cannot become
+     * an authentication bypass however it is called.
+     */
+    private static ?self $adopted = null;
+
+    public static function adopt(?self $auth): void
+    {
+        if (PHP_SAPI !== 'cli') {
+            return;
+        }
+        self::$adopted = $auth;
+    }
+
     /** Resolve the caller, or answer 401 and stop. */
     public static function require(): self
     {
+        if (PHP_SAPI === 'cli' && self::$adopted !== null) {
+            return self::$adopted;
+        }
+
         $resolved = self::resolve();
         if ($resolved === null) {
             Http::unauthorized();
