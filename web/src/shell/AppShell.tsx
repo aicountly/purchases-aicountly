@@ -136,7 +136,16 @@ export function AppShell() {
 
         <nav style={{ padding: '0.5rem', flex: 1, overflowY: 'auto' }} aria-label="Purchases">
           {NAV_GROUPS.map((group) => {
-            const items = group.items.filter((item) => !('permission' in item) || can(item.permission as string))
+            // Before a company is chosen there is no session, so `can()` cannot
+            // answer and returns false for everything. Filtering on that hid
+            // three whole groups behind what looked exactly like a permission
+            // problem, when in fact nothing had been asked yet. Until the
+            // session is known, show the nav; every link lands on the company
+            // picker anyway, which is the honest next step.
+            const permissionsKnown = session !== null
+            const items = group.items.filter(
+              (item) => !('permission' in item) || !permissionsKnown || can(item.permission as string),
+            )
             if (items.length === 0) return null
 
             // A group opens when the current page is inside it, so the sidebar
