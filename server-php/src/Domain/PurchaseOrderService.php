@@ -155,7 +155,7 @@ final class PurchaseOrderService
             Http::conflict('This purchase order is not waiting for approval.');
         }
         // Segregation of duties: the buyer who raised it may not approve it.
-        if ((string) $po['created_by'] === $this->auth->uuid && $this->auth->accessType() !== 1) {
+        if ((string) $po['created_by'] === $this->auth->uuid && !$this->auth->ownsCompany($this->ctx->cmpId)) {
             Http::forbidden('You raised this purchase order, so somebody else has to approve it.');
         }
 

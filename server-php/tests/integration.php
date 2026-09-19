@@ -100,7 +100,30 @@ function freshContext(int $cmpId = 88, int $fyId = 6, int $boId = 0): Context
     return $ctx;
 }
 
-function authFor(string $uuid = 'user-owner', ?int $acsType = 1): Auth
+/**
+ * A caller, with the role Manage would have reported for the company.
+ *
+ * NOT `session['acs_type']`, which is where this used to put it. The portal has
+ * never sent that field, so a fixture that supplies it is testing a payload that
+ * does not exist — and that is exactly how an owner bypass shipped that could
+ * not fire in production. The role now arrives the way production supplies it:
+ * noted against a company, the way Context::assertAllowed notes it from Manage's
+ * companyinfo answer.
+ */
+function authFor(string $uuid = 'user-owner', ?int $acsType = 1, int $cmpId = 88): Auth
+{
+    // The ses key carries the role for the stub's benefit: it is the only thing
+    // about this caller that reaches Manage, and tests that go through a real
+    // controller resolve their role over that call rather than from what is set
+    // here. Both are set so a test works either way round.
+    $auth = rawAuth($uuid, 'stub-ses-key.role-' . ($acsType === null ? 'silent' : $acsType));
+    $auth->noteCompanyAccess($cmpId, $acsType);
+
+    return $auth;
+}
+
+/** An Auth with no role noted — what Auth::require() alone can actually produce. */
+function rawAuth(string $uuid, string $sesKey = 'stub-ses-key.role-1'): Auth
 {
     $r = new \ReflectionClass(Auth::class);
     $auth = $r->newInstanceWithoutConstructor();
@@ -108,8 +131,8 @@ function authFor(string $uuid = 'user-owner', ?int $acsType = 1): Auth
         'uuid'      => $uuid,
         'kind'      => 'user',
         'sourceApp' => 'purchases',
-        'sesKey'    => 'stub-ses-key',
-        'session'   => ['acs_type' => $acsType, 'name' => $uuid],
+        'sesKey'    => $sesKey,
+        'session'   => ['name' => $uuid],
     ] as $prop => $value) {
         $p = $r->getProperty($prop);
         $p->setAccessible(true);
@@ -121,24 +144,13 @@ function authFor(string $uuid = 'user-owner', ?int $acsType = 1): Auth
 
 function resetDatabase(): void
 {
-    $tables = [
-        'purchase_match_exceptions', 'purchase_match_results', 'purchase_match_policies',
-        'purchase_bill_requests', 'purchase_receipt_requests',
-        'purchase_return_lines', 'purchase_returns', 'purchase_claims',
-        'purchase_delivery_schedules', 'purchase_order_lines', 'purchase_orders',
-        'purchase_agreement_lines', 'purchase_agreements',
-        'purchase_bid_awards', 'purchase_quote_lines', 'purchase_quotes',
-        'purchase_rfq_invitations', 'purchase_rfq_lines', 'purchase_rfqs',
-        'purchase_requisition_lines', 'purchase_requisitions',
-        'purchase_approval_requests', 'purchase_approval_rules',
-        'purchase_supplier_scorecards', 'purchase_supplier_profiles',
-        'purchase_integration_commands', 'purchase_permission_assignments',
-        'purchase_permission_profiles', 'purchase_settings', 'purchase_user_preferences',
-    ];
-    Db::connect()->exec('TRUNCATE ' . implode(', ', $tables) . ', purchase_audit_log RESTART IDENTITY CASCADE');
-    @unlink(sys_get_temp_dir() . '/stub-idempotency.json');
-    @unlink(sys_get_temp_dir() . '/stub-requests.jsonl');
-    @unlink(sys_get_temp_dir() . '/stub-documents.json');
+    // The table list lives in tests/reset.php, which the browser suite runs too.
+    // Kept in one place on purpose: the copy that drifts is the copy that leaves
+    // a table behind, and a suite passing on state nobody meant to leave is
+    // worse than one that fails.
+    require_once __DIR__ . '/reset.php';
+
+    resetPurchaseTables();
     stubRecover();
 }
 
@@ -983,6 +995,12 @@ check('the dashboard scope never leaks another company', function () use ($auth)
     $orders->submit((int) $po['po_id']);
     $orders->issue((int) $po['po_id']);
 
+    // Owner of the other company too, deliberately: this test is about the scope
+    // clause, and a caller who simply lacked permission over there would make it
+    // pass for the wrong reason — an "Unavailable" that proves nothing about
+    // isolation. Give them every right in company 999 and they must still see
+    // none of company 88's orders.
+    $auth->noteCompanyAccess(999, 1);
     $theirs = dashboardFor('overview', freshContext(999), $auth);
     assertSame('0', metric($theirs, 'open_commitment')['raw_value'], 'company 999 sees none of company 88 commitment');
 });
@@ -1934,6 +1952,139 @@ check('candidate people come from our own audit log, not a user directory', func
 
     $after = array_column(callAccess('people', $ctx, $auth)['data'], 'user_uuid');
     assertTrue(!in_array('user-seen', $after, true), 'and drop off once assigned');
+});
+
+// ---------------------------------------------------------------------------
+// Who the company owner is, and where that answer comes from.
+//
+// This product spent its whole life reading `acs_type` off the portal session.
+// my.aicountly.com has never sent that field — validatesession answers status,
+// uuid_aictly, aic_auth_id and aic_ses_id and stops — so the owner bypass could
+// not fire for any human, every company owner resolved to zero permissions, and
+// the app came up with an empty sidebar and every Books figure reading "needs
+// reports.view". The tests passed throughout, because the fixture supplied the
+// field the portal does not.
+//
+// These run the real ManageClient against the stub's real Manage payload.
+// ---------------------------------------------------------------------------
+
+/** Drive Context::fromRequest + assertAllowed exactly as an HTTP request would. */
+function resolveContext(int $cmpId, Auth $auth): Context
+{
+    $_GET = ['cmp_id' => (string) $cmpId, 'fy_id' => '6', 'bo_id' => '0'];
+    Context::forgetVerified();
+    Permissions::forget();
+
+    $ctx = Context::fromRequest();
+    $ctx->assertAllowed($auth);
+
+    return $ctx;
+}
+
+/** A caller whose role only Manage can settle, asking as the given role. */
+function unresolvedAuth(string $uuid = 'user-owner', string $role = '1'): Auth
+{
+    return rawAuth($uuid, 'stub-ses-key.role-' . $role);
+}
+
+check('the portal session alone never makes anybody an owner', function () {
+    $auth = unresolvedAuth();
+
+    // The regression in one line: before Manage is asked, nothing is known. The
+    // old code read a session field here and got null forever, and null silently
+    // meant "not the owner".
+    assertSame(null, $auth->accessTypeFor(88), 'no role until Manage is asked');
+    assertSame(false, $auth->ownsCompany(88), 'and no ownership claimed from silence');
+    assertSame(false, $auth->companyAccessResolved(88), 'reported as unresolved, not as a denial');
+});
+
+check('Manage names the owner, and the whole catalogue follows', function () {
+    $auth = unresolvedAuth();
+    $ctx = resolveContext(88, $auth);
+
+    assertSame(1, $auth->accessTypeFor(88), 'the role came back from companyinfo');
+    assertSame(true, $auth->ownsCompany(88), 'and it is ownership');
+
+    $granted = Permissions::granted($ctx, $auth);
+    sort($granted);
+    $all = Permissions::all();
+    sort($all);
+    assertSame($all, $granted, 'the owner holds every permission');
+    assertTrue(Permissions::allows($ctx, $auth, 'reports.view'), 'including the one the dashboards need');
+    assertTrue(Permissions::allows($ctx, $auth, 'access.manage'), 'and the one that lets them grant the rest');
+});
+
+check('a delegate gets nothing until somebody grants it here', function () {
+    $auth = unresolvedAuth('user-delegate', '0');
+    $ctx = resolveContext(88, $auth);
+
+    assertSame(0, $auth->accessTypeFor(88), 'Manage says shared, not owner');
+    assertSame(false, $auth->ownsCompany(88), 'so no bypass');
+    assertSame([], Permissions::granted($ctx, $auth), 'and no permissions, because Purchases owns its own');
+    assertSame(true, $auth->companyAccessResolved(88), 'this is a real answer, not a missing one');
+});
+
+check('a Manage that names no role is unresolved, never a zero', function () {
+    $auth = unresolvedAuth('user-unknown', 'silent');
+    $ctx = resolveContext(88, $auth);
+
+    // The company checked out — the tenant gate passed — but nothing said what
+    // this person is. That has to stay distinguishable: it is a fault in this
+    // code path, and reporting it as "not the owner" is what made the last one
+    // invisible for a whole release.
+    assertSame(null, $auth->accessTypeFor(88), 'unknown stays null');
+    assertSame(false, $auth->companyAccessResolved(88), 'and is reported as unresolved');
+    assertSame(false, $auth->ownsCompany(88), 'refusing on unknown, which is the safe reading');
+    assertSame([], Permissions::granted($ctx, $auth), 'so no permissions are invented');
+});
+
+check('the second endpoint in a request still knows the role', function () {
+    $auth = unresolvedAuth();
+    $ctx = resolveContext(88, $auth);
+    assertSame(true, $auth->ownsCompany(88), 'first call resolves it');
+
+    // assertAllowed memoises the Manage round trip. A memo that returns early
+    // without re-noting the role would leave a caller looking like a stranger
+    // from the second endpoint of the request onwards.
+    $fresh = unresolvedAuth();
+    $ctx->assertAllowed($fresh);
+    assertSame(true, $fresh->ownsCompany(88), 'the memo replays the answer, it does not swallow it');
+});
+
+check('CompanyAccess reads every shape Manage sends, and refuses shapes it does not', function () {
+    // Manage's companyinfo sends all three at once; its companies list sends
+    // ownership and is_creator without access_type. Both have to work.
+    assertSame(1, CompanyAccess::fromRow(['access_type' => 1]), 'access_type');
+    assertSame(0, CompanyAccess::fromRow(['access_type' => 0]), 'access_type delegated');
+    assertSame(1, CompanyAccess::fromRow(['ownership' => 'owner']), 'ownership label');
+    assertSame(0, CompanyAccess::fromRow(['ownership' => 'shared']), 'shared label');
+    assertSame(1, CompanyAccess::fromRow(['is_creator' => true]), 'is_creator');
+    assertSame(1, CompanyAccess::fromPayload(['data' => ['ownership' => 'owner']]), 'through the data envelope');
+
+    // is_creator false is not a denial: "you did not create this" and "you do not
+    // own this" are different claims, and only one of them is being made.
+    assertSame(null, CompanyAccess::fromRow(['is_creator' => false]), 'is_creator false says nothing');
+    assertSame(null, CompanyAccess::fromRow(['cmp_id' => 7, 'cmp_name' => 'X']), 'an unrecognised shape is unknown');
+    assertSame(null, CompanyAccess::fromRow([]), 'and so is an empty one');
+});
+
+check('the session endpoint reports ownership the client can act on', function () {
+    resetDatabase();
+    $auth = unresolvedAuth();
+    $ctx = resolveContext(88, $auth);
+
+    $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0'];
+    Auth::adopt($auth);
+    try {
+        \Aicountly\Api\Controllers\SettingsController::session();
+        throw new \RuntimeException('session() returned without responding');
+    } catch (ResponseSent $sent) {
+        $data = $sent->payload['data'] ?? [];
+        assertSame(true, $data['is_owner'], 'the client is told they are the owner');
+        assertTrue(in_array('reports.view', $data['permissions'] ?? [], true), 'and handed the permissions that prove it');
+    } finally {
+        Auth::adopt(null);
+    }
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";

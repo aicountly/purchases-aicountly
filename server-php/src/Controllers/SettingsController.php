@@ -18,7 +18,13 @@ final class SettingsController extends Controller
             'uuid'         => $auth->uuid,
             'display_name' => $auth->displayName(),
             'kind'         => $auth->kind,
-            'is_owner'     => $auth->accessType() === 1,
+            'is_owner'     => $auth->ownsCompany($ctx->cmpId),
+            // Whether Manage named a role at all. A client that only knows
+            // `is_owner: false` cannot tell "you are a delegate here" from
+            // "we could not find out", and it would render the same empty app
+            // for both — which is precisely the failure this pair exists to
+            // stop being invisible.
+            'access_resolved' => $auth->companyAccessResolved($ctx->cmpId),
             'context'      => $ctx->asQuery(),
             'permissions'  => Permissions::granted($ctx, $auth),
         ]);

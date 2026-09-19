@@ -182,7 +182,7 @@ final class RequisitionService
         // Segregation of duties. The person who raised it may not approve it,
         // however senior they are — that is the point of the control, and a
         // permission that lets you approve does not let you approve your own.
-        if ((string) $requisition['requester_uuid'] === $this->auth->uuid && $this->auth->accessType() !== 1) {
+        if ((string) $requisition['requester_uuid'] === $this->auth->uuid && !$this->auth->ownsCompany($this->ctx->cmpId)) {
             Http::forbidden('You raised this requisition, so somebody else has to approve it.');
         }
 

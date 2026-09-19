@@ -20,7 +20,15 @@ use Aicountly\Api\Clients\ManageClient;
  */
 final class Context
 {
-    /** @var array<string, bool> */
+    /**
+     * Company id + session -> the role Manage reported, memoised for the request.
+     *
+     * Holds the access type rather than a bare `true` so the second and later
+     * calls in a request can still tell Auth what Manage said. A null entry means
+     * the company checked out but Manage named no role.
+     *
+     * @var array<string, ?int>
+     */
     private static array $verified = [];
 
     private function __construct(
@@ -63,7 +71,12 @@ final class Context
         }
 
         $key = $this->cmpId . ':' . $auth->fingerprint();
-        if (isset(self::$verified[$key])) {
+        if (array_key_exists($key, self::$verified)) {
+            // Re-noted, not skipped: the memo saves the round trip, not the
+            // answer. Returning here without telling Auth the role would leave
+            // every request after the first one looking like a stranger.
+            $auth->noteCompanyAccess($this->cmpId, self::$verified[$key]);
+
             return;
         }
 
@@ -83,7 +96,31 @@ final class Context
             Http::forbidden('You do not have access to this company.');
         }
 
-        self::$verified[$key] = true;
+        // The same answer, read twice. Manage was already asked whether this
+        // session may open this company; it also says in what capacity, and
+        // discarding that was why a company owner arrived here with no
+        // permissions. One call, both questions — no second round trip, and
+        // nothing about a role stored in this product's database.
+        $accessType = CompanyAccess::fromPayload(is_array($company) ? $company : []);
+        if ($accessType === null) {
+            $accessType = CompanyAccess::fromPayload(is_array($body) ? $body : []);
+        }
+        if ($accessType === null) {
+            error_log(sprintf(
+                '[context] Manage reported no role for company %d; owner access will not apply. Payload keys: %s',
+                $this->cmpId,
+                implode(',', array_slice(array_keys(is_array($company) ? $company : []), 0, 20)),
+            ));
+        }
+
+        $auth->noteCompanyAccess($this->cmpId, $accessType);
+        self::$verified[$key] = $accessType;
+    }
+
+    /** Drop the memoised company checks. Tests only — a request never needs it. */
+    public static function forgetVerified(): void
+    {
+        self::$verified = [];
     }
 
     /** @return array{cmp_id:int, fy_id:int, bo_id:int} */

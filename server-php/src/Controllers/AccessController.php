@@ -107,7 +107,7 @@ final class AccessController extends Controller
             'catalog'    => Permissions::CATALOG,
             'granted'    => Permissions::granted($ctx, $auth),
             'grantable'  => Permissions::grantable($ctx, $auth),
-            'is_owner'   => $auth->accessType() === 1,
+            'is_owner'   => $auth->ownsCompany($ctx->cmpId),
             'my_uuid'    => $auth->uuid,
             'owner_note' => 'The company owner holds every permission here automatically, set in Aicountly Manage. '
                 . 'Profiles decide what everybody else can do.',
@@ -613,7 +613,7 @@ final class AccessController extends Controller
      */
     private static function assertNotLockingSelfOut(array $assignment, \Aicountly\Api\Context $ctx, \Aicountly\Api\Auth $auth): void
     {
-        if ($auth->accessType() === 1 || (string) $assignment['user_uuid'] !== $auth->uuid) {
+        if ($auth->ownsCompany($ctx->cmpId) || (string) $assignment['user_uuid'] !== $auth->uuid) {
             return;
         }
 

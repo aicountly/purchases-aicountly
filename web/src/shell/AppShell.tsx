@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
+import { AccessNotice } from './AccessNotice'
 import { AppLauncher } from '../components/AppLauncher'
 import { usePurchases } from '../context/PurchasesContext'
 import { CompanyPicker } from './CompanyPicker'
@@ -277,6 +278,7 @@ export function AppShell() {
         {/* No padding here: the dashboards bring their own, and the other
             pages get it from the wrapper below. */}
         <main className="app-shell__content">
+          <AccessNotice />
           <Outlet />
         </main>
       </div>

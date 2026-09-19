@@ -77,23 +77,63 @@ $n = count($seen) + 1;
 // Only reached when PORTAL_AUTH_BASE points here, which is the local preview
 // harness. Deployed builds always talk to the real portal.
 if (str_contains($path, '/seskey')) {
-    echo json_encode(['ses_key' => 'preview-ses-key', 'expires_in' => 900]);
+    // The role in the auth token rides through into the ses key, so a local
+    // preview can sign in as a delegate and see what a delegate sees:
+    //   localStorage.setItem('auth_token', 'preview-auth-token.role-0')
+    // Nothing like this exists in the real portal — a ses key there is opaque.
+    $incoming = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    $role = preg_match('/role-([a-z0-9]+)/i', $incoming, $m) === 1 ? '.role-' . strtolower($m[1]) : '';
+    echo json_encode(['ses_key' => 'preview-ses-key' . $role, 'expires_in' => 900]);
     exit;
 }
 
 if (str_contains($path, '/validatesession')) {
+    // EXACTLY what my.aicountly.com sends, and no more. AppCommonModel::validateSesKey
+    // returns status, uuid_aictly, aic_auth_id and aic_ses_id — the portal is pure
+    // authentication and holds no company, so there is no acs_type here to read.
+    // This stub used to invent one, which is precisely how a product shipped whose
+    // owner bypass could never fire: the fixture answered a question the real portal
+    // is never asked.
+    // The uuid rides in the key (`preview-ses-key.as-buyer`) so a preview or a
+    // browser check can act as a second person — which the segregation-of-duties
+    // rules need: an approval inbox that showed you your own orders would be
+    // testing nothing. The real portal's keys are opaque and carry none of this.
+    $incoming = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    $uuid = preg_match('/as-([a-z0-9_-]+)/i', $incoming, $m) === 1 ? strtolower($m[1]) : 'user-owner';
     echo json_encode([
         'status'      => 1,
-        'uuid_aictly' => 'user-owner',
-        'acs_type'    => 1,
-        'name'        => 'Preview User',
+        'uuid_aictly' => $uuid,
+        'aic_auth_id' => 1,
+        'aic_ses_id'  => 1,
     ]);
     exit;
 }
 
 // --- Manage ---------------------------------------------------------------
 if (str_contains($path, '/companyinfo')) {
-    echo json_encode(['data' => ['cmp_id' => (int) ($_GET['comp_id'] ?? 0), 'cmp_name' => 'Stub Trading Co']]);
+    // Manage's real answer shape — CompanyModel::companyInfo reports the caller's
+    // role three ways for three generations of caller. `role` here is the stub's
+    // own switch so a test can ask for a delegate or for a Manage that names no
+    // role at all; Manage itself has no such parameter.
+    // WHO is asking decides the role, which is the whole point: Manage answers per
+    // user, and a stub that answered per company would let a test "prove" a
+    // non-owner is refused while the real resolution never ran. The role rides in
+    // the test's bearer token (`...role-1`, `role-0`, `role-silent`) because that
+    // is the only thing about the caller the real ManageClient sends. Default is
+    // owner, so the local preview signs in as one.
+    $cmpId = (int) ($_GET['comp_id'] ?? 0);
+    $bearer = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    $role = preg_match('/role-([a-z0-9]+)/i', $bearer, $m) === 1 ? strtolower($m[1]) : '1';
+
+    $company = ['comp_id' => $cmpId, 'cmp_id' => $cmpId, 'comp_name' => 'Stub Trading Co'];
+    if ($role === '1') {
+        $company += ['is_creator' => true, 'ownership' => 'owner', 'access_type' => 1];
+    } elseif ($role !== 'silent') {
+        // A real delegated row: Manage reports whatever access_type it stored.
+        $company += ['is_creator' => false, 'ownership' => 'shared', 'access_type' => (int) $role];
+    }
+    // 'silent' adds nothing: a Manage that names no role at all.
+    echo json_encode(['success' => '1', 'data' => $company]);
     exit;
 }
 

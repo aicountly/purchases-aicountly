@@ -83,7 +83,7 @@ final class Permissions
         if ($auth->isService()) {
             return true;
         }
-        if ($auth->accessType() === 1) {
+        if ($auth->ownsCompany($ctx->cmpId)) {
             return true;
         }
 
@@ -98,7 +98,7 @@ final class Permissions
             return self::$cache[$key];
         }
 
-        if ($auth->isService() || $auth->accessType() === 1) {
+        if ($auth->isService() || $auth->ownsCompany($ctx->cmpId)) {
             return self::$cache[$key] = self::all();
         }
 
@@ -160,7 +160,7 @@ final class Permissions
      */
     public static function grantable(Context $ctx, Auth $auth): array
     {
-        if ($auth->isService() || $auth->accessType() === 1) {
+        if ($auth->isService() || $auth->ownsCompany($ctx->cmpId)) {
             return self::all();
         }
 

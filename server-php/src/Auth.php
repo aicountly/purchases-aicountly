@@ -132,10 +132,56 @@ final class Auth
         return substr(hash('sha256', $this->kind . '|' . $this->uuid . '|' . $this->sesKey), 0, 32);
     }
 
-    /** Portal access type for the company when the portal reported one: 1 = owner. */
-    public function accessType(): ?int
+    /**
+     * What Manage said this session's role is, per company. 1 = owner.
+     *
+     * @var array<int, ?int>
+     */
+    private array $companyAccess = [];
+
+    /**
+     * Record the role Manage reported for a company.
+     *
+     * Written by Context::assertAllowed, which already asks Manage whether this
+     * session may open the company at all and until now threw the answer to that
+     * second question away.
+     */
+    public function noteCompanyAccess(int $cmpId, ?int $accessType): void
     {
-        return isset($this->session['acs_type']) ? (int) $this->session['acs_type'] : null;
+        $this->companyAccess[$cmpId] = $accessType;
+    }
+
+    /**
+     * The role Manage reported for this company, or null if it never reported one.
+     *
+     * NULL IS NOT ZERO, AND THIS USED TO READ THE SESSION. It returned
+     * `$this->session['acs_type']`, and my.aicountly.com's validatesession has
+     * never sent that field — it answers status, uuid_aictly, aic_auth_id and
+     * aic_ses_id and stops. So this was null for every human on every request,
+     * the owner bypass in Permissions could not fire, and a company owner with no
+     * assignment row — which is every company, because nothing could write one —
+     * held no permissions at all. The app came up with an empty sidebar and every
+     * Books-backed figure reading "needs reports.view", and it looked like a
+     * product that had not been built rather than one that had not been asked.
+     *
+     * Ownership is per company, so this takes the company: the same person can
+     * own one and be a delegate in the next.
+     */
+    public function accessTypeFor(int $cmpId): ?int
+    {
+        return $this->companyAccess[$cmpId] ?? null;
+    }
+
+    /** True only when Manage said so. An unanswered lookup is not ownership. */
+    public function ownsCompany(int $cmpId): bool
+    {
+        return $this->accessTypeFor($cmpId) === CompanyAccess::OWNER;
+    }
+
+    /** Whether Manage reported a role at all — the difference between "not the owner" and "never asked". */
+    public function companyAccessResolved(int $cmpId): bool
+    {
+        return array_key_exists($cmpId, $this->companyAccess) && $this->companyAccess[$cmpId] !== null;
     }
 
     public function displayName(): string

@@ -24,6 +24,70 @@ const check = async (name, fn) => {
 const eq = (a, b, what) => { if (a !== b) throw new Error(`${what}: expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`) }
 const ok = (c, what) => { if (!c) throw new Error(what) }
 
+/**
+ * Everything these checks look at, created here.
+ *
+ * The approval drawer needs an order waiting for approval. Taking that from
+ * whatever the database happened to hold made the check pass only after
+ * somebody had clicked around by hand, and fail on a clean database — which is
+ * the one state CI is always in. It is seeded through the real API, as a user.
+ */
+import { execFileSync } from 'node:child_process'
+
+const API = process.env.PURCHASE_API_URL ?? 'http://127.0.0.1:8791'
+const SES = process.env.PURCHASE_SES_KEY ?? 'preview-ses-key'
+const SCOPE = 'cmp_id=88&fy_id=6&bo_id=0'
+
+const apiCall = async (method, path, body, as = SES) => {
+  const res = await fetch(`${API}/${path}${path.includes('?') ? '&' : '?'}${SCOPE}`, {
+    method,
+    headers: { Authorization: `Bearer ${as}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  })
+  const payload = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${JSON.stringify(payload).slice(0, 200)}`)
+  return payload.data
+}
+const apiPost = (path, body, as) => apiCall('POST', path, body, as)
+const apiPut = (path, body) => apiCall('PUT', path, body)
+
+// Raised by somebody else, deliberately. The approval inbox excludes anything
+// you raised yourself — that is the segregation of duties this product enforces,
+// so an order seeded by the person doing the browsing would never appear.
+const BUYER = `${SES}.as-buyer`
+
+// Start from empty. These checks used to read whatever the database happened to
+// hold, so they passed on a machine somebody had been clicking around on and
+// failed on a clean one — the state CI is always in.
+try {
+  execFileSync('php', [new URL('../../server-php/tests/reset.php', import.meta.url).pathname], { stdio: 'inherit' })
+} catch (e) {
+  console.error('Could not reset the database before the browser checks:', e.message)
+  process.exit(1)
+}
+
+const today = new Date()
+const iso = (offsetDays) => new Date(today.getTime() + offsetDays * 86400000).toISOString().slice(0, 10)
+
+// An approval threshold below the order below, or submitting it approves it on
+// the spot and there is no approval to open a drawer on. This is the product's
+// own rule, not a test switch: an order under the threshold does not need one.
+await apiPut('v1/settings', { po_approval_above_amount: 1000 })
+
+// An order waiting for approval — what the drawer opens on.
+const seeded = await apiPost('v1/purchase-orders', {
+  supplier_account_id: 601,
+  supplier_name: 'Deccan Steel Traders',
+  po_date: iso(-3),
+  promised_date: iso(7),
+  delivery_warehouse_id: 3,
+  lines: [
+    { item_id: 201, unit_id: 1, ordered_qty: 100, agreed_rate: 250, estimated_tax_pc: 18, warehouse_id: 3 },
+    { item_id: 202, unit_id: 1, ordered_qty: 40, agreed_rate: 900, estimated_tax_pc: 18, warehouse_id: 3 },
+  ],
+}, BUYER)
+await apiPost(`v1/purchase-orders/${seeded.po_id}/submit`, {}, BUYER)
+
 // Honour a preinstalled browser where the environment provides one, and fall
 // back to whatever `npx playwright install chromium` put in place.
 const executablePath = process.env.PURCHASE_CHROMIUM_PATH || undefined
@@ -281,6 +345,68 @@ await check('access administration bootstraps, assigns and shows its own rules',
   eq(after, before + 1, 'the person now holds a profile')
   ok((await page.locator('text=Test person').count()) > 0, 'shown by the label the administrator typed')
   ok((await page.locator('text=user-checked-by-test').count()) > 0, 'with the portal uuid as the real identity')
+})
+
+// ---------------------------------------------------------------------------
+// What the app looks like to somebody who has not been granted anything.
+//
+// It used to look like this to EVERYBODY, company owners included, because the
+// owner check read a field the portal does not send. The sidebar collapsed to
+// the two or three entries that need no permission and every Books-backed
+// figure read "Unavailable", which is indistinguishable from a product that was
+// never finished. These two checks are the difference.
+// ---------------------------------------------------------------------------
+
+await check('the owner gets the whole product', async () => {
+  await page.goto(`${BASE}/dashboard/overview`, { waitUntil: 'networkidle' })
+  await settle()
+
+  // Groups, not links: the sidebar collapses a group you are not in, so what a
+  // permission decides is whether the GROUP appears at all. Three of the six
+  // contain nothing that is ungated, and those three are precisely the ones
+  // that vanished — which is the screenshot this bug was reported with.
+  const navText = (await page.locator('nav[aria-label="Purchases"]').textContent()) || ''
+  for (const group of ['Procurement', 'Purchase processing', 'Relationships & finance']) {
+    ok(navText.includes(group), `the ${group} group is there`)
+  }
+  ok(navText.includes('Workspace') && navText.includes('Administration'), 'and the ungated ones too')
+
+  // No banner: there is nothing to explain.
+  eq(await page.locator('text=You have no permissions in Aicountly Purchases yet').count(), 0, 'no notice for the owner')
+
+  // And Smart Books is asked, rather than skipped for want of a permission.
+  const sources = (await page.locator('.purchase-source-list').first().textContent()) || ''
+  ok(sources.includes('Smart Books'), 'Smart Books is listed as a source')
+  ok(!sources.includes('Not requested'), `Books is asked rather than skipped, got: ${sources.slice(0, 160)}`)
+})
+
+await check('a delegate is told why the app is empty, not left to guess', async () => {
+  const delegateCtx = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await delegateCtx.addInitScript(() => {
+    try {
+      localStorage.setItem('auth_token', 'preview-auth-token.role-0')
+      localStorage.setItem('purchases:scope', JSON.stringify({ cmp_id: 88, fy_id: 6, bo_id: 0 }))
+    } catch {}
+  })
+  const delegate = await delegateCtx.newPage()
+  await delegate.goto(`${BASE}/dashboard/overview`, { waitUntil: 'networkidle' })
+  await delegate.waitForTimeout(900)
+
+  ok(
+    (await delegate.locator('text=You have no permissions in Aicountly Purchases yet').count()) > 0,
+    'the notice says what is wrong',
+  )
+  ok(
+    (await delegate.locator('text=Administration → Access').count()) > 0,
+    'and who fixes it, and where',
+  )
+
+  const navText = (await delegate.locator('nav[aria-label="Purchases"]').textContent()) || ''
+  for (const group of ['Procurement', 'Purchase processing', 'Relationships & finance']) {
+    ok(!navText.includes(group), `the ${group} group is correctly hidden`)
+  }
+
+  await delegateCtx.close()
 })
 
 await browser.close()

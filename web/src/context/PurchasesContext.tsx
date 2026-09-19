@@ -15,6 +15,14 @@ export interface PurchasesSession {
   display_name: string
   kind: 'user' | 'service'
   is_owner: boolean
+  /**
+   * Whether Manage named a role for this company at all.
+   *
+   * `is_owner: false` on its own is ambiguous — it covers both "you are a
+   * delegate" and "we never got an answer", which need different things said
+   * to the user and different things done about them.
+   */
+  access_resolved: boolean
   context: CompanyScope
   permissions: string[]
 }

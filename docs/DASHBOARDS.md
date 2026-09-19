@@ -154,9 +154,45 @@ name cannot become a formula.
 
 The permission tables and the 27-permission catalogue have existed since the
 first migration. What was missing until now was any way to write to them: the
-company owner (the portal's `acs_type = 1`) held everything implicitly, and
-nobody else could be granted anything. A single-owner company never noticed;
-adding a buyer hit a wall no administrator could open.
+company owner held everything implicitly, and nobody else could be granted
+anything. A single-owner company never noticed; adding a buyer hit a wall no
+administrator could open.
+
+### Who the owner is, and where that answer comes from
+
+**The portal does not say.** `POST my.aicountly.com/api/validatesession` answers
+with `status`, `uuid_aictly`, `aic_auth_id` and `aic_ses_id` and nothing else —
+it is pure authentication and holds no company, so it has never sent `acs_type`.
+This product read that field off the session anyway. It was null on every
+request for every human, so the owner bypass could not fire, and a company owner
+with no assignment row — which was every company, because nothing could write
+one — held no permissions at all. The symptom was an app that looked unbuilt:
+three of six sidebar groups gone, every Books-backed figure reading
+*"Not requested — needs the reports.view or cost.view permission"*.
+
+**Manage says.** Ownership is per company and `GET manage/api/companyinfo`
+reports it three ways — `access_type` (1 = owner), `ownership` (`owner` /
+`shared`) and `is_creator`. `Context::assertAllowed()` already made that exact
+call on every scoped request, to check the session may open the company at all,
+and threw the rest of the answer away. It now reads both questions out of the
+one response: no extra round trip, and nothing about a role stored here.
+`CompanyAccess` maps the three shapes; `Auth::accessTypeFor($cmpId)` holds the
+result, keyed by company because the same person can own one and be a delegate
+in the next.
+
+**Unknown is not zero.** A Manage payload naming no role resolves to `null`, not
+`0`. Callers refuse on null, which is the strict reading, but `/v1/session`
+reports `access_resolved: false` separately from `is_owner: false` so the
+difference survives to the screen. With no permissions the app says which of the
+two it is instead of rendering an empty workspace and leaving the user to guess
+— the failure above was invisible for a whole release precisely because it had
+no words attached to it.
+
+Under test, the role travels in the stub's bearer token (`…role-0`, `…as-buyer`)
+because that is the only thing about a caller the real `ManageClient` sends. The
+fixture that used to set `session['acs_type']` directly is gone: it answered a
+question the portal is never asked, which is why 91 passing tests did not catch
+any of this.
 
 **Profiles** name a set of permissions. **People** hold profiles, and their
 permissions are the union across the active ones. A company with none is told
