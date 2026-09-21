@@ -12,12 +12,22 @@ import { CalendarClock, Package, ThumbsDown, ThumbsUp } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
 import { Badge, DashboardPanel, DataTable, EmptyState, PanelUnavailable } from '../shell'
 import { Drawer } from '../Drawer'
+import { ProcurementFlow } from './procurement/Flow'
+import { MaterialCentreCard, SpendTrendCard, SupplierOnTimeCard } from './procurement/Analytics'
+import { IntelligenceCard, ProcurementInsightsPanelCard } from './procurement/Insights'
+import { ActivityTable } from './procurement/Activity'
 import type { DashboardFilters } from '../filters'
 import type {
+  ActivityPanel,
   ApprovalRow,
   DashboardResponse,
+  FlowPanel,
+  MaterialCentrePanel,
   Panel,
+  ProcurementInsightsPanel,
   ReorderRow,
+  SpendTrendPanel,
+  SupplierOnTimePanel,
   TimelineGroup,
   WorkbenchRow,
 } from '../types'
@@ -55,10 +65,46 @@ export function ProcurementDashboard({
   const approvals = data.panels.approval_inbox as ApprovalPanel
   const quotes = data.panels.quote_comparison as QuotePanel
 
+  const flow = data.panels.flow as FlowPanel
+  const spendTrend = data.panels.spend_trend as SpendTrendPanel
+  const onTime = data.panels.supplier_performance as SupplierOnTimePanel
+  const centres = data.panels.material_centre_spend as MaterialCentrePanel
+  const insights = data.panels.insights as ProcurementInsightsPanel
+  const activity = data.panels.activity as ActivityPanel
+
   const page = (offset: number) => filters.set({ offset: String(Math.max(0, offset)) })
+
+  const open = (route: string, params: Record<string, string> = {}) => {
+    const query = new URLSearchParams(params).toString()
+    navigate(query === '' ? route : `${route}?${query}`)
+  }
 
   return (
     <>
+      <ProcurementFlow panel={flow} onOpen={open} />
+
+      {/* Three quarters for the figures, one for what to do about them. Each
+          panel fails on its own: a supplier list that could not be read leaves
+          the spend line and the activity feed exactly where they were. */}
+      <div className="purchase-workspace-grid">
+        <div className="purchase-primary-column">
+          <div className="purchase-analytics-grid">
+            <SpendTrendCard panel={spendTrend} />
+            <SupplierOnTimeCard panel={onTime} onOpen={open} />
+            <MaterialCentreCard panel={centres} onOpen={open} />
+          </div>
+
+          <ActivityTable panel={activity} onOpen={open} />
+        </div>
+
+        <aside className="purchase-insights-column">
+          <ProcurementInsightsPanelCard panel={insights} onOpen={open} />
+          <IntelligenceCard onOpen={open} />
+        </aside>
+      </div>
+
+      <h2 className="purchase-section-heading">Working lists</h2>
+
       <DashboardPanel
         title="Procurement workbench"
         description={workbench.available ? workbench.basis : undefined}

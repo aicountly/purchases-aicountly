@@ -30,6 +30,18 @@ abstract class Dashboard
 
     protected string $scopeSql;
 
+    /**
+     * Material-centre names, when a dashboard has already read them.
+     *
+     * The names belong to Inventory. A dashboard that has asked for them anyway
+     * — the procurement screen does, for its centre breakdown — leaves them
+     * here so the filter list can be labelled from the same answer instead of
+     * asking a second time.
+     *
+     * @var array<int, string>
+     */
+    protected array $centreNames = [];
+
     public function __construct(
         protected readonly Context $ctx,
         protected readonly Auth $auth,
@@ -158,7 +170,82 @@ abstract class Dashboard
             'sources'      => $this->sources->toArray(),
             'metrics'      => array_values($metrics),
             'panels'       => $panels,
+            // What the supplier and material-centre controls may be set to.
+            // Derived from the documents in scope, so the list cannot offer a
+            // value that would return nothing.
+            'filter_options' => $this->filterOptions(),
         ] + $extra;
+    }
+
+    /**
+     * The values the supplier and material-centre filters can actually take.
+     *
+     * Read from this company's own purchase orders rather than from Books'
+     * whole creditor ledger: a filter that offers four hundred accounts, of
+     * which eleven have ever been ordered from, is a filter nobody uses twice.
+     *
+     * It is deliberately NOT narrowed to the selected period. A list that
+     * changes under the reader when they change the date range takes their
+     * current choice off the list with it.
+     *
+     * @return array<string, mixed>
+     */
+    protected function filterOptions(): array
+    {
+        if (!$this->can('po.view')) {
+            return ['suppliers' => [], 'centres' => [], 'reason' => 'Order records are not visible to you.'];
+        }
+
+        $suppliers = [];
+        foreach ($this->rows(
+            "SELECT p.supplier_account_id AS id,
+                    MAX(p.supplier_name_snapshot) AS name,
+                    COUNT(*)                      AS orders,
+                    MAX(p.po_date)                AS last_order
+             FROM purchase_orders p
+             WHERE {scope} AND p.status <> 'CANCELLED'
+             GROUP BY p.supplier_account_id
+             ORDER BY MAX(p.po_date) DESC NULLS LAST
+             LIMIT 200",
+            [],
+            'p',
+        ) as $row) {
+            $id = (int) $row['id'];
+            $suppliers[] = [
+                'id'    => $id,
+                'label' => ($row['name'] === null || $row['name'] === '') ? 'Account ' . $id : (string) $row['name'],
+                'count' => (int) $row['orders'],
+            ];
+        }
+
+        $centres = [];
+        foreach ($this->rows(
+            "SELECT DISTINCT id FROM (
+                 SELECT p.delivery_warehouse_id AS id
+                 FROM purchase_orders p
+                 WHERE {scope} AND p.delivery_warehouse_id IS NOT NULL AND p.status <> 'CANCELLED'
+                 UNION
+                 SELECT l.warehouse_id
+                 FROM purchase_order_lines l
+                 JOIN purchase_orders p ON p.po_id = l.po_id
+                 WHERE {scope} AND l.warehouse_id IS NOT NULL AND p.status <> 'CANCELLED'
+             ) centres
+             ORDER BY id
+             LIMIT 100",
+            [],
+            'p',
+        ) as $row) {
+            $id = (int) $row['id'];
+            $centres[] = [
+                'id' => $id,
+                // Inventory owns the name. Where it has not been read, the id
+                // is shown as an id rather than dressed up as a name.
+                'label' => $this->centreNames[$id] ?? ('Centre ' . $id),
+                'named' => isset($this->centreNames[$id]),
+            ];
+        }
+
+        return ['suppliers' => $suppliers, 'centres' => $centres, 'reason' => null];
     }
 
     /**

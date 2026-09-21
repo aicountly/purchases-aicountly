@@ -7,11 +7,105 @@
  * reader would learn to treat both as zero.
  */
 
-import { useId, type ReactNode } from 'react'
+import { useId, type ComponentType, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, CheckCircle2, ChevronRight, Info, RefreshCw } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowRight,
+  BarChart3,
+  CalendarClock,
+  CheckCircle2,
+  ChevronRight,
+  ClipboardList,
+  Clock,
+  Copy,
+  FileWarning,
+  Gauge,
+  Hourglass,
+  IndianRupee,
+  Info,
+  Mail,
+  PackageCheck,
+  PiggyBank,
+  Receipt,
+  RefreshCw,
+  ShieldAlert,
+  ShoppingCart,
+  Sparkles,
+  Timer,
+  TrendingUp,
+  Truck,
+  Users,
+} from 'lucide-react'
+import { SparkBars } from './charts'
 import { PURCHASE_VIEWS, type PurchaseViewId } from './filters'
 import type { DashboardMetric, Drilldown, SourceStatus } from './types'
+
+/**
+ * One icon and one tint per metric, chosen by the metric's own id.
+ *
+ * Keyed by id rather than guessed from the label, so a reworded card keeps its
+ * icon and a new card nobody has mapped gets an honest generic one rather than
+ * something that looks deliberate and means nothing.
+ *
+ * THE TINT IS AN IDENTITY, NEVER A JUDGEMENT. "GRN pending" is rose whether the
+ * queue is empty or on fire — it is there so a reader finds the same card in
+ * the same place at a glance. What is good and bad news is said by the delta's
+ * colour, the status pill and the words, all three of which change with the
+ * figure. A tint that also changed would be a fourth signal saying the same
+ * thing, and the first one a reader would learn to misread.
+ */
+type MetricTint = 'green' | 'blue' | 'violet' | 'amber' | 'rose' | 'mint'
+type MetricIcon = ComponentType<{ size?: number; 'aria-hidden'?: boolean }>
+
+const METRIC_ICONS: Record<string, { icon: MetricIcon; tint: MetricTint }> = {
+  open_requisitions: { icon: ClipboardList, tint: 'green' },
+  rfqs_awaiting_quotes: { icon: Mail, tint: 'blue' },
+  purchase_orders_released: { icon: ShoppingCart, tint: 'violet' },
+  in_transit_deliveries: { icon: Truck, tint: 'amber' },
+  grn_pending: { icon: PackageCheck, tint: 'rose' },
+  spend_under_approval: { icon: IndianRupee, tint: 'mint' },
+
+  open_commitment: { icon: IndianRupee, tint: 'mint' },
+  delayed_orders: { icon: Timer, tint: 'rose' },
+  my_approvals: { icon: Hourglass, tint: 'amber' },
+  net_purchases: { icon: TrendingUp, tint: 'green' },
+  active_suppliers: { icon: Users, tint: 'blue' },
+  on_time_delivery: { icon: Gauge, tint: 'green' },
+  acceptance_rate: { icon: CheckCircle2, tint: 'mint' },
+  concentration: { icon: BarChart3, tint: 'violet' },
+  payment_terms: { icon: CalendarClock, tint: 'blue' },
+  supplier_issues: { icon: ShieldAlert, tint: 'rose' },
+  supplier_dues: { icon: IndianRupee, tint: 'amber' },
+  payables_total: { icon: Receipt, tint: 'green' },
+  payables_overdue: { icon: Clock, tint: 'rose' },
+  overdue_dues: { icon: Clock, tint: 'rose' },
+  due_windows: { icon: CalendarClock, tint: 'amber' },
+  bills_awaiting_review: { icon: Receipt, tint: 'blue' },
+  bills_with_exceptions: { icon: FileWarning, tint: 'rose' },
+  duplicate_candidates: { icon: Copy, tint: 'violet' },
+  opportunity_value: { icon: PiggyBank, tint: 'mint' },
+  anomalies_open: { icon: ShieldAlert, tint: 'amber' },
+  stock_out_risk: { icon: PackageCheck, tint: 'rose' },
+  forecast_spend: { icon: Sparkles, tint: 'violet' },
+}
+
+function metricIcon(metric: DashboardMetric): { icon: MetricIcon; tint: MetricTint } {
+  const mapped = METRIC_ICONS[metric.id]
+  if (mapped) return mapped
+
+  return {
+    icon:
+      metric.format === 'currency'
+        ? IndianRupee
+        : metric.format === 'percent'
+          ? Gauge
+          : metric.format === 'days'
+            ? Clock
+            : BarChart3,
+    tint: 'green',
+  }
+}
 
 export { PURCHASE_VIEWS }
 
@@ -50,38 +144,85 @@ export function DashboardSwitcher({
 export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen: (target: Drilldown) => void }) {
   const available = metric.status === 'ready'
   const clickable = available && metric.drilldown !== undefined
+  const { icon: Icon, tint } = metricIcon(metric)
+
+  // The two bars are the comparison the card already states in words. Where the
+  // server sent no previous figure there is nothing to draw, and nothing is
+  // drawn — the shape would otherwise be decoration standing where data goes.
+  const spark =
+    available && metric.comparison.available && metric.comparison.previous_raw !== undefined && metric.raw_value !== null
+      ? [
+          { label: 'previous', value: metric.comparison.previous_raw },
+          { label: 'current', value: metric.raw_value },
+        ]
+      : []
+
+  /*
+   * One secondary line, not three.
+   *
+   * Where there is a comparison it is the comparison, because that is the
+   * question a reader asks first. Where there is not — most of these are a
+   * queue as at now, and how long that queue was a month ago was never
+   * recorded — the line says "as at now" and hands the space to the ageing
+   * footnote, which is the thing that can actually be acted on. It never shows
+   * a delta that does not exist, and the reason it does not exist is in the
+   * tooltip and in the basis printed underneath.
+   */
+  const secondary = available
+    ? metric.comparison.available
+      ? metric.comparison_text
+      : (metric.footnote ?? 'As at now')
+    : (metric.unavailable_reason ?? 'Comparison unavailable')
+
+  const tone = available && metric.comparison.available ? metric.change_tone : 'is-quiet'
 
   const body = (
     <>
-      <span className="purchase-metric__label">
-        {metric.label}
-        {/* The basis is on the card and in the tooltip: a reader should not have
-            to hover to find out what a number counts. */}
-        <Info size={13} aria-hidden style={{ opacity: 0.5, flexShrink: 0 }} />
+      <span className={`purchase-metric__icon purchase-metric__icon--${tint}`} aria-hidden>
+        <Icon size={17} aria-hidden />
       </span>
 
-      <strong className={available ? 'purchase-metric__value' : 'purchase-metric__value is-unavailable'}>
-        {available ? metric.formatted_value : 'Unavailable'}
-      </strong>
+      <span className="purchase-metric__body">
+        <span className="purchase-metric__label">
+          {metric.label}
+          {/* The basis is on the card and in the tooltip: a reader should not
+              have to hover to find out what a number counts. */}
+          <Info size={12} aria-hidden style={{ opacity: 0.45, flexShrink: 0 }} />
+        </span>
 
-      <span className={`purchase-metric__change ${available ? metric.change_tone : 'is-neutral'}`}>
-        {available ? metric.comparison_text : (metric.unavailable_reason ?? 'Comparison unavailable')}
+        <strong className={available ? 'purchase-metric__value' : 'purchase-metric__value is-unavailable'}>
+          {available ? (metric.compact_value ?? metric.formatted_value) : 'Unavailable'}
+        </strong>
+
+        <span className={`purchase-metric__change ${tone}`}>{secondary}</span>
+
+        <span className="purchase-metric__basis">{metric.basis}</span>
       </span>
 
-      <span className="purchase-metric__basis">{metric.basis}</span>
-
-      {metric.footnote && <span className="purchase-metric__footnote">{metric.footnote}</span>}
+      <SparkBars points={spark} tone={metric.change_tone} />
     </>
   )
 
+  // The tooltip carries what the card had to shorten: the exact figure, why
+  // there is no comparison, and the footnote the secondary line gave way to.
+  const tooltip = [
+    metric.explanation,
+    available && metric.compact_value !== metric.formatted_value ? `Exactly: ${metric.formatted_value}` : null,
+    metric.comparison.available ? null : (metric.comparison.reason ?? null),
+    metric.comparison.available ? metric.footnote : null,
+  ]
+    .filter((line): line is string => typeof line === 'string' && line !== '')
+    .join('\n\n')
+
   return (
-    <article className="purchase-metric" title={metric.explanation}>
+    <article className="purchase-metric" title={tooltip}>
       {clickable ? (
         <button
           type="button"
           className="purchase-metric__link"
           onClick={() => onOpen(metric.drilldown as Drilldown)}
           aria-label={`View the records behind ${metric.label}: ${metric.formatted_value}`}
+          title={tooltip}
         >
           {body}
         </button>
@@ -338,8 +479,19 @@ export function MetricsRow({
   if (loading) {
     return (
       <div className="purchase-metrics" aria-busy="true">
+        {/* Shaped like the card it stands in for, rather than a grey block:
+            the layout does not jump when the figures land, and the reader can
+            already see what is about to be there. */}
         {Array.from({ length: 6 }, (_, index) => (
-          <div key={index} className="purchase-metric purchase-skeleton purchase-skeleton--metric" />
+          <div key={index} className="purchase-metric purchase-metric--skeleton" aria-hidden>
+            <span className="purchase-skeleton purchase-skeleton--icon" />
+            <span className="purchase-metric__body">
+              <span className="purchase-skeleton purchase-skeleton--line" style={{ width: '76%' }} />
+              <span className="purchase-skeleton purchase-skeleton--value" />
+              <span className="purchase-skeleton purchase-skeleton--line" style={{ width: '52%' }} />
+              <span className="purchase-skeleton purchase-skeleton--line" style={{ width: '88%', height: 8 }} />
+            </span>
+          </div>
         ))}
       </div>
     )
@@ -405,29 +557,43 @@ export function PurchaseDashboardShell({
         <div className="purchase-header-actions">
           <button
             type="button"
-            className="purchase-button purchase-button--secondary"
+            className="purchase-button purchase-button--primary"
             onClick={onRefresh}
             disabled={refreshing}
+            title={
+              fetchedAt
+                ? `Last loaded at ${fetchedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
+                : undefined
+            }
           >
-            <RefreshCw size={15} aria-hidden /> {refreshing ? 'Refreshing…' : 'Refresh'}
+            <RefreshCw size={15} aria-hidden className={refreshing ? 'purchase-spin' : undefined} />{' '}
+            {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
           {primaryAction}
         </div>
       </header>
 
-      <div className="purchase-context">{contextControls}</div>
+      {/* One control row, not two. The period, the comparison and the three
+          narrowing controls are one decision about what is being looked at, and
+          splitting them either side of the switcher made the switcher read as a
+          divider between two unrelated things. */}
+      <div className="purchase-context">
+        {contextControls}
+        {filterControls}
+      </div>
 
       <DashboardSwitcher activeView={activeView} onChange={onViewChange} />
-
-      <div className="purchase-filterbar">{filterControls}</div>
-
-      <SourceList sources={sources} fetchedAt={fetchedAt} />
 
       <MetricsRow metrics={metrics} loading={loading} onOpen={openDrilldown} />
 
       <div className="purchase-dashboard-content" aria-busy={refreshing}>
         {children}
       </div>
+
+      {/* Which products answered sits at the foot of the screen rather than
+          above the figures. It is the small print of every number above it, and
+          a panel that could not be filled in says so where it stands. */}
+      <SourceList sources={sources} fetchedAt={fetchedAt} />
     </div>
   )
 }

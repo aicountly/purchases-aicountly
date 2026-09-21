@@ -45,6 +45,8 @@ export interface DashboardMetric {
   /** An exact decimal string, or null. Never parse this into a number. */
   raw_value: string | null
   formatted_value: string | null
+  /** formatted_value shortened for a card (₹12.4L). A display form, never a second figure. */
+  compact_value: string | null
   format: MetricFormat
   currency: string | null
   unit: string | null
@@ -94,6 +96,10 @@ export interface DashboardResponse {
   sources: SourceStatus[]
   metrics: DashboardMetric[]
   panels: Record<string, unknown>
+  /** What the supplier and material-centre controls may be set to. */
+  filter_options?: FilterOptions
+  /** Whether a model is configured for this deployment. Never used to invent a finding. */
+  ai?: { available: boolean; reason: string | null }
   [key: string]: unknown
 }
 
@@ -370,3 +376,134 @@ export interface AskAnswer {
   suggestions?: { id: string; question: string }[]
   ai?: { available: boolean; reason: string | null }
 }
+
+// ---------------------------------------------------------------------------
+// Procurement workspace
+// ---------------------------------------------------------------------------
+
+/** What the supplier and material-centre controls may be set to, per the server. */
+export interface FilterOptions {
+  suppliers: { id: number; label: string; count: number }[]
+  centres: { id: number; label: string; named: boolean }[]
+  reason: string | null
+}
+
+export type FlowTone = 'success' | 'info' | 'warning' | 'danger' | 'neutral'
+
+export interface FlowStage {
+  id: string
+  label: string
+  count: number
+  count_label: string
+  /** An exact decimal string, or null when the value is withheld or not one currency. */
+  value: string | null
+  value_formatted: string | null
+  value_compact: string | null
+  /** What kind of money this is: "estimated", "ordered", "still to arrive"… */
+  value_label: string
+  tone: FlowTone
+  status_label: string
+  detail: string
+  route: string
+  filters: Record<string, string>
+}
+
+export interface SpendTrendPoint {
+  date: string
+  label: string
+  amount: string
+  formatted: string
+  orders: number
+}
+
+export interface SupplierOnTimeRow {
+  supplier_account_id: number
+  supplier_name: string
+  on_time_pc: string
+  on_time_label: string
+  on_time_count: number
+  sample: number
+  sample_label: string
+  tone: 'success' | 'brand' | 'warning' | 'danger'
+  route: string
+  filters: Record<string, string>
+}
+
+export interface MaterialCentreRow {
+  centre_id: number | null
+  label: string
+  named: boolean
+  amount: string
+  formatted: string
+  share_pc: string | null
+  orders: number
+  route: string
+  filters: Record<string, string>
+}
+
+/** A deterministic finding. The category chooses the icon; nothing here is a forecast. */
+export interface ProcurementInsight extends BriefingItem {
+  category: string
+}
+
+export interface ActivityRow {
+  id: string
+  date: string
+  date_label: string
+  type: string
+  reference: string
+  supplier_account_id: number | null
+  supplier_name: string | null
+  description: string
+  value: string | null
+  value_formatted: string | null
+  status: string
+  tone: FlowTone
+  route: string
+  rank: number
+  actions: { label: string; route: string }[]
+}
+
+export type FlowPanel = Panel<{
+  stages: FlowStage[]
+  currency: string
+  values_visible: boolean
+  values_hidden_reason: string | null
+  basis: string
+}>
+
+export type SpendTrendPanel = Panel<{
+  granularity: string
+  currency: string
+  points: SpendTrendPoint[]
+  total: string
+  total_formatted: string
+  total_compact: string
+  basis: string
+  comparison:
+    | { available: false; reason: string }
+    | { available: true; label: string; previous: string; previous_formatted: string; change_pc: string | null }
+}>
+
+export type SupplierOnTimePanel = Panel<{ rows: SupplierOnTimeRow[]; basis: string }>
+
+export type MaterialCentrePanel = Panel<{
+  centres: MaterialCentreRow[]
+  others: { count: number; amount: string; formatted: string; share_pc: string | null }
+  total: string
+  total_formatted: string
+  total_compact: string
+  currency: string
+  names_available: boolean
+  basis: string
+}>
+
+export type ProcurementInsightsPanel = Panel<{
+  items: ProcurementInsight[]
+  method: string
+  method_label: string
+  ai: { available: boolean; reason: string | null }
+  basis: string
+}>
+
+export type ActivityPanel = Panel<{ rows: ActivityRow[]; values_visible: boolean; basis: string }>

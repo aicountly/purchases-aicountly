@@ -7,9 +7,9 @@
  * does not change the URL is a switcher the Back button cannot undo.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
-import { Download } from 'lucide-react'
+import { Download, Search } from 'lucide-react'
 import { usePurchases } from '../context/PurchasesContext'
 import { getApiBaseUrl } from '../config'
 import { PurchaseDashboardShell } from './shell'
@@ -17,9 +17,11 @@ import { DATE_PRESETS, isPurchaseView, useDashboardFilters, type PurchaseViewId 
 import { useDashboard } from './useDashboard'
 import { OverviewDashboard } from './views/Overview'
 import { ProcurementDashboard } from './views/Procurement'
+import { ProcurementSkeleton } from './views/procurement/Skeleton'
 import { SuppliersDashboard } from './views/Suppliers'
 import { BillsPayablesDashboard } from './views/BillsPayables'
 import { AiInsightsDashboard } from './views/AiInsights'
+import type { FilterOptions } from './types'
 import './purchase.css'
 
 const TITLES: Record<PurchaseViewId, { title: string; subtitle: string }> = {
@@ -45,6 +47,101 @@ const TITLES: Record<PurchaseViewId, { title: string; subtitle: string }> = {
   },
 }
 
+/**
+ * The search box.
+ *
+ * Typing is not a decision, so it does not go in the URL on every keystroke —
+ * that would be one history entry and one request per letter. It settles for
+ * half a second first, and Enter commits immediately for anyone who does not
+ * want to wait.
+ */
+function DebouncedSearch({ value, onCommit }: { value: string; onCommit: (next: string) => void }) {
+  const [text, setText] = useState(value)
+  const committed = useRef(value)
+
+  // A change from outside — Clear filters, or a link someone opened — wins over
+  // whatever is half-typed, because the user asked for it more recently.
+  useEffect(() => {
+    if (value !== committed.current) {
+      committed.current = value
+      setText(value)
+    }
+  }, [value])
+
+  useEffect(() => {
+    if (text === committed.current) return
+    const timer = setTimeout(() => {
+      committed.current = text
+      onCommit(text)
+    }, 500)
+
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text])
+
+  return (
+    <label className="purchase-context__field purchase-context__field--search">
+      Search
+      <span className="purchase-context__input">
+        <Search size={14} aria-hidden />
+        <input
+          type="search"
+          value={text}
+          placeholder="Order, supplier, material or invoice…"
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return
+            committed.current = text
+            onCommit(text)
+          }}
+        />
+      </span>
+    </label>
+  )
+}
+
+/**
+ * A supplier or material-centre chooser.
+ *
+ * The options are the ones the server found in this company's own orders, so
+ * the list cannot offer a value that returns nothing. Until they arrive — or
+ * where the caller is looking at a record that has since stopped appearing —
+ * the current id is still offered, so a shared link does not silently reset
+ * itself to "all".
+ */
+function OptionSelect({
+  label,
+  allLabel,
+  value,
+  options,
+  loading,
+  onChange,
+}: {
+  label: string
+  allLabel: string
+  value: string
+  options: { id: number; label: string }[]
+  loading: boolean
+  onChange: (next: string) => void
+}) {
+  const known = options.some((option) => String(option.id) === value)
+
+  return (
+    <label className="purchase-context__field">
+      {label}
+      <select value={value} onChange={(event) => onChange(event.target.value)} disabled={loading && options.length === 0}>
+        <option value="">{allLabel}</option>
+        {value !== '' && !known && <option value={value}>Account {value}</option>}
+        {options.map((option) => (
+          <option key={option.id} value={String(option.id)}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 export default function PurchaseDashboards() {
   const { view } = useParams<{ view: string }>()
   const navigate = useNavigate()
@@ -66,6 +163,7 @@ export default function PurchaseDashboards() {
 
   const preset = filters.get('preset') ?? 'this_month'
   const canExport = can('reports.view')
+  const options: FilterOptions = data?.filter_options ?? { suppliers: [], centres: [], reason: null }
 
   const exportUrl = () => {
     const params = new URLSearchParams(
@@ -97,7 +195,7 @@ export default function PurchaseDashboards() {
       }}
       contextControls={
         <>
-          <label>
+          <label className="purchase-context__field">
             Period
             <select value={preset} onChange={(event) => filters.set({ preset: event.target.value })}>
               {DATE_PRESETS.map((option) => (
@@ -110,7 +208,7 @@ export default function PurchaseDashboards() {
 
           {preset === 'custom' && (
             <>
-              <label>
+              <label className="purchase-context__field">
                 From
                 <input
                   type="date"
@@ -118,7 +216,7 @@ export default function PurchaseDashboards() {
                   onChange={(event) => filters.set({ from: event.target.value })}
                 />
               </label>
-              <label>
+              <label className="purchase-context__field">
                 To
                 <input
                   type="date"
@@ -129,77 +227,64 @@ export default function PurchaseDashboards() {
             </>
           )}
 
-          <label>
+          <label className="purchase-context__field">
             Compare with
             <select value={filters.get('compare') ?? 'previous_period'} onChange={(event) => filters.set({ compare: event.target.value })}>
               <option value="previous_period">Previous period</option>
               <option value="none">No comparison</option>
             </select>
           </label>
-
-          {data && (
-            <span className="purchase-muted" style={{ fontSize: 12 }}>
-              {data.period.label} · {data.scope.branch_label}
-              {data.scope.reporting_currency === null && ' · mixed currencies'}
-            </span>
-          )}
         </>
       }
       filterControls={
         <>
-          <label>
-            Search
-            <input
-              type="search"
-              defaultValue={filters.get('q') ?? ''}
-              placeholder="Order, supplier or invoice"
-              onBlur={(event) => filters.set({ q: event.target.value })}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') filters.set({ q: (event.target as HTMLInputElement).value })
-              }}
-            />
-          </label>
+          <DebouncedSearch value={filters.get('q') ?? ''} onCommit={(next) => filters.set({ q: next })} />
 
-          <label>
-            Supplier account
-            <input
-              type="text"
-              inputMode="numeric"
-              defaultValue={filters.get('supplier_id') ?? ''}
-              placeholder="All suppliers"
-              onBlur={(event) => filters.set({ supplier_id: event.target.value })}
-            />
-          </label>
+          <OptionSelect
+            label="Supplier account"
+            allLabel="All suppliers"
+            value={filters.get('supplier_id') ?? ''}
+            options={options.suppliers}
+            loading={loading}
+            onChange={(next) => filters.set({ supplier_id: next })}
+          />
 
-          <label>
-            Material centre
-            <input
-              type="text"
-              inputMode="numeric"
-              defaultValue={filters.get('warehouse_id') ?? ''}
-              placeholder="All centres"
-              onBlur={(event) => filters.set({ warehouse_id: event.target.value })}
-            />
-          </label>
+          <OptionSelect
+            label="Material centre"
+            allLabel="All centres"
+            value={filters.get('warehouse_id') ?? ''}
+            options={options.centres}
+            loading={loading}
+            onChange={(next) => filters.set({ warehouse_id: next })}
+          />
 
-          {filters.isNarrowed && (
-            <button type="button" className="purchase-button purchase-button--quiet" onClick={filters.reset}>
-              Clear filters
-            </button>
-          )}
+          <div className="purchase-context__meta">
+            {data && (
+              <span className="purchase-muted">
+                {data.period.label} · {data.scope.branch_label}
+                {data.scope.reporting_currency === null && ' · mixed currencies'}
+              </span>
+            )}
 
-          {canExport && data && (
-            <a
-              className="purchase-button purchase-button--secondary"
-              href={exportUrl()}
-              style={{ marginLeft: 'auto' }}
-              // The export runs the same code as the screen, with the same
-              // filters, so its totals cannot drift from what is displayed.
-              download
-            >
-              <Download size={15} aria-hidden /> Export
-            </a>
-          )}
+            {filters.isNarrowed && (
+              <button type="button" className="purchase-button purchase-button--quiet" onClick={filters.reset}>
+                Clear filters
+              </button>
+            )}
+
+            {canExport && data && (
+              <a
+                className="purchase-button purchase-button--secondary"
+                href={exportUrl()}
+                style={{ marginLeft: 'auto' }}
+                // The export runs the same code as the screen, with the same
+                // filters, so its totals cannot drift from what is displayed.
+                download
+              >
+                <Download size={15} aria-hidden /> Export
+              </a>
+            )}
+          </div>
         </>
       }
       sources={data?.sources ?? []}
@@ -223,7 +308,9 @@ export default function PurchaseDashboards() {
         </div>
       )}
 
-      {loading && !data && (
+      {loading && !data && resolved === 'procurement' && <ProcurementSkeleton />}
+
+      {loading && !data && resolved !== 'procurement' && (
         <div className="purchase-panel" style={{ padding: 20 }}>
           <div className="purchase-skeleton purchase-skeleton--row" style={{ width: '40%' }} />
           <div className="purchase-skeleton purchase-skeleton--row" />

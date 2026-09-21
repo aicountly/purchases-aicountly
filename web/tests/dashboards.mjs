@@ -88,6 +88,20 @@ const seeded = await apiPost('v1/purchase-orders', {
 }, BUYER)
 await apiPost(`v1/purchase-orders/${seeded.po_id}/submit`, {}, BUYER)
 
+// And one small enough that the threshold does not catch it, taken all the way
+// to issued. The in-transit card counts orders in exactly this state, so without
+// one the card and the workbench would agree at zero — which proves nothing.
+const issued = await apiPost('v1/purchase-orders', {
+  supplier_account_id: 602,
+  supplier_name: 'Metro Pipes & Fittings',
+  po_date: iso(-2),
+  promised_date: iso(9),
+  delivery_warehouse_id: 1,
+  lines: [{ item_id: 201, unit_id: 1, ordered_qty: 2, agreed_rate: 300, estimated_tax_pc: 18, warehouse_id: 1 }],
+}, BUYER)
+await apiPost(`v1/purchase-orders/${issued.po_id}/submit`, {}, BUYER)
+await apiPost(`v1/purchase-orders/${issued.po_id}/issue`, {}, BUYER)
+
 // Honour a preinstalled browser where the environment provides one, and fall
 // back to whatever `npx playwright install chromium` put in place.
 const executablePath = process.env.PURCHASE_CHROMIUM_PATH || undefined
@@ -223,19 +237,68 @@ await check('a KPI and the records behind it agree', async () => {
   await page.goto(`${BASE}/dashboard/procurement?preset=this_year`, { waitUntil: 'networkidle' })
   await settle()
 
-  // The card counts orders with an overdue quantity; the drill-down opens the
-  // order list filtered to exactly that. If the two ever disagree, one of them
-  // is lying and there is no way to tell which from the screen.
-  const card = page.locator('.purchase-metric', { hasText: 'Orders with overdue quantities' })
+  // The card counts orders that are issued, acknowledged or partly received;
+  // the drill-down opens the workbench filtered to exactly that predicate. If
+  // the two ever disagree, one of them is lying and there is no way to tell
+  // which from the screen.
+  const card = page.locator('.purchase-metric', { hasText: 'In-transit deliveries' })
   const onCard = Number.parseInt(((await card.locator('.purchase-metric__value').textContent()) || '0').replace(/[^0-9]/g, ''), 10)
-  ok(Number.isFinite(onCard), 'the card shows a count')
+  ok(Number.isFinite(onCard) && onCard > 0, 'the card shows a count')
 
   await card.getByRole('button').click()
   await settle()
-  eq(new URL(page.url()).searchParams.get('view'), 'delayed', 'the workbench is filtered to delayed orders')
+  eq(new URL(page.url()).searchParams.get('view'), 'open_orders', 'the workbench is filtered to open orders')
 
   const inList = await page.locator('.purchase-panel', { hasText: 'Procurement workbench' }).locator('tbody tr').count()
   eq(inList, onCard, 'the workbench holds exactly as many orders as the card counted')
+})
+
+await check('a flow stage opens the records behind it', async () => {
+  await page.goto(`${BASE}/dashboard/procurement?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const stage = page.locator('.purchase-flow__stage', { hasText: 'Delivery' }).first()
+  ok(await stage.isVisible(), 'the delivery stage is on the screen')
+  await stage.click()
+  await settle()
+
+  // Which view depends on whether anything is late, and both are real views of
+  // the workbench — what must never happen is a stage that leads nowhere.
+  const view = new URL(page.url()).searchParams.get('view')
+  ok(['expected', 'delayed'].includes(view || ''), `the stage opened a workbench view, got ${view}`)
+})
+
+await check('the activity row menu opens, closes and only offers real screens', async () => {
+  await page.goto(`${BASE}/dashboard/procurement?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const activity = page.locator('.purchase-panel', { hasText: 'Recent activity & exceptions' })
+  const toggle = activity.locator('.purchase-rowmenu__toggle').first()
+  ok(await toggle.isVisible(), 'the feed has rows with a menu')
+
+  await toggle.click()
+  await page.waitForTimeout(200)
+  const menu = page.locator('.purchase-rowmenu__list')
+  ok(await menu.isVisible(), 'the menu opened')
+  ok((await menu.getByRole('menuitem').count()) > 0, 'it offers at least one destination')
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(200)
+  eq(await page.locator('.purchase-rowmenu__list').count(), 0, 'Escape closed it')
+})
+
+await check('the workspace never scrolls sideways, from a laptop down to a phone', async () => {
+  for (const [width, height] of [[1920, 1080], [1536, 864], [1366, 768], [1024, 768], [768, 900], [390, 844]]) {
+    await page.setViewportSize({ width, height })
+    await page.goto(`${BASE}/dashboard/procurement?preset=this_year`, { waitUntil: 'networkidle' })
+    await settle()
+
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+    // A panel may scroll inside itself — the procurement flow does, because a
+    // sequence that wraps is no longer a sequence. The PAGE may not.
+    ok(overflow <= 1, `the page overflowed by ${overflow}px at ${width}px wide`)
+  }
+  await page.setViewportSize({ width: 1440, height: 950 })
 })
 
 await check('an unavailable figure never renders as a zero', async () => {

@@ -55,6 +55,12 @@ final class Metric
             'status'          => 'ready',
             'raw_value'       => $rawValue,
             'formatted_value' => $formatted,
+            // The same figure with room to breathe on a card. It is a display
+            // shortening of formatted_value and never a second calculation, so
+            // the two can differ in length but never in meaning.
+            'compact_value'   => $rawValue === null
+                ? $formatted
+                : ($format === 'currency' ? Format::compactMoney($rawValue, $currency ?? 'INR') : $formatted),
             'format'          => $format,
             'currency'        => $currency,
             'unit'            => $unit,
@@ -90,6 +96,7 @@ final class Metric
             'status'             => 'unavailable',
             'raw_value'          => null,
             'formatted_value'    => null,
+            'compact_value'      => null,
             'format'             => $options['format'] ?? 'count',
             'currency'           => $options['currency'] ?? null,
             'unit'               => $options['unit'] ?? null,

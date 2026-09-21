@@ -74,7 +74,9 @@ export interface BarDatum {
   label: string
   value: string
   formatted: string
-  tone?: 'brand' | 'muted' | 'warning' | 'danger'
+  tone?: 'brand' | 'muted' | 'warning' | 'danger' | 'success'
+  /** What the bar is made of — the sample behind a rate, for the tooltip. */
+  hint?: string
   onOpen?: () => void
 }
 
@@ -82,12 +84,23 @@ export function BarChart({
   title,
   unitLabel,
   data,
+  /**
+   * A fixed top of the scale, for bars that are already a percentage.
+   *
+   * Without it the widest bar fills the track whatever it is worth, which is
+   * right for spend and wrong for a rate: 61% on-time would be drawn as a full
+   * bar simply because nobody did better that month.
+   */
+  scaleMax,
+  compact = false,
 }: {
   title: string
   unitLabel: string
   data: BarDatum[]
+  scaleMax?: number
+  compact?: boolean
 }) {
-  const max = data.reduce((highest, row) => Math.max(highest, px(row.value)), 0)
+  const max = scaleMax ?? data.reduce((highest, row) => Math.max(highest, px(row.value)), 0)
 
   return (
     <ChartFrame
@@ -116,7 +129,7 @@ export function BarChart({
       {/* A three-column grid rather than labels floated over the bars: an
           overlay has to guess where the text ends, and guesses wrong the first
           time a supplier has a long name. */}
-      <div style={{ display: 'grid', gap: 10 }} role="presentation">
+      <div style={{ display: 'grid', gap: compact ? 9 : 10 }} role="presentation">
         {data.map((row) => {
           // A band with a real but tiny amount still gets a visible sliver, so
           // it reads differently from one with nothing in it.
@@ -128,22 +141,24 @@ export function BarChart({
                 ? '#e8b54a'
                 : row.tone === 'muted'
                   ? '#cfe6c7'
-                  : 'var(--purchase-brand)'
+                  : row.tone === 'success'
+                    ? 'var(--purchase-action)'
+                    : 'var(--purchase-brand)'
 
           return (
             <div
               key={row.id}
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'minmax(90px, 30%) minmax(0, 1fr) auto',
+                gridTemplateColumns: compact ? 'minmax(88px, 42%) minmax(0, 1fr) 36px' : 'minmax(90px, 30%) minmax(0, 1fr) auto',
                 alignItems: 'center',
-                gap: 10,
-                fontSize: 12,
+                gap: compact ? 8 : 10,
+                fontSize: compact ? 11 : 12,
               }}
             >
               <span
                 style={{ color: 'var(--purchase-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                title={row.label}
+                title={row.hint ?? row.label}
               >
                 {row.onOpen ? (
                   <button type="button" className="purchase-table__link" onClick={row.onOpen}>
@@ -154,11 +169,29 @@ export function BarChart({
                 )}
               </span>
 
-              <span style={{ display: 'block', height: 14, borderRadius: 4, background: '#eef2ee', overflow: 'hidden' }}>
-                <span style={{ display: 'block', width: `${width}%`, height: '100%', background: fill }} />
+              <span
+                style={{
+                  display: 'block',
+                  height: compact ? 9 : 14,
+                  borderRadius: 999,
+                  background: '#eef2ee',
+                  overflow: 'hidden',
+                }}
+              >
+                <span
+                  className="purchase-bar__fill"
+                  style={{ display: 'block', width: `${width}%`, height: '100%', background: fill }}
+                />
               </span>
 
-              <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, whiteSpace: 'nowrap' }}>
+              <span
+                style={{
+                  fontVariantNumeric: 'tabular-nums',
+                  fontWeight: 700,
+                  whiteSpace: 'nowrap',
+                  textAlign: compact ? 'right' : 'left',
+                }}
+              >
                 {row.formatted}
               </span>
             </div>
@@ -184,15 +217,17 @@ export function TrendChart({
   title,
   unitLabel,
   points,
+  height = 220,
 }: {
   title: string
   unitLabel: string
   points: SeriesPoint[]
+  height?: number
 }) {
   const width = 100
-  const height = 34
+  const box = 34
   const top = 3
-  const usable = height - top - 5
+  const usable = box - top - 5
 
   const values = points.map((point) => px(point.value))
   const max = Math.max(...values, 0)
@@ -205,13 +240,23 @@ export function TrendChart({
     projected: point.projected === true,
   }))
 
+  if (points.length === 1) {
+    return (
+      <div className="purchase-chart__single">
+        <strong>{points[0].formatted}</strong>
+        <span>{points[0].label}</span>
+        <p>One period in this range — there is nothing to trend against yet.</p>
+      </div>
+    )
+  }
+
   const actual = coords.filter((coord) => !coord.projected)
   const projected = coords.filter((coord) => coord.projected)
   const path = (list: typeof coords) => list.map((coord, index) => `${index === 0 ? 'M' : 'L'}${coord.x.toFixed(2)},${coord.y.toFixed(2)}`).join(' ')
 
   const areaPath =
     actual.length > 1
-      ? `${path(actual)} L${actual[actual.length - 1].x.toFixed(2)},${height} L${actual[0].x.toFixed(2)},${height} Z`
+      ? `${path(actual)} L${actual[actual.length - 1].x.toFixed(2)},${box} L${actual[0].x.toFixed(2)},${box} Z`
       : ''
 
   // The projected segment starts at the last actual point so the two do not
@@ -244,7 +289,7 @@ export function TrendChart({
         </table>
       }
     >
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="presentation" style={{ height: 220 }}>
+      <svg viewBox={`0 0 ${width} ${box}`} preserveAspectRatio="none" role="presentation" style={{ height }}>
         {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
           <line
             key={fraction}
@@ -386,5 +431,172 @@ export function ShareBar({
         Base: {totalLabel}
       </p>
     </ChartFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Ring — a small number of named parts of a stated total
+// ---------------------------------------------------------------------------
+
+export interface RingDatum {
+  id: string
+  label: string
+  formatted: string
+  sharePc: string | null
+  onOpen?: () => void
+}
+
+/**
+ * A ring, with every share printed next to its name.
+ *
+ * The objection to a pie is that it asks a reader to judge two similar slices
+ * by eye, and they cannot. That objection does not apply here: no slice is ever
+ * read off the drawing, because each one carries its own percentage in the
+ * legend and the base is printed in the middle. The ring is doing one job a
+ * stacked bar does less well — showing at a glance whether the spend sits in
+ * one place or is spread across six.
+ */
+export function DonutChart({
+  title,
+  centreLabel,
+  centreValue,
+  data,
+  others,
+}: {
+  title: string
+  centreLabel: string
+  centreValue: string
+  data: RingDatum[]
+  others?: { formatted: string; sharePc: string | null }
+}) {
+  const segments = [
+    ...data,
+    ...(others && px(others.sharePc) > 0
+      ? [{ id: '__others', label: 'Other centres', formatted: others.formatted, sharePc: others.sharePc }]
+      : []),
+  ]
+
+  const palette = ['#187b12', '#25b003', '#5cc93f', '#96dd82', '#c3ecb7', '#d9e2db']
+
+  // One circle per segment, each rotated to start where the last one ended.
+  // The circumference is 100 so a share is its own dash length and nothing has
+  // to be converted into degrees.
+  const radius = 15.9155
+  let offset = 0
+  const arcs = segments.map((row, index) => {
+    const share = Math.max(px(row.sharePc), 0)
+    const arc = { key: row.id, share, offset, colour: palette[Math.min(index, palette.length - 1)] }
+    offset += share
+    return arc
+  })
+
+  return (
+    <ChartFrame
+      title={title}
+      summary={`${title}. ${centreLabel}: ${centreValue}. ${segments
+        .map((row) => `${row.label}: ${row.formatted}${row.sharePc === null ? '' : `, ${row.sharePc}%`}`)
+        .join('. ')}.`}
+      table={
+        <table className="purchase-table">
+          <caption className="purchase-sr-only">{title}, as figures</caption>
+          <thead>
+            <tr>
+              <th scope="col">Material centre</th>
+              <th scope="col" className="is-numeric">Value</th>
+              <th scope="col" className="is-numeric">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {segments.map((row) => (
+              <tr key={row.id}>
+                <th scope="row" style={{ fontWeight: 500 }}>{row.label}</th>
+                <td className="is-numeric">{row.formatted}</td>
+                <td className="is-numeric">{row.sharePc === null ? '—' : `${row.sharePc}%`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      }
+    >
+      <div className="purchase-ring">
+        <div className="purchase-ring__figure">
+          <svg viewBox="0 0 42 42" role="presentation">
+            <circle cx="21" cy="21" r={radius} className="purchase-ring__track" />
+            {arcs.map((arc) => (
+              <circle
+                key={arc.key}
+                cx="21"
+                cy="21"
+                r={radius}
+                fill="none"
+                stroke={arc.colour}
+                strokeWidth="5.4"
+                strokeDasharray={`${arc.share} ${100 - arc.share}`}
+                // -25 puts the first segment at twelve o'clock.
+                strokeDashoffset={25 - arc.offset}
+              />
+            ))}
+          </svg>
+          <div className="purchase-ring__centre">
+            <strong>{centreValue}</strong>
+            <span>{centreLabel}</span>
+          </div>
+        </div>
+
+        <ul className="purchase-ring__legend">
+          {segments.map((row, index) => (
+            <li key={row.id}>
+              <span
+                aria-hidden
+                className="purchase-ring__swatch"
+                style={{ background: palette[Math.min(index, palette.length - 1)] }}
+              />
+              <span className="purchase-ring__name" title={`${row.label}: ${row.formatted}`}>
+                {'onOpen' in row && row.onOpen ? (
+                  <button type="button" className="purchase-table__link" onClick={row.onOpen}>
+                    {row.label}
+                  </button>
+                ) : (
+                  row.label
+                )}
+              </span>
+              <span className="purchase-ring__share">{row.sharePc === null ? '—' : `${row.sharePc}%`}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </ChartFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Spark — the two figures a comparison is made of
+// ---------------------------------------------------------------------------
+
+/**
+ * The bars beside a metric.
+ *
+ * Two bars, and only when the server actually sent a previous figure: this is
+ * the comparison the card already states in words, drawn. There is no filler
+ * series here and never a shape invented to make a card look busier — a
+ * decorative sparkline on a dashboard is a chart of nothing, and a reader who
+ * finds out is right to stop trusting the rest of the screen.
+ */
+export function SparkBars({ points, tone }: { points: { label: string; value: string }[]; tone: string }) {
+  if (points.length < 2) return null
+
+  const max = points.reduce((highest, point) => Math.max(highest, Math.abs(px(point.value))), 0)
+  if (max === 0) return null
+
+  return (
+    <span className={`purchase-spark purchase-spark--${tone.replace('is-', '')}`} aria-hidden>
+      {points.map((point, index) => (
+        <span
+          key={point.label}
+          style={{ height: `${Math.max((Math.abs(px(point.value)) / max) * 100, 8)}%` }}
+          data-current={index === points.length - 1 ? 'true' : undefined}
+        />
+      ))}
+    </span>
   )
 }

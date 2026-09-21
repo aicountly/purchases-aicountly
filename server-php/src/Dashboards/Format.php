@@ -52,6 +52,41 @@ final class Format
             : $symbol . $grouped;
     }
 
+    /**
+     * ₹12.4L, ₹1.02Cr, ₹12,500 — the form a card has room for.
+     *
+     * A SHORTENED form, never the figure of record. Everything that can be
+     * checked, exported or argued over keeps the exact value from money()
+     * above; this exists only so a KPI card does not wrap "₹2,53,110.00" onto
+     * two lines and stop being scannable. Lakhs and crores because these
+     * figures are read in India, and mixing western grouping into an Indian
+     * value is how ₹1.2M ends up meaning nothing to anybody in the room.
+     */
+    public static function compactMoney(string $value, string $currency = 'INR'): string
+    {
+        $amount = Decimal::of($value);
+        $negative = Decimal::isNegative($amount);
+        $magnitude = $negative ? Decimal::negate($amount) : $amount;
+
+        $symbols = ['INR' => '₹', 'USD' => '$', 'EUR' => '€', 'GBP' => '£', 'AED' => 'AED ', 'SGD' => 'S$'];
+        $symbol = $symbols[strtoupper($currency)] ?? (strtoupper($currency) . ' ');
+
+        // Below a lakh there is nothing to shorten: ₹12,500 is already short,
+        // and "₹0.1L" would be worse in every way.
+        if (Decimal::cmp($magnitude, '100000') < 0) {
+            return ($negative ? '-' : '') . $symbol . self::grouped($magnitude, 0);
+        }
+
+        [$divisor, $suffix, $scale] = Decimal::cmp($magnitude, '10000000') >= 0
+            ? ['10000000', 'Cr', 2]
+            : ['100000', 'L', 1];
+
+        $scaled = Decimal::div($magnitude, $divisor, $scale + 1) ?? '0';
+        $trimmed = rtrim(rtrim(Decimal::fixed($scaled, $scale), '0'), '.');
+
+        return ($negative ? '-' : '') . $symbol . ($trimmed === '' ? '0' : $trimmed) . $suffix;
+    }
+
     /** A whole count: 1,234. */
     public static function count(string|int $value): string
     {
