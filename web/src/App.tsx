@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './auth/AuthProvider'
 import { PurchasesProvider, usePurchases } from './context/PurchasesContext'
@@ -14,12 +14,21 @@ import Claims from './pages/Claims'
 import Suppliers from './pages/Suppliers'
 import Approvals from './pages/Approvals'
 import Settings from './pages/Settings'
-import Access from './pages/Access'
 import { Notice } from './ui'
 import { initAnalytics, trackPageView } from './utils/analytics'
 import './App.css'
 
 initAnalytics()
+
+/**
+ * Access is loaded on demand.
+ *
+ * It is an administration screen most people open once, and it carries the
+ * whole permission catalogue, its own stylesheet and a dozen icons nobody else
+ * needs — 50kB that was being paid for on every first load of the dashboard.
+ * It is the only route split this way because it is the only one that earns it.
+ */
+const Access = lazy(() => import('./pages/access'))
 
 function PageViews() {
   const location = useLocation()
@@ -113,7 +122,16 @@ export default function App() {
             <Route path="suppliers" element={<RequireScope><Suppliers /></RequireScope>} />
             <Route path="approvals" element={<RequireScope><Approvals /></RequireScope>} />
             <Route path="settings" element={<RequireScope><Settings /></RequireScope>} />
-            <Route path="access" element={<RequireScope><Access /></RequireScope>} />
+            <Route
+              path="access"
+              element={
+                <RequireScope>
+                  <Suspense fallback={<p style={{ color: 'var(--muted)' }}>Opening…</p>}>
+                    <Access />
+                  </Suspense>
+                </RequireScope>
+              }
+            />
 
             {/* The portal callback lands here once AuthProvider has consumed the token. */}
             <Route path="auth/callback" element={<Navigate to="/" replace />} />

@@ -46,13 +46,14 @@
 }
 
 /*
- * Page padding, except for the dashboards.
+ * Page padding, except for the screens that paint their own.
  *
- * `.purchase-workspace` paints its own background to the edges and brings its
- * own padding, so padding here would leave a border of the wrong colour around
- * it. Every other page gets the spacing it has always had.
+ * `.purchase-workspace` and `.access-workspace` paint their own background to
+ * the edges and bring their own padding, so padding here would leave a border
+ * of the wrong colour around them. Every other page gets the spacing it has
+ * always had.
  */
-.app-shell__content > *:not(.purchase-workspace) {
+.app-shell__content > *:not(.purchase-workspace):not(.access-workspace) {
   padding: 1.25rem;
 }
 
