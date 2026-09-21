@@ -39,6 +39,7 @@ final class Routes
         $router->put('v1/settings', [SettingsController::class, 'update']);
         $router->get('v1/settings/match-policies', [SettingsController::class, 'matchPolicies']);
         $router->post('v1/settings/match-policies', [SettingsController::class, 'saveMatchPolicy']);
+        $router->delete('v1/settings/match-policies/{id}', [SettingsController::class, 'deleteMatchPolicy']);
 
         // Who may do what. Every route here needs `access.manage`, and the
         // escalation and self-lockout rules live in the controller, not the UI.

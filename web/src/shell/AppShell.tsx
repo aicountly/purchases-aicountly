@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   AlertTriangle,
   BarChart3,
+  Check,
   ChevronDown,
   ClipboardList,
   FileSearch,
@@ -88,7 +89,22 @@ const NAV_GROUPS = [
     label: 'Administration',
     items: [
       { to: '/access', label: 'Access', icon: KeyRound, permission: 'access.manage' },
-      { to: '/settings', label: 'Settings', icon: SettingsIcon },
+      {
+        to: '/settings',
+        label: 'Settings',
+        icon: SettingsIcon,
+        // Settings is a section, so its parts are listed when you are in it.
+        // The four hash entries are the profile workspace's own cards: real
+        // destinations on a real page, not routes invented for a menu.
+        children: [
+          { to: '/settings', label: 'General' },
+          { to: '/settings/new-profile', label: 'New Profile' },
+          { to: '/settings/new-profile#numbering', label: 'Document Numbering' },
+          { to: '/settings/new-profile#approvals', label: 'Approval Rules' },
+          { to: '/settings/new-profile#matching', label: 'Match Tolerances' },
+          { to: '/settings/new-profile#permissions', label: 'Permissions' },
+        ],
+      },
     ],
   },
 ] as const
@@ -101,8 +117,9 @@ export function AppShell() {
   const [navOpen, setNavOpen] = useState(false)
 
   // Following a link on a phone should leave the menu behind, not on top of the
-  // page it just opened.
-  useEffect(() => setNavOpen(false), [location.pathname, location.search])
+  // page it just opened. The hash counts: the Settings sub-items jump to a
+  // section of a page you may already be on, and that is still a link followed.
+  useEffect(() => setNavOpen(false), [location.pathname, location.search, location.hash])
 
   return (
     <div className="app-shell">
@@ -192,28 +209,77 @@ export function AppShell() {
                 {open &&
                   items.map((entry) => {
                     const Icon = entry.icon
+
+                    // A section with parts (Settings) lists them once you are
+                    // inside it. The parent is not highlighted then — one of
+                    // its children is, and two highlights would be a lie about
+                    // where you are.
+                    const children = 'children' in entry ? entry.children : []
+                    const inSection = children.length > 0 && location.pathname.startsWith(entry.to)
+                    const visibleChildren = inSection
+                      ? children.filter(
+                          (child) =>
+                            !('permission' in child) || !permissionsKnown || can(child.permission as string),
+                        )
+                      : []
+
+                    const current = `${location.pathname}${location.hash}`
+                    const childIsActive = (to: string) =>
+                      to.includes('#') ? current === to : location.pathname === to && location.hash === ''
+
                     return (
-                      <NavLink
-                        key={`${group.id}-${entry.to}-${entry.label}`}
-                        to={entry.to}
-                        end={entry.to === '/dashboard/overview' ? false : undefined}
-                        style={({ isActive }) => ({
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '0.6rem',
-                          padding: '0.45rem 0.65rem 0.45rem 1.1rem',
-                          marginBottom: '0.1rem',
-                          borderRadius: 'var(--radius-sm)',
-                          color: isActive ? 'var(--fg)' : 'var(--muted)',
-                          background: isActive ? 'var(--surface)' : 'transparent',
-                          fontWeight: isActive ? 600 : 400,
-                          fontSize: '0.86rem',
-                          textDecoration: 'none',
+                      <div key={`${group.id}-${entry.to}-${entry.label}`}>
+                        <NavLink
+                          to={entry.to}
+                          end={entry.to === '/dashboard/overview' ? false : undefined}
+                          style={({ isActive }) => {
+                            const highlight = isActive && !inSection
+                            return {
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.6rem',
+                              padding: '0.45rem 0.65rem 0.45rem 1.1rem',
+                              marginBottom: '0.1rem',
+                              borderRadius: 'var(--radius-sm)',
+                              color: highlight || inSection ? 'var(--fg)' : 'var(--muted)',
+                              background: highlight ? 'var(--surface)' : 'transparent',
+                              fontWeight: highlight || inSection ? 600 : 400,
+                              fontSize: '0.86rem',
+                              textDecoration: 'none',
+                            }
+                          }}
+                        >
+                          <Icon size={15} aria-hidden />
+                          {entry.label}
+                          {inSection && (
+                            <Check size={13} aria-hidden style={{ marginLeft: 'auto', color: 'var(--success)' }} />
+                          )}
+                        </NavLink>
+
+                        {visibleChildren.map((child) => {
+                          const isActive = childIsActive(child.to)
+                          return (
+                            <Link
+                              key={child.to}
+                              to={child.to}
+                              aria-current={isActive ? 'page' : undefined}
+                              style={{
+                                display: 'block',
+                                padding: '0.35rem 0.65rem 0.35rem 2.4rem',
+                                marginBottom: '0.1rem',
+                                borderRadius: 'var(--radius-sm)',
+                                color: isActive ? 'var(--fg)' : 'var(--muted)',
+                                background: isActive ? 'var(--surface)' : 'transparent',
+                                fontWeight: isActive ? 600 : 400,
+                                fontSize: '0.82rem',
+                                textDecoration: 'none',
+                              }}
+                            >
+                              {child.label}
+                            </Link>
+                          )
                         })}
-                      >
-                        <Icon size={15} aria-hidden />
-                        {entry.label}
-                      </NavLink>
+                      </div>
                     )
                   })}
               </div>
