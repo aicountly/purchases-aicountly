@@ -14,71 +14,30 @@
  *   - You cannot remove your own last grant of access management.
  */
 
-import { useCallback, useMemo, useState } from 'react'
-import { Plus, ShieldCheck, Trash2, UserPlus, Wand2 } from 'lucide-react'
+import { useCallback, useState } from 'react'
+import { Plus, Trash2, UserPlus, Wand2 } from 'lucide-react'
 import { api, ApiError } from '../services/api'
 import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
 import { Button, Card, DataTable, date, Field, Input, Notice, Select, Textarea } from '../ui'
-
-interface Catalogue {
-  catalog: Record<string, Record<string, string>>
-  granted: string[]
-  grantable: string[]
-  is_owner: boolean
-  my_uuid: string
-  owner_note: string
-}
-
-interface Profile {
-  profile_id: number
-  profile_name: string
-  description: string | null
-  permissions: string[]
-  permission_count: number
-  is_active: boolean
-  system_key: string | null
-  member_count: number
-  updated_at: string | null
-}
-
-interface Member {
-  user_uuid: string
-  label: string | null
-  is_you: boolean
-  permission_count: number
-  permissions: string[]
-  assignments: {
-    assignment_id: number
-    profile_id: number
-    profile_name: string
-    is_active: boolean
-    note: string | null
-    assigned_at: string
-  }[]
-}
-
-interface Candidate {
-  user_uuid: string
-  actions: number
-  last_seen: string
-  is_you: boolean
-}
+import AccessProfileEditor from './AccessProfileEditor'
+import type { AccessCandidate, AccessCatalogue, AccessMember, AccessProfile } from '../services/types'
 
 export default function Access() {
   const { scope, can } = usePurchases()
   const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [editing, setEditing] = useState<Profile | 'new' | null>(null)
+  const [editing, setEditing] = useState<AccessProfile | 'new' | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
 
   const reload = useCallback(() => setReloadToken((n) => n + 1), [])
   const deps = [scope?.cmp_id, scope?.fy_id, reloadToken]
 
-  const catalogue = useApi((s) => api.one<Catalogue>('v1/access/catalogue', undefined, s), deps, Boolean(scope))
-  const profiles = useApi((s) => api.one<Profile[]>('v1/access/profiles', undefined, s), deps, Boolean(scope))
-  const members = useApi((s) => api.one<Member[]>('v1/access/members', undefined, s), deps, Boolean(scope))
-  const people = useApi((s) => api.one<Candidate[]>('v1/access/people', undefined, s), deps, Boolean(scope))
+  const catalogue = useApi((s) => api.one<AccessCatalogue>('v1/access/catalogue', undefined, s), deps, Boolean(scope))
+  const profiles = useApi((s) => api.one<AccessProfile[]>('v1/access/profiles', undefined, s), deps, Boolean(scope))
+  const members = useApi((s) => api.one<AccessMember[]>('v1/access/members', undefined, s), deps, Boolean(scope))
+  const people = useApi((s) => api.one<AccessCandidate[]>('v1/access/people', undefined, s), deps, Boolean(scope))
 
   const cat = catalogue.data?.data
   const profileList = profiles.data?.data ?? []
@@ -113,6 +72,35 @@ export default function Access() {
 
   const loadError = catalogue.error ?? profiles.error ?? members.error
 
+  // The profile editor takes the whole workspace rather than sitting under the
+  // tables. It is the decision this page exists to make, and the whole
+  // catalogue needs the width — a strip at the bottom of a list is what made
+  // the old screen a wall of checkboxes nobody read.
+  if (editing !== null) {
+    return (
+      <AccessProfileEditor
+        key={editing === 'new' ? 'new' : editing.profile_id}
+        profile={editing === 'new' ? null : editing}
+        catalogue={cat ?? null}
+        catalogueLoading={catalogue.loading}
+        catalogueError={catalogue.error}
+        onRetryCatalogue={catalogue.reload}
+        profiles={profileList}
+        profilesLoading={profiles.loading}
+        onClose={() => setEditing(null)}
+        onSaved={(profile) => {
+          setEditing(null)
+          setError(null)
+          setSaved(
+            `${profile.profile_name} saved with ${profile.permission_count} ` +
+              `permission${profile.permission_count === 1 ? '' : 's'}.`,
+          )
+          reload()
+        }}
+      />
+    )
+  }
+
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
@@ -134,6 +122,7 @@ export default function Access() {
         </div>
       </header>
 
+      {saved && <Notice tone="success" title="Saved" onDismiss={() => setSaved(null)}>{saved}</Notice>}
       {error && <Notice tone="danger" title="Not saved" onDismiss={() => setError(null)}>{error}</Notice>}
       {loadError && <Notice tone="danger" title="Could not load access">{loadError}</Notice>}
 
@@ -290,19 +279,6 @@ export default function Access() {
         busy={busy}
         onAssign={(body) => act(() => api.post('v1/access/members', body))}
       />
-
-      {editing !== null && cat && (
-        <ProfileEditor
-          profile={editing === 'new' ? null : editing}
-          catalogue={cat}
-          busy={busy}
-          onClose={() => setEditing(null)}
-          onSave={async (body) => {
-            await act(() => api.post('v1/access/profiles', body))
-            setEditing(null)
-          }}
-        />
-      )}
     </div>
   )
 }
@@ -319,8 +295,8 @@ function AssignForm({
   busy,
   onAssign,
 }: {
-  profiles: Profile[]
-  candidates: Candidate[]
+  profiles: AccessProfile[]
+  candidates: AccessCandidate[]
   busy: boolean
   onAssign: (body: Record<string, unknown>) => Promise<void>
 }) {
@@ -400,114 +376,6 @@ function AssignForm({
           >
             <UserPlus size={15} aria-hidden /> Give access
           </Button>
-        </div>
-      </div>
-    </Card>
-  )
-}
-
-// ---------------------------------------------------------------------------
-
-function ProfileEditor({
-  profile,
-  catalogue,
-  busy,
-  onClose,
-  onSave,
-}: {
-  profile: Profile | null
-  catalogue: Catalogue
-  busy: boolean
-  onClose: () => void
-  onSave: (body: Record<string, unknown>) => Promise<void>
-}) {
-  const [name, setName] = useState(profile?.profile_name ?? '')
-  const [description, setDescription] = useState(profile?.description ?? '')
-  const [chosen, setChosen] = useState<Set<string>>(new Set(profile?.permissions ?? []))
-
-  const grantable = useMemo(() => new Set(catalogue.grantable), [catalogue.grantable])
-
-  const toggle = (permission: string) => {
-    setChosen((prev) => {
-      const next = new Set(prev)
-      if (next.has(permission)) next.delete(permission)
-      else next.add(permission)
-      return next
-    })
-  }
-
-  return (
-    <Card
-      title={profile === null ? 'New profile' : `Edit ${profile.profile_name}`}
-      action={<Button onClick={onClose}>Close</Button>}
-    >
-      <div style={{ display: 'grid', gap: '1rem' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(16rem, 1fr))', gap: '0.75rem' }}>
-          <Field label="Name">
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Accounts payable" />
-          </Field>
-          <Field label="Description" hint="What this profile is for.">
-            <Input value={description} onChange={(e) => setDescription(e.target.value)} />
-          </Field>
-        </div>
-
-        {Object.entries(catalogue.catalog).map(([group, permissions]) => (
-          <fieldset key={group} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.75rem' }}>
-            <legend style={{ fontSize: '0.8rem', fontWeight: 600, padding: '0 0.35rem' }}>{group}</legend>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(18rem, 1fr))', gap: '0.4rem' }}>
-              {Object.entries(permissions).map(([permission, label]) => {
-                const allowed = grantable.has(permission)
-                return (
-                  <label
-                    key={permission}
-                    title={allowed ? permission : `${permission} — you do not hold this, so you cannot grant it`}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '0.5rem',
-                      fontSize: '0.84rem',
-                      opacity: allowed ? 1 : 0.5,
-                      cursor: allowed ? 'pointer' : 'not-allowed',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={chosen.has(permission)}
-                      disabled={!allowed || busy}
-                      onChange={() => toggle(permission)}
-                      style={{ marginTop: '0.15rem' }}
-                    />
-                    <span>
-                      {label}
-                      <span style={{ display: 'block', color: 'var(--muted)', fontSize: '0.72rem', fontFamily: 'ui-monospace, monospace' }}>
-                        {permission}
-                      </span>
-                    </span>
-                  </label>
-                )
-              })}
-            </div>
-          </fieldset>
-        ))}
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-          <Button
-            tone="primary"
-            disabled={busy || name.trim() === '' || chosen.size === 0}
-            onClick={() =>
-              void onSave({
-                profile_id: profile?.profile_id,
-                profile_name: name.trim(),
-                description: description.trim() || undefined,
-                permissions: [...chosen],
-              })
-            }
-          >
-            <ShieldCheck size={15} aria-hidden /> {profile === null ? 'Create profile' : 'Save profile'}
-          </Button>
-          <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>
-            {chosen.size} permission{chosen.size === 1 ? '' : 's'} selected
-          </span>
         </div>
       </div>
     </Card>

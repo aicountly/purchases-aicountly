@@ -347,6 +347,82 @@ await check('access administration bootstraps, assigns and shows its own rules',
   ok((await page.locator('text=user-checked-by-test').count()) > 0, 'with the portal uuid as the real identity')
 })
 
+await check('the profile editor is a screen, and the counts on it are live', async () => {
+  const name = `UI checked ${Date.now()}`
+
+  await page.goto(`${BASE}/access`, { waitUntil: 'networkidle' })
+  await settle()
+  await page.getByRole('button', { name: /^New profile$/ }).click()
+  await settle()
+
+  eq((await page.locator('h1').first().textContent())?.trim(), 'New Profile', 'the editor took the page')
+  ok(/Access.*Profiles.*New profile/s.test((await page.locator('.access-breadcrumbs').textContent()) || ''),
+    'and says where it is')
+  // One sidebar, the app's own: the editor must not grow a second navigation.
+  eq(await page.locator('nav[aria-label="Purchases"]').count(), 1, 'the shell navigation is reused, not duplicated')
+
+  // The catalogue decides what renders. Nothing here is hard-coded, so the
+  // count is the server's and the keys are printed for somebody to check.
+  const modules = await page.locator('.permission-group').count()
+  ok(modules >= 7, `every catalogue module renders, got ${modules}`)
+  ok((await page.locator('.permission-copy code:text-is("price.override")').count()) > 0, 'with the real permission keys')
+
+  // Select all is three-state: partial, then whole, then empty.
+  const first = page.locator('.permission-group').first()
+  await first.locator('.permission-option input').first().check()
+  const selectAll = first.locator('.select-all-control input')
+  eq(await selectAll.evaluate((el) => el.indeterminate), true, 'one ticked reads as partial')
+  await selectAll.check()
+  eq(await selectAll.evaluate((el) => el.indeterminate), false, 'all ticked is not partial')
+  eq(await page.locator('.summary-stat strong').nth(0).textContent(), '1', 'one module selected')
+  eq(await page.locator('.summary-stat strong').nth(2).textContent(), '0', 'and nobody holds a profile that does not exist')
+
+  // Search reaches the key as well as the label, and says so when it finds
+  // nothing rather than showing an empty page.
+  const box = page.locator('.permission-search input').first()
+  await box.fill('bill.post')
+  await settle(250)
+  eq(await page.locator('.permission-option').count(), 1, 'a permission key is searchable')
+  await box.fill('zzzz')
+  await settle(250)
+  ok((await page.locator('text=No permissions match').count()) > 0, 'and an empty result is explained')
+  await page.getByRole('button', { name: 'Clear search' }).click()
+  await settle(250)
+
+  // A template resolves against the catalogue, never against a list of its own.
+  await page.locator('.template-option', { hasText: 'Read Only' }).click()
+  await settle(300)
+  const readOnly = Number(await page.locator('.summary-stat strong').nth(1).textContent())
+  ok(readOnly > 0 && readOnly < modules * 6, `Read Only selected a subset, got ${readOnly}`)
+  ok((await page.locator('.template-option.is-selected').count()) === 1, 'and the template shows as chosen')
+
+  await page.locator('#access-profile-name').fill(name)
+  await page.getByRole('button', { name: /Create profile/ }).click()
+  await settle(1500)
+
+  eq((await page.locator('h1').first().textContent())?.trim(), 'Access', 'creating returns to the list')
+  ok((await page.locator(`text=${name}`).count()) > 0, 'with the new profile in it')
+
+  // The server owns the name clash, and the form has to survive being told so.
+  await page.getByRole('button', { name: /^New profile$/ }).click()
+  await settle(600)
+  await page.locator('#access-profile-name').fill(name)
+  await page.locator('.permission-option input').first().check()
+  await page.getByRole('button', { name: /Create profile/ }).click()
+  await settle(1200)
+  ok((await page.locator('text=already exists').count()) > 0, 'the duplicate name is reported')
+  eq(await page.locator('#access-profile-name').getAttribute('aria-invalid'), 'true', 'on the field that caused it')
+  ok((await page.locator('h1').first().textContent())?.includes('New Profile'), 'and the work is still on screen')
+
+  // Leaving with unsaved work asks first; leaving an untouched form does not.
+  await page.getByRole('button', { name: /^Cancel$/ }).click()
+  await settle(400)
+  ok((await page.locator('text=Discard this profile?').count()) > 0, 'leaving asks')
+  await page.getByRole('button', { name: 'Discard', exact: true }).click()
+  await settle(600)
+  eq((await page.locator('h1').first().textContent())?.trim(), 'Access', 'and discarding leaves')
+})
+
 // ---------------------------------------------------------------------------
 // What the app looks like to somebody who has not been granted anything.
 //

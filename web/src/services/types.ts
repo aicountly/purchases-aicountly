@@ -432,3 +432,59 @@ export interface MatchPolicy {
   is_default: boolean
   is_active: boolean
 }
+
+// ---------------------------------------------------------------------------
+// Access administration
+//
+// The catalogue is the authority on what permissions exist and what each one is
+// called; nothing in the UI may invent a key or rename one. `grantable` is the
+// subset this caller may hand out, which is the whole catalogue for a company
+// owner and only their own grants for anybody else.
+// ---------------------------------------------------------------------------
+
+export interface AccessCatalogue {
+  /** Group title → permission key → human label, in the order to display them. */
+  catalog: Record<string, Record<string, string>>
+  granted: string[]
+  grantable: string[]
+  is_owner: boolean
+  my_uuid: string
+  owner_note: string
+}
+
+export interface AccessProfile {
+  profile_id: number
+  profile_name: string
+  description: string | null
+  permissions: string[]
+  permission_count: number
+  is_active: boolean
+  system_key: string | null
+  member_count: number
+  updated_at: string | null
+}
+
+export interface AccessAssignment {
+  assignment_id: number
+  profile_id: number
+  profile_name: string
+  is_active: boolean
+  note: string | null
+  assigned_at: string
+}
+
+export interface AccessMember {
+  user_uuid: string
+  label: string | null
+  is_you: boolean
+  permission_count: number
+  permissions: string[]
+  assignments: AccessAssignment[]
+}
+
+export interface AccessCandidate {
+  user_uuid: string
+  actions: number
+  last_seen: string
+  is_you: boolean
+}
