@@ -29,14 +29,22 @@
   --purchase-warning-soft: #fff4dc;
   --purchase-info: #245ca2;
   --purchase-info-soft: #edf4ff;
+  --purchase-surface-soft: #f4f8f4;
+  --purchase-border-strong: #cddcce;
   --purchase-radius: 16px;
   --purchase-radius-sm: 10px;
-  --purchase-shadow: 0 5px 20px rgb(26 60 30 / 4%);
+  --purchase-radius-xs: 8px;
+  --purchase-shadow: 0 1px 2px rgb(16 24 20 / 3%), 0 5px 18px rgb(16 24 20 / 4%);
+  --purchase-shadow-hover: 0 3px 8px rgb(16 24 20 / 4%), 0 12px 28px rgb(16 24 20 / 7%);
 
   min-width: 0;
   min-height: 100%;
-  padding: clamp(16px, 2vw, 30px);
-  background: var(--purchase-bg);
+  padding: clamp(16px, 1.7vw, 26px);
+  /* A single, very faint wash in the top-right corner. Anything stronger and
+     an accounting screen starts looking like a product page. */
+  background:
+    radial-gradient(circle at 92% -6%, rgb(37 176 3 / 5.5%), transparent 26%),
+    var(--purchase-bg);
   color: var(--purchase-text);
   font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 14px;
@@ -86,7 +94,50 @@
   gap: 16px;
 }
 
-.purchase-page-header { align-items: flex-start; margin-bottom: 20px; }
+.purchase-page-header {
+  position: relative;
+  align-items: flex-start;
+  gap: 24px;
+  margin-bottom: 14px;
+  padding-bottom: 4px;
+}
+
+.purchase-page-header__titles { flex: 1 1 auto; min-width: 0; }
+
+/* The decorative wave. Pointer-events off so it can never eat a click on the
+   period card sitting over it. */
+.purchase-header-wave {
+  position: absolute;
+  top: -18px;
+  right: -14px;
+  width: min(420px, 45%);
+  height: 130px;
+  pointer-events: none;
+  border-radius: 0 0 0 100%;
+  background:
+    radial-gradient(60% 100% at 80% 0%, rgb(37 176 3 / 11%), transparent 70%),
+    radial-gradient(45% 80% at 55% 10%, rgb(24 123 18 / 7%), transparent 72%);
+}
+
+/* Shrink-wrapped, not stretched: left to grow, the period card spread across
+   the whole empty half of the header and pushed Refresh to the far edge. */
+.purchase-header-side {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.purchase-header-motto {
+  margin: 0;
+  color: var(--purchase-action);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+  text-align: right;
+}
 
 .purchase-eyebrow {
   margin: 0 0 5px;
@@ -99,16 +150,16 @@
 
 .purchase-page-header h1 {
   margin: 0;
-  font-size: clamp(25px, 2.2vw, 34px);
-  line-height: 1.2;
+  font-size: clamp(25px, 2.1vw, 34px);
+  line-height: 1.15;
   letter-spacing: -.035em;
+  font-weight: 760;
 }
 
 .purchase-page-subtitle,
 .purchase-panel__header p { margin: 7px 0 0; color: var(--purchase-muted); }
 
 .purchase-header-actions,
-.purchase-context,
 .purchase-filterbar {
   display: flex;
   flex-wrap: wrap;
@@ -116,7 +167,62 @@
   gap: 10px;
 }
 
-.purchase-context { margin-bottom: 16px; }
+.purchase-header-actions { align-items: stretch; justify-content: flex-end; }
+
+/* The period card: the two selects that decide the range, and under them the
+   range the server actually resolved them to. */
+.purchase-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  min-width: 0;
+  /* Capped, so the resolved-dates line wraps inside the card instead of
+     setting its width. Left uncapped this one sentence stretched the card
+     across the empty half of the header. */
+  max-width: 420px;
+  padding: 9px 14px;
+  border: 1px solid var(--purchase-border);
+  border-radius: var(--purchase-radius-sm);
+  background: rgb(255 255 255 / 92%);
+  box-shadow: var(--purchase-shadow);
+  transition: border-color .16s ease, box-shadow .16s ease;
+}
+
+.purchase-context:hover,
+.purchase-context:focus-within { border-color: var(--purchase-border-strong); }
+
+.purchase-context__icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--purchase-radius-xs);
+  background: var(--purchase-soft);
+  color: var(--purchase-action);
+}
+
+/* Capped, and allowed to wrap. Left to size itself, this one line of resolved
+   dates set the width of the whole period card — about 840px of mostly empty
+   space beside two selects. */
+.purchase-context__resolved {
+  flex-basis: 100%;
+  color: var(--purchase-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-context__resolved strong { color: var(--purchase-text); font-weight: 650; }
+
+.purchase-refresh { align-self: stretch; }
+.purchase-refresh__icon { transition: transform .2s ease; }
+.purchase-refresh__icon.is-spinning { animation: purchase-spin 900ms linear infinite; }
+
+@keyframes purchase-spin {
+  to { transform: rotate(360deg); }
+}
 
 /* --- Buttons ------------------------------------------------------------ */
 
@@ -150,36 +256,43 @@
   border-color: transparent;
   background: transparent;
   color: var(--purchase-action);
-  font-size: 13px;
+  font-size: 12.5px;
+  white-space: nowrap;
 }
 .purchase-button--quiet:hover { background: var(--purchase-soft); }
 
 /* --- Switcher ----------------------------------------------------------- */
 
 .purchase-switcher {
-  display: flex;
-  gap: 5px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
   max-width: 100%;
+  margin: 12px 0 0;
   padding: 6px;
-  overflow-x: auto;
   border: 1px solid var(--purchase-border);
   border-radius: 14px;
-  background: #fff;
+  background: var(--purchase-surface);
+  box-shadow: var(--purchase-shadow);
 }
 
 .purchase-switcher__button {
-  flex: 1 0 auto;
-  min-height: 42px;
-  padding: 10px 18px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 9px 14px;
   border: 0;
   border-radius: 9px;
   background: transparent;
   color: var(--purchase-muted);
+  font-size: 13px;
   font-weight: 650;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background-color .16s ease, color .16s ease;
 }
 
-.purchase-switcher__button:hover { background: #f4f8f2; }
+.purchase-switcher__button:hover { background: var(--purchase-surface-soft); color: var(--purchase-text); }
 
 .purchase-switcher__button.is-active {
   background: var(--purchase-soft);
@@ -189,7 +302,24 @@
 
 /* --- Filters and source status ------------------------------------------ */
 
-.purchase-filterbar { margin: 18px 0 10px; }
+/* The command bar: filters on the left, who answered on the right. */
+.purchase-commandbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin: 12px 0 14px;
+}
+
+.purchase-filterbar {
+  flex: 1 1 520px;
+  align-items: flex-end;
+  margin: 0;
+}
+
+.purchase-filterbar label { flex: 1 1 170px; max-width: 290px; min-width: 0; }
+.purchase-filterbar label.purchase-filterbar__search { flex: 1.4 1 230px; max-width: 380px; }
 
 .purchase-filterbar label,
 .purchase-context label {
@@ -222,15 +352,35 @@
 .purchase-source-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 18px;
-  margin: 0 0 18px;
+  gap: 8px;
+  margin: 0;
   padding: 0;
   list-style: none;
   color: var(--purchase-muted);
-  font-size: 12px;
+  font-size: 11.5px;
 }
 
-.purchase-source-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.purchase-source {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--purchase-border);
+  border-radius: 9px;
+  background: var(--purchase-surface);
+  white-space: nowrap;
+}
+
+.purchase-source--ready { border-color: #cfe6c7; background: #f2fbf4; color: var(--purchase-action); }
+.purchase-source--stale { border-color: #e8d19a; background: var(--purchase-warning-soft); color: var(--purchase-warning); }
+.purchase-source--unavailable { border-color: #f0c2b8; background: var(--purchase-danger-soft); color: var(--purchase-danger); }
+
+/* An upstream that explained itself gets to wrap; the chip stops being a chip
+   and becomes a sentence, which is what a failure needs to be. */
+.purchase-source--unavailable,
+.purchase-source--stale { white-space: normal; max-width: 100%; }
+.purchase-source__message { font-size: 11px; }
 
 .purchase-status-dot {
   width: 7px;
@@ -249,8 +399,8 @@
 .purchase-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 20px;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .purchase-metric,
@@ -262,15 +412,29 @@
   box-shadow: var(--purchase-shadow);
 }
 
+.purchase-metric {
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+
+.purchase-metric:hover {
+  transform: translateY(-1px);
+  border-color: var(--purchase-border-strong);
+  box-shadow: var(--purchase-shadow-hover);
+}
+
 .purchase-metric__link,
 .purchase-metric__content {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: 4px;
   width: 100%;
-  min-height: 160px;
-  padding: 19px;
+  /* Fixed, not minimum. Six cards whose sparkline slot is filled on one and
+     empty on five must still sit on one baseline, and a card that grows when
+     a footnote arrives re-lays out the row under the reader's cursor. */
+  height: 100%;
+  min-height: 186px;
+  padding: 14px 15px;
   border: 0;
   border-radius: inherit;
   background: transparent;
@@ -278,22 +442,57 @@
   text-align: left;
 }
 
-.purchase-metric__link:hover { background: #f8fcf6; }
+.purchase-metric__link:hover { background: #fafdf8; }
 
 .purchase-metric__label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  width: 100%;
+  min-height: 26px;
   color: var(--purchase-muted);
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 650;
 }
 
+.purchase-metric__icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: var(--purchase-radius-xs);
+  background: var(--purchase-soft);
+  color: var(--purchase-action);
+}
+
+/* Two lines, then ellipsis. "Orders with delayed quantities" is four words
+   long and must not push the value off the bottom of the card. */
+.purchase-metric__name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.purchase-metric__info { flex-shrink: 0; margin-left: auto; opacity: .45; }
+
+/*
+ * The value, sized to fit rather than to wrap.
+ *
+ * `overflow-wrap: anywhere` broke ₹48,60,000.46 across two lines at 1600px,
+ * which is not a number any more. The clamp is set so that a thirteen-glyph
+ * rupee figure fits the narrowest card the six-across row ever produces, and
+ * anywhere-wrapping is kept only as the last resort for a figure longer than
+ * any real one — where a break is still better than an overflow.
+ */
 .purchase-metric__value {
   max-width: 100%;
-  font-size: clamp(24px, 2vw, 30px);
-  line-height: 1.2;
-  letter-spacing: -.035em;
+  margin-top: 6px;
+  font-size: clamp(17px, 1.3vw, 23px);
+  line-height: 1.15;
+  letter-spacing: -.02em;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
@@ -305,8 +504,8 @@
   letter-spacing: normal;
 }
 
-.purchase-metric__change,
-.purchase-metric__basis { font-size: 12px; }
+.purchase-metric__change { font-size: 11px; font-weight: 650; }
+.purchase-metric__basis { font-size: 10.5px; line-height: 1.45; }
 
 .purchase-metric__basis,
 .purchase-muted { color: var(--purchase-muted); }
@@ -315,6 +514,7 @@
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+  margin-top: 2px;
   overflow: hidden;
 }
 
@@ -322,30 +522,59 @@
 .purchase-metric__change.is-negative { color: var(--purchase-danger); }
 .purchase-metric__change.is-neutral { color: var(--purchase-muted); }
 
-.purchase-metric__footnote { margin-top: auto; font-size: 11px; color: var(--purchase-muted); }
+.purchase-metric__footnote { margin-top: auto; padding-top: 6px; font-size: 10px; color: var(--purchase-text-muted, var(--purchase-muted)); }
+
+/* The sparkline slot. Always present, so an absent history costs the row no
+   alignment; empty, so it never draws a zero line that reads as a fact. */
+.purchase-spark { width: 100%; height: 30px; margin-top: 4px; }
+.purchase-spark svg { display: block; width: 100%; height: 100%; overflow: visible; }
 
 /* --- Layout ------------------------------------------------------------- */
 
-.purchase-dashboard-content { display: grid; gap: 20px; }
+.purchase-dashboard-content { display: grid; gap: 12px; }
 
 .purchase-dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
-  gap: 20px;
+  gap: 12px;
   align-items: start;
 }
 
+/* Row three of the Overview: trend, top suppliers, category split. */
+.purchase-analytics-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+/* Row four: ageing, recommendations, and the assistant card. */
+.purchase-bottom-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.5fr) minmax(220px, .62fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.purchase-analytics-grid > *,
+.purchase-bottom-grid > * { min-width: 0; }
+
 .purchase-span-all { grid-column: 1 / -1; }
+
+.purchase-panel {
+  display: flex;
+  flex-direction: column;
+}
 
 .purchase-panel__header {
   align-items: flex-start;
-  padding: 19px 20px;
+  padding: 14px 16px;
   border-bottom: 1px solid #edf1ed;
 }
 
-.purchase-panel__header h2 { margin: 0; font-size: 16px; font-weight: 700; }
-.purchase-panel__header p { font-size: 12px; }
-.purchase-panel__body { padding: 20px; }
+.purchase-panel__header h2 { margin: 0; font-size: 14px; font-weight: 740; letter-spacing: -.01em; }
+.purchase-panel__header p { margin-top: 3px; font-size: 11px; line-height: 1.45; }
+.purchase-panel__body { flex: 1; padding: 14px 16px; }
 .purchase-panel__body--flush { padding: 0; }
 
 /* --- Priority cards ----------------------------------------------------- */
@@ -503,13 +732,13 @@
 }
 
 .purchase-segment {
-  min-height: 32px;
-  padding: 5px 12px;
+  min-height: 30px;
+  padding: 4px 10px;
   border: 1px solid var(--purchase-border);
   border-radius: 999px;
   background: #fff;
   color: var(--purchase-muted);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 650;
   white-space: nowrap;
 }
@@ -668,29 +897,542 @@ details[open] > .purchase-timeline__summary::before { content: '▾'; }
 
 .purchase-segments .purchase-segment { max-width: 100%; }
 
-/* --- Responsive --------------------------------------------------------- */
+/* --- Executive strip ---------------------------------------------------- */
 
+.purchase-executive {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.purchase-exec {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+  min-height: 84px;
+  padding: 13px 15px;
+  border: 1px solid var(--purchase-border);
+  border-radius: var(--purchase-radius);
+  background: var(--purchase-surface);
+  box-shadow: var(--purchase-shadow);
+  color: inherit;
+  text-align: left;
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+
+a.purchase-exec:hover,
+button.purchase-exec:hover {
+  transform: translateY(-1px);
+  border-color: var(--purchase-border-strong);
+  box-shadow: var(--purchase-shadow-hover);
+}
+
+.purchase-exec__body { min-width: 0; }
+
+.purchase-exec__title {
+  margin: 0 0 2px;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.purchase-exec__value {
+  display: block;
+  margin-bottom: 1px;
+  font-size: 18px;
+  font-weight: 760;
+  letter-spacing: -.025em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.purchase-exec__value.is-unavailable {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--purchase-muted);
+  letter-spacing: normal;
+}
+
+.purchase-exec__note {
+  margin: 2px 0 0;
+  color: var(--purchase-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.purchase-exec__status { font-size: 11.5px; font-weight: 700; }
+.purchase-exec__status.is-success { color: var(--purchase-action); }
+.purchase-exec__status.is-warning { color: var(--purchase-warning); }
+.purchase-exec__status.is-danger { color: var(--purchase-danger); }
+.purchase-exec__status.is-neutral { color: var(--purchase-muted); }
+
+.purchase-exec__icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: var(--purchase-soft);
+  color: var(--purchase-action);
+}
+
+.purchase-exec__icon.is-warning { background: var(--purchase-warning-soft); color: var(--purchase-warning); }
+.purchase-exec__icon.is-danger { background: var(--purchase-danger-soft); color: var(--purchase-danger); }
+.purchase-exec__icon.is-info { background: var(--purchase-info-soft); color: var(--purchase-info); }
+.purchase-exec__icon.is-neutral { background: #eff3ef; color: #536257; }
+
+/* The score ring. One conic gradient whose stop IS the score, so the drawing
+   cannot drift from the number printed in the middle of it. */
+.purchase-ring {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  flex: 0 0 54px;
+  border-radius: 50%;
+}
+
+.purchase-ring strong {
+  font-size: 16px;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-ring--empty { background: #eef2ee; color: var(--purchase-muted); }
+.purchase-ring--empty strong { font-size: 12px; font-weight: 650; }
+
+/* --- Grouped columns ---------------------------------------------------- */
+
+.purchase-columns { width: 100%; }
+
+.purchase-columns__plot {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 178px;
+  /* The end labels spill a few pixels past the first and last bucket. */
+  padding: 0 10px;
+}
+
+.purchase-columns__grid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  margin-bottom: 20px;
+  background: #eef2ee;
+}
+
+.purchase-columns__bucket {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 0;
+  height: 100%;
+}
+
+/* An explicit height rather than `flex: 1`: the bars inside are sized as a
+   percentage, and a percentage needs a definite height to resolve against. The
+   remaining 20px is the label's, which is why it no longer sits on the bars. */
+.purchase-columns__bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  max-width: 80px;
+  height: calc(100% - 20px);
+  margin: 0 auto;
+}
+
+.purchase-columns__bar {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 34px;
+  min-height: 1px;
+  border-radius: 3px 3px 0 0;
+  transition: opacity .15s ease;
+}
+
+.purchase-columns__bar.is-current { background: var(--purchase-brand); }
+.purchase-columns__bar.is-previous { background: #d3dcd4; }
+.purchase-columns__bucket:hover .purchase-columns__bar { opacity: .82; }
+
+/*
+ * The label is centred on its bucket and allowed to spill over the empty ones
+ * beside it.
+ *
+ * Clipping it to the bucket turned "01 Sep" into "01…" the moment a period had
+ * more than a handful of buckets — and a row of ellipses is less use than
+ * eight readable dates. The chart only prints every Nth label when there are
+ * many, so the space it spills into is space nothing else wants.
+ */
+.purchase-columns__label {
+  height: 20px;
+  padding-top: 6px;
+  color: var(--purchase-muted);
+  font-size: 9.5px;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: visible;
+}
+
+.purchase-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin: 8px 0 0;
+  color: var(--purchase-muted);
+  font-size: 10.5px;
+}
+
+.purchase-legend__item { display: inline-flex; align-items: center; gap: 6px; }
+
+.purchase-legend__swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.purchase-legend__swatch.is-current { background: var(--purchase-brand); }
+.purchase-legend__swatch.is-previous { background: #d3dcd4; }
+.purchase-legend__unit { margin-left: auto; }
+
+/* --- Ageing buckets ----------------------------------------------------- */
+
+.purchase-buckets {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 6px;
+  align-items: end;
+  min-height: 150px;
+}
+
+.purchase-buckets__bucket {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: center;
+}
+
+.purchase-buckets__amount {
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.purchase-buckets__track {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  flex: 1;
+  min-height: 60px;
+  /* No filled track. A grey box behind every bucket reads as a value in its
+     own right, and the ₹0.00 bucket then looks like the tallest thing on the
+     chart. The baseline below is what says where zero is. */
+  border-bottom: 1px solid #e4ebe4;
+}
+
+.purchase-buckets__fill {
+  width: 100%;
+  border-radius: 5px 5px 0 0;
+  transition: opacity .15s ease;
+}
+
+.purchase-buckets__fill.is-neutral { background: #a9dd9b; }
+.purchase-buckets__fill.is-warning { background: #e8b54a; }
+.purchase-buckets__fill.is-danger { background: #e08573; }
+.purchase-buckets__bucket:hover .purchase-buckets__fill { opacity: .85; }
+
+.purchase-buckets__label {
+  color: var(--purchase-muted);
+  font-size: 9.5px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+/* --- Donut -------------------------------------------------------------- */
+
+.purchase-donut {
+  display: grid;
+  grid-template-columns: minmax(118px, .9fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  /* Capped: in a one-column layout this panel is the width of the page, and an
+     unbounded grid puts a 150px ring at one end and a legend at the other with
+     600px of nothing between them. */
+  max-width: 560px;
+}
+
+.purchase-donut__ring { position: relative; }
+.purchase-donut__ring svg { display: block; width: 100%; height: auto; max-height: 150px; }
+.purchase-donut__track { fill: transparent; stroke: #eef2ee; stroke-width: 5.5; }
+
+.purchase-donut__centre {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  pointer-events: none;
+}
+
+.purchase-donut__centre strong {
+  display: block;
+  font-size: 15px;
+  font-weight: 760;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-donut__centre span { color: var(--purchase-muted); font-size: 10px; }
+
+.purchase-donut__legend {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.purchase-donut__legend li { display: flex; align-items: center; gap: 7px; min-width: 0; }
+
+.purchase-donut__swatch {
+  width: 9px;
+  height: 9px;
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+
+.purchase-donut__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.purchase-donut__share {
+  margin-left: auto;
+  color: var(--purchase-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- AI recommendations and the assistant card -------------------------- */
+
+.purchase-insight-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+}
+
+.purchase-insight {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--purchase-border);
+  border-radius: 12px;
+  background: #fbfdf9;
+}
+
+.purchase-insight__top { display: flex; align-items: center; gap: 8px; }
+
+.purchase-insight__icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--purchase-radius-xs);
+  background: var(--purchase-soft);
+  color: var(--purchase-action);
+}
+
+.purchase-insight h3 { margin: 0; font-size: 12.5px; font-weight: 700; }
+.purchase-insight p { margin: 0; color: var(--purchase-muted); font-size: 11px; line-height: 1.45; }
+.purchase-insight__estimate { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.purchase-insight__foot { margin-top: auto; padding-top: 6px; }
+
+.purchase-ai-banner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px;
+  overflow: hidden;
+  border: 1px solid #ccebd5;
+  border-radius: var(--purchase-radius);
+  background:
+    radial-gradient(circle at 88% 88%, rgb(20 158 67 / 20%), transparent 38%),
+    linear-gradient(135deg, #effbf2, #e3f7e8);
+}
+
+.purchase-ai-banner h2 {
+  margin: 0;
+  color: #105b2b;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.purchase-ai-banner p {
+  max-width: 230px;
+  margin: 0;
+  color: #50705c;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.purchase-ai-banner .purchase-button { align-self: flex-start; margin-top: auto; }
+
+.purchase-ai-banner__glyph {
+  position: absolute;
+  right: -10px;
+  bottom: -10px;
+  display: grid;
+  place-items: center;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 45%);
+  color: #17823a;
+  pointer-events: none;
+}
+
+/* --- Top supplier table ------------------------------------------------- */
+
+.purchase-table__rank {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--purchase-surface-soft);
+  color: var(--purchase-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* A supplier name is the one cell that will be too long. It ellipsises with
+   the full name in the title, rather than widening the table until the
+   payables column falls off the card. */
+.purchase-table__name {
+  display: block;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.purchase-table--compact th,
+.purchase-table--compact td { padding: 8px 9px; }
+.purchase-table--compact th { font-size: 9.5px; }
+.purchase-table--compact { font-size: 11px; }
+
+/* --- Responsive ---------------------------------------------------------
+ *
+ * The widths below are the ones this screen is actually read at: a 1920 or
+ * 1600 desktop, a 1440/1366 laptop, a 1024 tablet and a phone. Each step
+ * removes a column rather than shrinking one, because a six-column KPI row
+ * squeezed to 1024px is six cards nobody can read rather than three they can.
+ */
+
+/* 1600px and up — the full six-across row the reference layout is drawn for. */
 @media (min-width: 1500px) {
   .purchase-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
 
+/* 1366–1500: six KPI cards would be 190px each. Three by two instead. */
+@media (max-width: 1499px) {
+  /* The trend takes the full width and the two narrower panels share the row
+     beneath it. Spanning the donut instead left a 150px ring and a one-line
+     legend marooned in a 1300px panel. */
+  .purchase-analytics-grid { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  .purchase-analytics-grid > :nth-child(1) { grid-column: 1 / -1; }
+  .purchase-bottom-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+  .purchase-bottom-grid > :nth-child(3) { grid-column: 1 / -1; }
+  .purchase-ai-banner { flex-direction: row; align-items: center; justify-content: space-between; gap: 18px; }
+  .purchase-ai-banner p { max-width: none; }
+  .purchase-ai-banner .purchase-button { margin-top: 0; }
+  .purchase-ai-banner__glyph { display: none; }
+}
+
+@media (max-width: 1200px) {
+  .purchase-executive { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .purchase-header-wave { display: none; }
+}
+
+/* Tablet. The analytics row stacks, the sidebar is already a drawer. */
 @media (max-width: 1100px) {
-  .purchase-dashboard-grid { grid-template-columns: minmax(0, 1fr); }
+  .purchase-dashboard-grid,
+  .purchase-analytics-grid,
+  .purchase-bottom-grid { grid-template-columns: minmax(0, 1fr); }
+  .purchase-analytics-grid > :nth-child(3),
+  .purchase-bottom-grid > :nth-child(3) { grid-column: auto; }
+  .purchase-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .purchase-page-header { flex-direction: column; }
+  .purchase-header-side { align-items: stretch; width: 100%; }
+  .purchase-header-motto { display: none; }
+  .purchase-header-actions { justify-content: flex-start; }
+  .purchase-context { flex: 1; max-width: none; }
+
+  /* Five tabs at this width are 100px each, which truncates "Bills &
+     Payables" to nothing useful. A scroller keeps every label readable. */
+  .purchase-switcher {
+    display: flex;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+  .purchase-switcher__button { flex: 0 0 auto; min-width: 130px; }
 }
 
 @media (max-width: 760px) {
-  .purchase-page-header { flex-direction: column; }
   .purchase-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .purchase-panel__header { flex-wrap: wrap; }
-  .purchase-header-actions { width: 100%; }
   .purchase-dl { grid-template-columns: minmax(0, 1fr); }
   .purchase-drawer { width: 100%; }
+  .purchase-filterbar { flex: 1 1 100%; }
+  .purchase-filterbar label,
+  .purchase-filterbar label.purchase-filterbar__search { flex: 1 1 100%; }
+  .purchase-source-list { width: 100%; }
+  .purchase-buckets { min-height: 130px; }
+  .purchase-table__name { max-width: 140px; }
+}
+
+@media (max-width: 560px) {
+  .purchase-executive { grid-template-columns: minmax(0, 1fr); }
+  .purchase-donut { grid-template-columns: minmax(0, 1fr); }
+  .purchase-ai-banner { flex-direction: column; align-items: flex-start; }
 }
 
 @media (max-width: 420px) {
   .purchase-metrics { grid-template-columns: minmax(0, 1fr); }
   .purchase-metric__link,
-  .purchase-metric__content { min-height: 140px; }
+  .purchase-metric__content { min-height: 168px; }
+  .purchase-columns__plot { height: 140px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -701,4 +1443,110 @@ details[open] > .purchase-timeline__summary::before { content: '▾'; }
     transition: none !important;
     scroll-behavior: auto !important;
   }
+
+  /* Transform is not a transition, so it has to be refused separately: a card
+     that still jumps a pixel on hover is still motion. */
+  .purchase-metric:hover,
+  a.purchase-exec:hover,
+  button.purchase-exec:hover { transform: none; }
+}
+
+/* --- Command-bar pickers ------------------------------------------------ */
+
+.purchase-filterbar__picker { position: relative; }
+
+.purchase-picker {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.purchase-picker__icon {
+  position: absolute;
+  top: 50%;
+  left: 10px;
+  transform: translateY(-50%);
+  color: var(--purchase-muted);
+  pointer-events: none;
+}
+
+.purchase-picker input { padding-left: 30px; padding-right: 30px; }
+
+.purchase-picker__clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--purchase-muted);
+}
+
+.purchase-picker__clear:hover { background: var(--purchase-soft); color: var(--purchase-action); }
+
+.purchase-picker__menu {
+  position: absolute;
+  z-index: 30;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  margin-top: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--purchase-border-strong);
+  border-radius: var(--purchase-radius-sm);
+  background: var(--purchase-surface);
+  box-shadow: 0 12px 30px rgb(16 40 20 / 14%);
+}
+
+.purchase-picker__menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 11px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.purchase-picker__menu button:hover { background: var(--purchase-soft); }
+.purchase-picker__note { margin: 0; padding: 10px 11px; color: var(--purchase-muted); font-size: 12px; }
+.purchase-picker__note.is-danger { color: var(--purchase-danger); }
+
+/* A select with its own chevron: the native one is a different shape and a
+   different colour on every platform, and three of them in a row show it. */
+.purchase-select { position: relative; display: block; width: 100%; }
+.purchase-select select { width: 100%; padding-right: 30px; appearance: none; }
+
+.purchase-select__icon {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  color: var(--purchase-muted);
+  pointer-events: none;
+}
+
+.purchase-spin { animation: purchase-spin 900ms linear infinite; }
+
+/* A one-word qualifier beside an executive figure, for when the number covers
+   something wider than the filters the reader has applied. */
+.purchase-exec__caveat {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--purchase-surface-soft);
+  color: var(--purchase-muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  white-space: nowrap;
 }

@@ -7,15 +7,17 @@
  * does not change the URL is a switcher the Back button cannot undo.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
 import { Download } from 'lucide-react'
 import { usePurchases } from '../context/PurchasesContext'
 import { getApiBaseUrl } from '../config'
 import { PurchaseDashboardShell } from './shell'
 import { DATE_PRESETS, isPurchaseView, useDashboardFilters, type PurchaseViewId } from './filters'
+import { BranchFilter, CentreFilter, SupplierFilter } from './filterControls'
 import { useDashboard } from './useDashboard'
-import { OverviewDashboard } from './views/Overview'
+import { OverviewDashboard, OverviewExecutive, topSupplierIds } from './views/Overview'
+import { useSupplierPayables } from './overview/useSupplierPayables'
 import { ProcurementDashboard } from './views/Procurement'
 import { SuppliersDashboard } from './views/Suppliers'
 import { BillsPayablesDashboard } from './views/BillsPayables'
@@ -45,6 +47,25 @@ const TITLES: Record<PurchaseViewId, { title: string; subtitle: string }> = {
   },
 }
 
+/** The dashboard skeleton, shaped like what is about to replace it. */
+function DashboardSkeleton() {
+  return (
+    <>
+      <div className="purchase-analytics-grid" aria-hidden="true">
+        {[0, 1, 2].map((index) => (
+          <div key={index} className="purchase-panel" style={{ padding: 16 }}>
+            <div className="purchase-skeleton purchase-skeleton--row" style={{ width: '45%' }} />
+            <div className="purchase-skeleton" style={{ height: 170, marginTop: 14 }} />
+          </div>
+        ))}
+      </div>
+      <p className="purchase-sr-only" role="status">
+        Loading this dashboard.
+      </p>
+    </>
+  )
+}
+
 export default function PurchaseDashboards() {
   const { view } = useParams<{ view: string }>()
   const navigate = useNavigate()
@@ -53,6 +74,15 @@ export default function PurchaseDashboards() {
 
   const resolved: PurchaseViewId = isPurchaseView(view) ? view : 'overview'
   const { data, loading, refreshing, error, retryable, fetchedAt, refresh } = useDashboard(resolved, filters.apiParams)
+
+  // The supplier ids the payables column covers. Derived from the data on
+  // screen, so the column can never describe a different five suppliers from
+  // the rows it sits in.
+  const payableIds = useMemo(
+    () => (data !== null && resolved === 'overview' ? topSupplierIds(data) : []),
+    [data, resolved],
+  )
+  const payables = useSupplierPayables(payableIds, filters.apiParams, resolved === 'overview')
 
   // The document title follows the dashboard, so a browser history entry reads
   // as the screen it was.
@@ -137,17 +167,24 @@ export default function PurchaseDashboards() {
             </select>
           </label>
 
+          {/* The range the SERVER resolved the preset to, echoed back. The
+              dates on screen and the dates the figures were computed for are
+              then the same dates by construction. */}
           {data && (
-            <span className="purchase-muted" style={{ fontSize: 12 }}>
-              {data.period.label} · {data.scope.branch_label}
+            <span className="purchase-context__resolved">
+              <strong>{data.period.label}</strong> · {data.scope.branch_label}
               {data.scope.reporting_currency === null && ' · mixed currencies'}
+              <br />
+              {data.period.comparison_mode === 'none'
+                ? 'No comparison'
+                : `Compared with ${data.period.comparison_label.replace(/^vs /, '')}`}
             </span>
           )}
         </>
       }
       filterControls={
         <>
-          <label>
+          <label className="purchase-filterbar__search">
             Search
             <input
               type="search"
@@ -160,27 +197,11 @@ export default function PurchaseDashboards() {
             />
           </label>
 
-          <label>
-            Supplier account
-            <input
-              type="text"
-              inputMode="numeric"
-              defaultValue={filters.get('supplier_id') ?? ''}
-              placeholder="All suppliers"
-              onBlur={(event) => filters.set({ supplier_id: event.target.value })}
-            />
-          </label>
+          <SupplierFilter value={filters.get('supplier_id')} onChange={(id) => filters.set({ supplier_id: id })} />
 
-          <label>
-            Material centre
-            <input
-              type="text"
-              inputMode="numeric"
-              defaultValue={filters.get('warehouse_id') ?? ''}
-              placeholder="All centres"
-              onBlur={(event) => filters.set({ warehouse_id: event.target.value })}
-            />
-          </label>
+          <CentreFilter value={filters.get('warehouse_id')} onChange={(id) => filters.set({ warehouse_id: id })} />
+
+          <BranchFilter />
 
           {filters.isNarrowed && (
             <button type="button" className="purchase-button purchase-button--quiet" onClick={filters.reset}>
@@ -192,7 +213,6 @@ export default function PurchaseDashboards() {
             <a
               className="purchase-button purchase-button--secondary"
               href={exportUrl()}
-              style={{ marginLeft: 'auto' }}
               // The export runs the same code as the screen, with the same
               // filters, so its totals cannot drift from what is displayed.
               download
@@ -202,6 +222,7 @@ export default function PurchaseDashboards() {
           )}
         </>
       }
+      executive={data && resolved === 'overview' ? <OverviewExecutive data={data} /> : undefined}
       sources={data?.sources ?? []}
       metrics={data?.metrics ?? []}
       loading={loading}
@@ -212,8 +233,8 @@ export default function PurchaseDashboards() {
       {error && (
         <div className="purchase-notice purchase-notice--danger">
           <div>
-            <strong>Could not load this dashboard</strong>
-            <p>{error}</p>
+            <strong>Unable to load purchase overview</strong>
+            <p>We couldn&rsquo;t retrieve the latest purchase data. {error}</p>
             {retryable && (
               <button type="button" className="purchase-button purchase-button--secondary" style={{ marginTop: 10 }} onClick={refresh}>
                 Try again
@@ -223,15 +244,16 @@ export default function PurchaseDashboards() {
         </div>
       )}
 
-      {loading && !data && (
-        <div className="purchase-panel" style={{ padding: 20 }}>
-          <div className="purchase-skeleton purchase-skeleton--row" style={{ width: '40%' }} />
-          <div className="purchase-skeleton purchase-skeleton--row" />
-          <div className="purchase-skeleton purchase-skeleton--row" style={{ width: '80%' }} />
-        </div>
-      )}
+      {loading && !data && <DashboardSkeleton />}
 
-      {data && resolved === 'overview' && <OverviewDashboard data={data} />}
+      {data && resolved === 'overview' && (
+        <OverviewDashboard
+          data={data}
+          payables={payables}
+          granularity={filters.get('granularity') ?? 'auto'}
+          onGranularityChange={(next) => filters.set({ granularity: next === 'auto' ? null : next })}
+        />
+      )}
       {data && resolved === 'procurement' && <ProcurementDashboard data={data} filters={filters} onChanged={refresh} />}
       {data && resolved === 'suppliers' && <SuppliersDashboard data={data} filters={filters} />}
       {data && resolved === 'bills-payables' && <BillsPayablesDashboard data={data} filters={filters} onChanged={refresh} />}

@@ -448,52 +448,16 @@ final class BillsDashboard extends Dashboard
     /**
      * Panel B — payables ageing.
      *
-     * Books' own buckets, as at Books' own date. Nothing is re-bucketed here.
-     *
-     * One honest caveat is carried through to the screen: Books places bills
-     * with NO due date in "not due". This app cannot separate them from that
-     * bucket without a company-wide open items read it does not have, so it
-     * says so rather than inventing a due date from the invoice date.
+     * Books' own buckets, as at Books' own date. The panel is built on the base
+     * class because the Overview shows the same five buckets, and two
+     * bucketings of one payable would be two answers to "what is overdue".
      *
      * @param array<string, mixed>|null $books
      * @return array<string, mixed>
      */
     private function ageing(?array $books): array
     {
-        if ($books === null) {
-            return $this->withheld('reports.view');
-        }
-        if (!$books['ok']) {
-            return $this->unavailablePanel((string) $books['error']);
-        }
-
-        $ageing = (array) $books['ageing'];
-        $currency = $this->documentCurrency() ?? 'INR';
-        $total = Decimal::of($ageing['total'] ?? '0');
-
-        $buckets = [
-            ['id' => 'not_due', 'label' => 'Not due', 'amount' => Decimal::of($ageing['not_due'] ?? '0'), 'tone' => 'neutral'],
-            ['id' => 'b_0_30', 'label' => '1 – 30 days overdue', 'amount' => Decimal::of($ageing['b_0_30'] ?? '0'), 'tone' => 'warning'],
-            ['id' => 'b_31_60', 'label' => '31 – 60 days', 'amount' => Decimal::of($ageing['b_31_60'] ?? '0'), 'tone' => 'warning'],
-            ['id' => 'b_61_90', 'label' => '61 – 90 days', 'amount' => Decimal::of($ageing['b_61_90'] ?? '0'), 'tone' => 'danger'],
-            ['id' => 'b_90_plus', 'label' => 'Over 90 days', 'amount' => Decimal::of($ageing['b_90_plus'] ?? '0'), 'tone' => 'danger'],
-        ];
-
-        foreach ($buckets as $index => $bucket) {
-            $buckets[$index]['formatted'] = Format::money($bucket['amount'], $currency);
-            $buckets[$index]['share_pc'] = Decimal::percentOf($bucket['amount'], $total, 1);
-        }
-
-        return $this->panel([
-            'as_of'    => $this->period->to,
-            'as_of_label' => Format::date($this->period->to),
-            'currency' => $currency,
-            'buckets'  => $buckets,
-            'total'    => $total,
-            'total_formatted' => Format::money($total, $currency),
-            'basis'    => 'Open creditor balances from Smart Books, bucketed by Books against its own due dates, as at ' . Format::date($this->period->to) . '.',
-            'caveat'   => 'Smart Books places bills with no due date into "Not due". This screen cannot separate them out, and does not substitute the invoice date for a missing due date — so treat "Not due" as "not yet due, or no due date recorded".',
-        ]);
+        return $this->payablesAgeing($books);
     }
 
     /**

@@ -33,7 +33,8 @@ final class Metric
      *   direction?: string, explanation?: string,
      *   previous?: string|null, comparison_label?: string, comparison_unavailable_reason?: string,
      *   drilldown?: array{route: string, filters: array<string, string>},
-     *   footnote?: string
+     *   footnote?: string,
+     *   series?: list<array{label: string, value: string, formatted: string}>
      * } $options
      *
      * @return array<string, mixed>
@@ -68,6 +69,15 @@ final class Metric
 
         if (isset($options['drilldown'])) {
             $metric['drilldown'] = $options['drilldown'];
+        }
+
+        // A sparkline is only present where a real history exists. The card
+        // reserves the space either way, so six cards stay the same height,
+        // but an absent series is absent rather than drawn as a flat line at
+        // zero — which would read as "nothing happened" instead of "we have
+        // nothing to show".
+        if (isset($options['series']) && count($options['series']) > 1) {
+            $metric['series'] = array_values($options['series']);
         }
 
         return $metric;

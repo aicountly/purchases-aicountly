@@ -129,6 +129,11 @@ final class Routes
         // link to that one, and Back behaves.
         $router->get('v1/dashboards/{view}', [DashboardsController::class, 'show']);
         $router->get('v1/dashboards/{view}/export', [DashboardsController::class, 'export']);
+        // Its own endpoint rather than a panel on the Overview: it is one Smart
+        // Books call per supplier, and the dashboard should not wait on five of
+        // them to paint. It cannot collide with the export route above — that
+        // one requires the literal segment `export`.
+        $router->get('v1/dashboards/overview/supplier-payables', [DashboardsController::class, 'supplierPayables']);
         $router->post('v1/insights/ask', [DashboardsController::class, 'ask']);
 
         // The original summary endpoint, kept for anything already calling it.

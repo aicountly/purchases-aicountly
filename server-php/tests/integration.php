@@ -1055,6 +1055,342 @@ check('concentration refuses to add two currencies together', function () use ($
     assertSame(null, $overview['scope']['reporting_currency'], 'no single reporting currency is claimed');
 });
 
+check('the health score publishes every component, its denominator and what it could not measure', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $health = dashboardFor('overview', $ctx, $auth)['panels']['health'];
+
+    assertTrue($health['available'], 'the panel rendered');
+    assertSame(5, count($health['components']), 'all five components are itemised');
+    assertSame(100, array_sum(array_column($health['components'], 'weight')), 'the weights are a whole model');
+
+    foreach ($health['components'] as $component) {
+        assertTrue($component['basis'] !== null && $component['basis'] !== '', $component['label'] . ' states its denominator');
+        // The rule that matters: a component with nothing to divide by is
+        // excluded and said to be excluded, never scored as a zero.
+        if (!$component['counted']) {
+            assertSame(null, $component['value'], $component['label'] . ' is absent rather than zero');
+            assertTrue(in_array($component['label'], $health['missing'], true), $component['label'] . ' is named as missing');
+        }
+    }
+
+    assertTrue($health['confidence']['counted'] < $health['confidence']['total'], 'a fresh company cannot measure everything');
+    assertTrue($health['confidence']['partial'], 'and the card is told to say so');
+    assertTrue(str_contains($health['confidence']['label'], 'of the model'), 'the share of the model that counted is stated');
+});
+
+check('a period with nothing in it scores nothing, rather than scoring zero', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $health = dashboardFor('overview', $ctx, $auth, ['preset' => 'today'])['panels']['health'];
+
+    // Books still answers for the payable position, which is a standing
+    // balance rather than a period figure — so the one component that can be
+    // measured on an empty day is the only one that counts.
+    assertSame(25, $health['confidence']['counted_weight'], 'only the payable standing could be measured');
+    assertSame(4, count($health['missing']), 'the other four say they had nothing to divide by');
+});
+
+check('the savings figure is the same arithmetic on both screens that show it', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    // The same item from two suppliers at two rates is the consolidation rule's
+    // input, so both screens have something to total.
+    $orders->create(poInput(['supplier_account_id' => 601, 'lines' => [
+        ['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250, 'estimated_tax_pc' => 18],
+    ]]));
+    $orders->create(poInput(['supplier_account_id' => 602, 'supplier_name' => 'Konkan Metals', 'lines' => [
+        ['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 80, 'agreed_rate' => 310, 'estimated_tax_pc' => 18],
+    ]]));
+
+    $overview = dashboardFor('overview', $ctx, $auth)['panels']['intelligence'];
+    $insights = dashboardFor('ai-insights', $ctx, $auth);
+    $insightTotal = null;
+    foreach ($insights['metrics'] as $metric) {
+        if ($metric['id'] === 'opportunity_value') {
+            $insightTotal = $metric['raw_value'];
+        }
+    }
+
+    assertTrue($overview['available'], 'the Overview panel rendered');
+    assertSame($insightTotal, $overview['total'], 'the two screens state the same total, to the paisa');
+    assertSame('rules', $overview['method'], 'and it is labelled as rules, not as a model');
+    assertTrue(str_contains($overview['method_label'], 'No AI model'), 'the label says so in words');
+
+    foreach ($overview['cards'] as $card) {
+        assertTrue($card['assumption'] !== '', 'each card carries the assumption behind its estimate');
+        assertTrue($card['baseline_formatted'] !== '', 'and the baseline it was computed from');
+    }
+});
+
+check('the spend trend buckets to fit the range and pairs the previous period from the most recent end', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $short = dashboardFor('overview', $ctx, $auth, ['preset' => 'last_7_days'])['panels']['trend'];
+    assertSame('day', $short['granularity'], 'a week is drawn by day');
+
+    $long = dashboardFor('overview', $ctx, $auth, ['preset' => 'this_year'])['panels']['trend'];
+    assertSame('month', $long['granularity'], 'a year is drawn by month');
+
+    $asked = dashboardFor('overview', $ctx, $auth, ['preset' => 'this_year', 'granularity' => 'week'])['panels']['trend'];
+    assertSame('week', $asked['granularity'], 'and an explicit choice wins');
+
+    foreach ($short['points'] as $point) {
+        assertTrue(is_string($point['amount']), 'amounts cross the wire as strings');
+        assertTrue($point['compact'] !== '', 'each bucket carries a short label for the axis');
+    }
+});
+
+check('a comparison Books cannot answer leaves the current series drawn and says why', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $trend = dashboardFor('overview', $ctx, $auth, ['compare' => 'none'])['panels']['trend'];
+
+    assertTrue($trend['available'], 'the panel still renders');
+    assertTrue($trend['points'] !== [], 'and the current period is still drawn');
+    assertSame(false, $trend['comparison']['available'], 'with no comparison series');
+    assertTrue(str_contains((string) $trend['comparison']['reason'], 'No comparison period'), 'and the reason is stated');
+    foreach ($trend['points'] as $point) {
+        assertSame(null, $point['previous_amount'], 'no bar is invented for the period nobody asked about');
+    }
+});
+
+check('category spend is Inventory grouping, and is withheld when Inventory cannot be reached', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $panel = dashboardFor('overview', $ctx, $auth)['panels']['category_spend'];
+    assertTrue($panel['available'], 'the panel rendered');
+    assertTrue($panel['categories'] !== [], 'and it found a category');
+    assertTrue(str_contains($panel['basis'], 'item group Inventory holds'), 'the basis names who owns the classification');
+    assertSame('100', $panel['categories'][0]['share_pc'], 'one group takes the whole of one order');
+
+    $shares = Decimal::ZERO;
+    foreach ($panel['categories'] as $category) {
+        $shares = Decimal::add($shares, (string) $category['share_pc']);
+    }
+    assertTrue(Decimal::cmp($shares, '101') <= 0, 'the shares do not add to more than the whole');
+});
+
+check('the top-supplier table never shows an unrated supplier as a bad one', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $concentration = dashboardFor('overview', $ctx, $auth)['panels']['concentration'];
+
+    assertTrue($concentration['available'], 'the panel rendered');
+    foreach ($concentration['suppliers'] as $row) {
+        if ($row['score'] === null) {
+            // The distinction the whole screen rests on: "we have not rated
+            // this supplier" must not be drawn the same way as "this supplier
+            // is high risk".
+            assertSame('unknown', $row['risk']['id'], 'an unrated supplier is unknown, not risky');
+            assertSame(null, $row['on_time_pc'], 'and has no on-time percentage');
+            assertTrue($row['on_time_label'] !== '', 'but does say what it has instead');
+        }
+    }
+    assertTrue(str_contains($concentration['payables_basis'], 'separately'), 'the payable column says it is fetched after the screen draws');
+});
+
+check('supplier payables are asked of Books only for suppliers this company buys from', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $_GET = [
+        'cmp_id' => (string) $ctx->cmpId,
+        'fy_id'  => (string) $ctx->fyId,
+        'bo_id'  => (string) $ctx->boId,
+        // 601 is ours; 999999 is not.
+        'supplier_ids' => '601,999999',
+    ];
+    $payables = (new OverviewDashboard($ctx, $auth, Period::fromRequest(), Filters::fromRequest()))->supplierPayables();
+
+    assertSame(2, count($payables['suppliers']), 'both ids are answered for');
+
+    $byId = [];
+    foreach ($payables['suppliers'] as $row) {
+        $byId[$row['supplier_account_id']] = $row;
+    }
+
+    assertSame(true, $byId[601]['available'], 'the supplier we buy from is read from Books');
+    assertTrue(is_string($byId[601]['pending']), 'and the payable crosses the wire as an exact string');
+    assertSame(false, $byId[999999]['available'], 'the one we do not is never relayed to Books');
+    assertTrue(str_contains($byId[999999]['reason'], 'no purchase record'), 'and the reason says why');
+});
+
+check('a payables column asked about nothing does not call Books at all', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => (string) $ctx->boId];
+    $payables = (new OverviewDashboard($ctx, $auth, Period::fromRequest(), Filters::fromRequest()))->supplierPayables();
+
+    assertSame([], $payables['suppliers'], 'nothing is returned');
+    assertTrue(str_contains($payables['basis'], 'No suppliers'), 'and it says nothing was asked');
+});
+
+check('the net purchases card carries the daily series behind it, and the other cards carry none', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $metrics = [];
+    foreach (dashboardFor('overview', $ctx, $auth)['metrics'] as $metric) {
+        $metrics[$metric['id']] = $metric;
+    }
+
+    assertTrue(isset($metrics['net_purchases']['series']), 'the one figure with a history has one');
+    foreach ($metrics['net_purchases']['series'] as $point) {
+        assertTrue(is_string($point['value']), 'the points are exact strings');
+        assertTrue($point['formatted'] !== '', 'and carry the formatted figure for the summary');
+    }
+
+    // A flat line at zero would read as "nothing happened" rather than "we
+    // have nothing to draw", so a figure with no history has no series.
+    assertTrue(!isset($metrics['open_commitment']['series']), 'a position with no history has no sparkline');
+    assertTrue(!isset($metrics['my_approvals']['series']), 'nor does a queue');
+});
+
+check('the short form is only ever a label, and the exact figure is always beside it', function () {
+    assertSame('₹1.53Cr', \Aicountly\Api\Dashboards\Format::compactMoney('15300000'), 'crores');
+    assertSame('₹12.4L', \Aicountly\Api\Dashboards\Format::compactMoney('1240000'), 'lakhs');
+    assertSame('₹85.0K', \Aicountly\Api\Dashboards\Format::compactMoney('85000'), 'thousands');
+    assertSame('-₹44.6L', \Aicountly\Api\Dashboards\Format::compactMoney('-4464179.65'), 'the minus stays in front of the symbol');
+    assertSame('₹0.00', \Aicountly\Api\Dashboards\Format::compactMoney('0'), 'zero is not abbreviated');
+    // Rounding must not move a value across a boundary into a bare number that
+    // sits on the same axis as suffixed ones.
+    assertSame('₹1.00K', \Aicountly\Api\Dashboards\Format::compactMoney('999.5'), 'a value that rounds to a thousand reads as one');
+});
+
+check('the trend pairs each bar with the same position in the previous period', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $trend = dashboardFor('overview', $ctx, $auth, ['preset' => 'last_30_days', 'granularity' => 'day'])['panels']['trend'];
+
+    // The range decides the buckets, not the days Books happened to answer for.
+    // A series built only from the days with activity is a series whose length
+    // depends on how busy the period was — and two such series cannot be laid
+    // against each other at all.
+    assertSame(30, count($trend['points']), 'thirty days of range is thirty buckets');
+
+    $withPrevious = 0;
+    foreach ($trend['points'] as $point) {
+        assertTrue(is_string($point['amount']), 'every bucket carries an exact amount');
+        if ($point['previous_amount'] !== null) {
+            $withPrevious++;
+        }
+    }
+    assertSame(30, $withPrevious, 'and every one of them has a counterpart in the previous period');
+});
+
+check('a quiet period still produces a bar per bucket, at zero', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $trend = dashboardFor('overview', $ctx, $auth, ['preset' => 'last_7_days', 'granularity' => 'day'])['panels']['trend'];
+
+    assertSame(7, count($trend['points']), 'seven days, seven buckets');
+    // Zero is what Books said about that day. It is not a missing bar.
+    $total = Decimal::ZERO;
+    foreach ($trend['points'] as $point) {
+        $total = Decimal::add($total, (string) $point['amount']);
+    }
+    assertTrue(is_string($total), 'the total is still an exact decimal');
+
+    // The stub answers with its own fixed dates whatever range it is asked
+    // about. Those days are not drawn — they would make the series length
+    // depend on the answer again — but they are not swallowed either.
+    assertTrue($trend['outside_range'] !== null, 'days outside the range are reported');
+    assertTrue(str_contains($trend['outside_range']['note'], 'not in this total'), 'and the note says they are excluded');
+});
+
+check('the category donut centre is the whole spend, not the part that was drawn', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $panel = dashboardFor('overview', $ctx, $auth)['panels']['category_spend'];
+
+    $slices = Decimal::ZERO;
+    foreach ($panel['categories'] as $category) {
+        $slices = Decimal::add($slices, (string) $category['amount']);
+    }
+
+    // A centre labelled "Total spend" that quietly means "total of the slices
+    // we could classify" is a centre that disagrees with the KPI above it.
+    assertSame(0, Decimal::cmp($slices, (string) $panel['total']), 'the slices add up to the stated total');
+});
+
+check('a reader without supplier.view sees the spend but not the scorecard', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    // reports.view lets this person see what was spent. It is not a licence to
+    // see how a supplier is rated, which is a supplier fact behind its own
+    // permission on every other screen in the product.
+    $profile = callAccess('saveProfile', $ctx, $auth, [
+        'profile_name' => 'Cost reader',
+        'permissions'  => ['reports.view', 'cost.view', 'po.view'],
+    ]);
+    callAccess('assign', $ctx, $auth, [
+        'user_uuid'  => 'user-cost-reader',
+        'profile_id' => $profile['data']['profile_id'],
+    ]);
+    Permissions::forget();
+
+    $reader = authFor('user-cost-reader', 0);
+    $concentration = dashboardFor('overview', $ctx, $reader)['panels']['concentration'];
+
+    assertTrue($concentration['available'], 'the spend is still shown');
+    assertSame(false, $concentration['rated'], 'but the row is marked unrated');
+    assertTrue(str_contains($concentration['scorecard_basis'], 'supplier.view'), 'and the permission is named');
+
+    foreach ($concentration['suppliers'] as $row) {
+        assertSame(null, $row['on_time_pc'], 'no on-time percentage leaks');
+        assertSame(null, $row['score'], 'and no score');
+        assertSame('unknown', $row['risk']['id'], 'the risk band stays unknown');
+    }
+
+    $risk = dashboardFor('overview', $ctx, $reader)['panels']['supplier_risk'];
+    assertSame(false, $risk['available'], 'and the risk card is withheld outright');
+});
+
+check('the savings card says when the filters do not narrow it', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $wide = dashboardFor('overview', $ctx, $auth)['panels']['intelligence'];
+    assertSame(null, $wide['scope_note'], 'nothing to say when nothing is filtered');
+
+    $narrowed = dashboardFor('overview', $ctx, $auth, ['supplier_id' => '601'])['panels']['intelligence'];
+    // The rules read the company and the year. Silently ignoring a supplier
+    // filter would leave the reader believing the figure was about that one.
+    assertSame(false, $narrowed['narrowed_by_filters'], 'the panel admits it is not narrowed');
+    assertTrue(str_contains((string) $narrowed['scope_note'], 'do not narrow'), 'and says so in words');
+});
+
+check('asking about suppliers this company does not buy from never reaches Books', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $_GET = [
+        'cmp_id' => (string) $ctx->cmpId,
+        'fy_id'  => (string) $ctx->fyId,
+        'bo_id'  => (string) $ctx->boId,
+        'supplier_ids' => '999998,999999',
+    ];
+    $payables = (new OverviewDashboard($ctx, $auth, Period::fromRequest(), Filters::fromRequest()))->supplierPayables();
+
+    foreach ($payables['suppliers'] as $row) {
+        assertSame(false, $row['available'], 'neither id is answered for');
+    }
+
+    // Books was never asked, so Books is not the thing that failed. Reporting
+    // it unavailable would put a red dot against a product that is fine.
+    foreach ($payables['sources'] ?? [] as $source) {
+        assertTrue($source['id'] !== 'books', 'no status is claimed for a product that was not called');
+    }
+});
+
 echo "\nDashboard 2 — Procurement\n";
 
 check('the workbench separates delayed from merely open', function () use ($ctx, $auth) {

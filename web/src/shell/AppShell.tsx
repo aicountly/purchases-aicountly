@@ -25,6 +25,8 @@ import { AccessNotice } from './AccessNotice'
 import { AppLauncher } from '../components/AppLauncher'
 import { usePurchases } from '../context/PurchasesContext'
 import { CompanyPicker } from './CompanyPicker'
+import { HeaderSearch } from './HeaderSearch'
+import { ApprovalsBell, UserMenu } from './HeaderAccount'
 import './app-shell.css'
 
 /**
@@ -264,14 +266,15 @@ export function AppShell() {
           <div className="app-shell__context" style={{ minWidth: 0 }}>
             <CompanyPicker />
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            {scope && (
-              <span style={{ color: 'var(--muted)', fontSize: '0.8rem' }} className="num">
-                Company {scope.cmp_id} · FY {scope.fy_id}
-                {scope.bo_id > 0 ? ` · Branch ${scope.bo_id}` : ''}
-              </span>
-            )}
+
+          {/* Centred, and only once a company is chosen: a search box over no
+              company would have nothing to search. */}
+          {scope && <HeaderSearch />}
+
+          <div className="app-shell__account">
             <AppLauncher />
+            {scope && <ApprovalsBell />}
+            <UserMenu />
           </div>
         </header>
 

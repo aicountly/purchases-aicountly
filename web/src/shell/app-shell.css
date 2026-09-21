@@ -121,3 +121,257 @@
 @media (prefers-reduced-motion: reduce) {
   .app-shell__sidebar { transition: none; }
 }
+
+/* --- Header: search, notifications, account ------------------------------
+ *
+ * The frame is shared with the rest of the fleet, so everything below uses the
+ * global tokens in index.css rather than the Purchases greens. A header that
+ * went green in this product alone would be the one piece of the shell that
+ * told you which application you were in — which is the opposite of what the
+ * shared shell is for.
+ */
+
+.app-shell__account {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.app-search {
+  position: relative;
+  flex: 1 1 22rem;
+  max-width: 34rem;
+  min-width: 0;
+}
+
+.app-search form {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.app-search__icon {
+  position: absolute;
+  left: 0.65rem;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.app-search input {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.4rem 3.6rem 0.4rem 2.1rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: 0.85rem;
+}
+
+.app-search input:focus {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.app-search__hint {
+  position: absolute;
+  right: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  background: var(--surface);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.68rem;
+  pointer-events: none;
+}
+
+.app-search__menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  right: 0;
+  padding: 0.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.app-search__menu button {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.app-search__menu button:hover { background: var(--surface-2); }
+.app-search__menu button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-search__enter { margin-left: auto; color: var(--muted); flex-shrink: 0; }
+
+.app-search__note {
+  margin: 0.25rem 0 0.15rem;
+  padding: 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.app-icon-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.app-icon-button:hover { background: var(--surface-2); color: var(--fg); text-decoration: none; }
+
+.app-icon-button__badge {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.1rem;
+  min-width: 1rem;
+  padding: 0 0.22rem;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1rem;
+  text-align: center;
+}
+
+.app-user { position: relative; flex-shrink: 0; }
+
+.app-user__trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 13rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.25rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.app-user__trigger:hover { background: var(--surface-2); }
+
+.app-user__avatar {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--fg);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.app-user__who { min-width: 0; text-align: left; }
+
+.app-user__name {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-user__context {
+  display: block;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-user__menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  min-width: 15rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.app-user__header {
+  padding: 0.6rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.25rem;
+}
+
+.app-user__header strong { display: block; font-size: 0.85rem; }
+
+.app-user__role {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.2rem 0;
+  color: var(--success);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.app-user__menu button[role='menuitem'] {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-align: left;
+}
+
+.app-user__menu button[role='menuitem']:hover { background: var(--surface-2); }
+
+/* Below this the search box would be narrower than its own placeholder, and
+   the company picker needs the whole row to itself. */
+@media (max-width: 1100px) {
+  .app-search { flex-basis: 14rem; }
+  .app-search__hint { display: none; }
+  .app-user__who { display: none; }
+}
+
+@media (max-width: 900px) {
+  .app-search { order: 3; flex: 1 1 100%; max-width: none; }
+  .app-user__who { display: block; }
+}
+
+@media (max-width: 560px) {
+  .app-user__who { display: none; }
+}

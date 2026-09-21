@@ -9,7 +9,22 @@
 
 import { useId, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, CheckCircle2, ChevronRight, Info, RefreshCw } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowRight,
+  BarChart3,
+  CalendarDays,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  Coins,
+  FileText,
+  Info,
+  RefreshCw,
+  ShoppingCart,
+  UserCheck,
+} from 'lucide-react'
+import { Sparkline } from './charts'
 import { PURCHASE_VIEWS, type PurchaseViewId } from './filters'
 import type { DashboardMetric, Drilldown, SourceStatus } from './types'
 
@@ -50,14 +65,19 @@ export function DashboardSwitcher({
 export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen: (target: Drilldown) => void }) {
   const available = metric.status === 'ready'
   const clickable = available && metric.drilldown !== undefined
+  const basisId = useId()
 
   const body = (
     <>
       <span className="purchase-metric__label">
-        {metric.label}
-        {/* The basis is on the card and in the tooltip: a reader should not have
-            to hover to find out what a number counts. */}
-        <Info size={13} aria-hidden style={{ opacity: 0.5, flexShrink: 0 }} />
+        <span className="purchase-metric__icon" aria-hidden>
+          <MetricIcon id={metric.id} />
+        </span>
+        <span className="purchase-metric__name">{metric.label}</span>
+        {/* The basis is on the card AND in the tooltip AND announced with the
+            card: a reader should not have to hover to find out what a number
+            counts, and a reader who cannot hover should not lose it. */}
+        <Info size={13} aria-hidden className="purchase-metric__info" />
       </span>
 
       <strong className={available ? 'purchase-metric__value' : 'purchase-metric__value is-unavailable'}>
@@ -68,7 +88,21 @@ export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen
         {available ? metric.comparison_text : (metric.unavailable_reason ?? 'Comparison unavailable')}
       </span>
 
-      <span className="purchase-metric__basis">{metric.basis}</span>
+      {/* The slot is always here, filled or not, so six cards in a row keep one
+          baseline. An absent history is absent — never a flat line at zero,
+          which reads as "nothing happened" rather than "nothing to draw". */}
+      {metric.series && metric.series.length > 1 ? (
+        <Sparkline
+          points={metric.series}
+          label={`${metric.label}, ${metric.series[0].label} to ${metric.series[metric.series.length - 1].label}`}
+        />
+      ) : (
+        <div className="purchase-spark" aria-hidden="true" />
+      )}
+
+      <span className="purchase-metric__basis" id={basisId}>
+        {metric.basis}
+      </span>
 
       {metric.footnote && <span className="purchase-metric__footnote">{metric.footnote}</span>}
     </>
@@ -82,6 +116,7 @@ export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen
           className="purchase-metric__link"
           onClick={() => onOpen(metric.drilldown as Drilldown)}
           aria-label={`View the records behind ${metric.label}: ${metric.formatted_value}`}
+          aria-describedby={basisId}
         >
           {body}
         </button>
@@ -90,6 +125,33 @@ export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen
       )}
     </article>
   )
+}
+
+/**
+ * The icon for a KPI, chosen by what the figure is about.
+ *
+ * Keyed on the metric id the server sends rather than on its position in the
+ * row, so re-ordering the cards — or a dashboard that sends four of them —
+ * cannot leave a payables card wearing a delivery van.
+ */
+function MetricIcon({ id }: { id: string }) {
+  const size = 15
+  switch (id) {
+    case 'net_purchases':
+      return <ShoppingCart size={size} />
+    case 'open_commitment':
+      return <FileText size={size} />
+    case 'supplier_dues':
+      return <Coins size={size} />
+    case 'overdue_dues':
+      return <AlertTriangle size={size} />
+    case 'delayed_orders':
+      return <Clock size={size} />
+    case 'my_approvals':
+      return <UserCheck size={size} />
+    default:
+      return <BarChart3 size={size} />
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -299,25 +361,32 @@ export function DataTable<T>({
 // The shell
 // ---------------------------------------------------------------------------
 
+/**
+ * Which upstream products answered, and when.
+ *
+ * Never a decorative "Live" badge: each dot is the status the server reported
+ * for that source on THIS request, and a source that did not answer says so in
+ * words beside the dot rather than only in a colour.
+ */
 export function SourceList({ sources, fetchedAt }: { sources: SourceStatus[]; fetchedAt: Date | null }) {
   return (
     <ul className="purchase-source-list" aria-label="Data source status">
       {sources.map((source) => (
-        <li key={source.id} title={source.message ?? undefined}>
+        <li key={source.id} className={`purchase-source purchase-source--${source.status}`} title={source.message ?? undefined}>
           <span className={`purchase-status-dot purchase-status-dot--${source.status}`} aria-hidden />
           <span>
             {source.label}: {source.status_label}
           </span>
-          {source.message && <span className="purchase-muted">— {source.message}</span>}
+          {source.message && <span className="purchase-muted purchase-source__message">— {source.message}</span>}
         </li>
       ))}
       {fetchedAt && (
-        <li>
-          <span className="purchase-status-dot purchase-status-dot--ready" aria-hidden />
+        <li className="purchase-source purchase-source--clock">
+          <Clock size={12} aria-hidden />
           <span>
-            Loaded{' '}
+            Last sync{' '}
             <time dateTime={fetchedAt.toISOString()}>
-              {fetchedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+              {fetchedAt.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}
             </time>
           </span>
         </li>
@@ -361,6 +430,7 @@ export function PurchaseDashboardShell({
   onViewChange,
   contextControls,
   filterControls,
+  executive,
   sources,
   metrics,
   loading,
@@ -376,6 +446,8 @@ export function PurchaseDashboardShell({
   onViewChange: (view: PurchaseViewId) => void
   contextControls: ReactNode
   filterControls: ReactNode
+  /** The Overview's four summary cards. Absent on the other four dashboards. */
+  executive?: ReactNode
   sources: SourceStatus[]
   metrics: DashboardMetric[]
   loading: boolean
@@ -397,31 +469,58 @@ export function PurchaseDashboardShell({
     // landmark, and two of them is one too many for a screen reader.
     <div className="purchase-workspace">
       <header className="purchase-page-header">
-        <div style={{ minWidth: 0 }}>
+        {/* Decoration, and nothing else: it carries no information, so it is
+            hidden from assistive technology and disappears below 1100px where
+            the header stacks. */}
+        <span className="purchase-header-wave" aria-hidden="true" />
+
+        <div className="purchase-page-header__titles">
           <p className="purchase-eyebrow">Aicountly Purchases</p>
           <h1>{title}</h1>
           <p className="purchase-page-subtitle">{subtitle}</p>
         </div>
-        <div className="purchase-header-actions">
-          <button
-            type="button"
-            className="purchase-button purchase-button--secondary"
-            onClick={onRefresh}
-            disabled={refreshing}
-          >
-            <RefreshCw size={15} aria-hidden /> {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-          {primaryAction}
+
+        <div className="purchase-header-side">
+          <p className="purchase-header-motto" aria-hidden="true">
+            Smarter purchases.
+            <br />
+            Stronger tomorrow.
+          </p>
+          <div className="purchase-header-actions">
+            {/* The period control is a real pair of selects inside the card
+                rather than a button that opens a menu: a select is reachable,
+                announced and operable by keyboard on every platform we ship
+                to, and the resolved range sits under it so the figures can
+                never disagree with the dates they were computed for. */}
+            <div className="purchase-context">
+              <span className="purchase-context__icon" aria-hidden>
+                <CalendarDays size={17} />
+              </span>
+              {contextControls}
+            </div>
+
+            <button
+              type="button"
+              className="purchase-button purchase-button--secondary purchase-refresh"
+              onClick={onRefresh}
+              disabled={refreshing}
+            >
+              <RefreshCw size={15} aria-hidden className={refreshing ? 'purchase-refresh__icon is-spinning' : 'purchase-refresh__icon'} />
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
+            {primaryAction}
+          </div>
         </div>
       </header>
 
-      <div className="purchase-context">{contextControls}</div>
+      {executive}
 
       <DashboardSwitcher activeView={activeView} onChange={onViewChange} />
 
-      <div className="purchase-filterbar">{filterControls}</div>
-
-      <SourceList sources={sources} fetchedAt={fetchedAt} />
+      <div className="purchase-commandbar">
+        <div className="purchase-filterbar">{filterControls}</div>
+        <SourceList sources={sources} fetchedAt={fetchedAt} />
+      </div>
 
       <MetricsRow metrics={metrics} loading={loading} onOpen={openDrilldown} />
 

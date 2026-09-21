@@ -76,31 +76,12 @@ final class InsightsDashboard extends Dashboard
      */
     private function metrics(array $opportunities, array $anomalies, string $currency, ?array $forecast): array
     {
-        // Estimates are summed only across cards that do not overlap. Two
-        // opportunities describing the same rupees would otherwise be added
-        // together into a saving nobody could ever realise.
-        $counted = [];
-        $total = Decimal::ZERO;
-        $overlapping = 0;
-
-        foreach ($opportunities as $opportunity) {
-            if ($opportunity['estimate'] === null) {
-                continue;
-            }
-            $overlapsCounted = false;
-            foreach ((array) $opportunity['overlaps'] as $other) {
-                if (isset($counted[$other])) {
-                    $overlapsCounted = true;
-                    break;
-                }
-            }
-            if ($overlapsCounted) {
-                $overlapping++;
-                continue;
-            }
-            $counted[$opportunity['id']] = true;
-            $total = Decimal::add($total, (string) $opportunity['estimate']);
-        }
+        // Estimates are summed only across cards that do not overlap, by the
+        // same function the Overview's savings card uses — two screens of one
+        // product must not state two different savings totals.
+        $summed = InsightRules::opportunityTotal($opportunities);
+        $total = $summed['total'];
+        $overlapping = $summed['overlapping'];
 
         $stockRisk = $this->stockOutRisk();
 

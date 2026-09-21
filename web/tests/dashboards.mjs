@@ -248,6 +248,68 @@ await check('an unavailable figure never renders as a zero', async () => {
   ok(text.includes('acc_id'), 'and states the upstream reason')
 })
 
+await check('the executive strip states its score in words as well as in a ring', async () => {
+  await page.goto(`${BASE}/dashboard/overview?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const strip = page.locator('.purchase-executive')
+  ok(await strip.isVisible(), 'the strip is above the tabs')
+  eq(await strip.locator('.purchase-exec').count(), 4, 'four cards')
+
+  // A band communicated only by the colour of a ring is a band that a
+  // colour-blind reader and a printed copy both lose.
+  const health = strip.locator('.purchase-exec', { hasText: 'Procurement health score' })
+  const healthText = (await health.textContent()) || ''
+  ok(/Good|Fair|Needs attention|Not enough data/.test(healthText), `the health band is in words: ${healthText}`)
+
+  const risk = strip.locator('.purchase-exec', { hasText: 'Supplier risk score' })
+  const riskText = (await risk.textContent()) || ''
+  ok(/Low risk|Medium risk|High risk|Not enough data/.test(riskText), `the risk band is in words: ${riskText}`)
+
+  // The score must never be shown as a bare number with nothing behind it.
+  ok((await health.getAttribute('title'))?.includes('weight'), 'the health card carries its components and weights')
+})
+
+await check('the payables column is fetched after the dashboard, not inside it', async () => {
+  const calls = []
+  const watch = (request) => {
+    const url = new URL(request.url())
+    if (url.pathname.includes('/v1/dashboards/')) calls.push(url.pathname)
+  }
+  page.on('request', watch)
+
+  await page.goto(`${BASE}/dashboard/overview?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+  page.off('request', watch)
+
+  ok(calls.some((path) => path.endsWith('/v1/dashboards/overview')), 'the dashboard itself was fetched')
+  // Its own request is the whole point: five Books calls inside the dashboard
+  // would hold every KPI on the screen behind a column nobody has scrolled to.
+  ok(
+    calls.some((path) => path.endsWith('/supplier-payables')),
+    `the payables column asked separately: ${calls.join(', ')}`,
+  )
+
+  const payablesHeader = page.locator('.purchase-panel', { hasText: 'Top suppliers by spend' }).locator('th', { hasText: 'Payables' })
+  ok(await payablesHeader.isVisible(), 'and the column is on screen')
+})
+
+await check('the spend trend bucket width is in the URL and is honoured', async () => {
+  await page.goto(`${BASE}/dashboard/overview?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const panel = page.locator('.purchase-panel', { hasText: 'Purchase spend trend' })
+  await panel.getByRole('button', { name: 'Weekly', exact: true }).click()
+  await settle()
+
+  eq(new URL(page.url()).searchParams.get('granularity'), 'week', 'the choice is a query parameter')
+  ok(((await panel.textContent()) || '').includes('by week'), 'and the panel says what it is totalling')
+
+  await page.goBack()
+  await settle()
+  eq(new URL(page.url()).searchParams.get('granularity'), null, 'Back undoes exactly that choice')
+})
+
 await check('a chart offers its figures as a table', async () => {
   await page.goto(`${BASE}/dashboard/bills-payables?preset=this_year`, { waitUntil: 'networkidle' })
   await settle()

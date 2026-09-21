@@ -43,13 +43,18 @@ final class Format
     /** ₹12,34,567.89, or "USD 1,234.00" for a currency with no symbol here. */
     public static function money(string $value, string $currency = 'INR'): string
     {
+        return self::withSymbol(self::grouped($value, 2), $currency);
+    }
+
+    /** The symbol in front, with a leading minus kept in front of it. */
+    private static function withSymbol(string $rendered, string $currency): string
+    {
         $symbols = ['INR' => '₹', 'USD' => '$', 'EUR' => '€', 'GBP' => '£', 'AED' => 'AED ', 'SGD' => 'S$'];
         $symbol = $symbols[strtoupper($currency)] ?? (strtoupper($currency) . ' ');
-        $grouped = self::grouped($value, 2);
 
-        return str_starts_with($grouped, '-')
-            ? '-' . $symbol . substr($grouped, 1)
-            : $symbol . $grouped;
+        return str_starts_with($rendered, '-')
+            ? '-' . $symbol . substr($rendered, 1)
+            : $symbol . $rendered;
     }
 
     /** A whole count: 1,234. */
@@ -70,6 +75,47 @@ final class Format
         }
 
         return $unitLabel === null || $unitLabel === '' ? $out : $out . ' ' . $unitLabel;
+    }
+
+    /**
+     * A short form for a chart axis or a legend: 85.0K, 12.4L, 1.53Cr.
+     *
+     * Indian scale, because these are Indian books. Compaction loses precision
+     * by design, so it is ONLY ever used where the exact figure is also
+     * available — beside it, in the tooltip, or in the table under the chart.
+     * Nothing in this product states a total in this form alone.
+     */
+    public static function compact(string $value): string
+    {
+        $negative = Decimal::isNegative($value);
+        $abs = $negative ? Decimal::negate($value) : Decimal::of($value);
+
+        [$divisor, $suffix] = match (true) {
+            Decimal::cmp($abs, '10000000') >= 0 => ['10000000', 'Cr'],
+            Decimal::cmp($abs, '100000') >= 0   => ['100000', 'L'],
+            // 999.5 rather than 1000: the plain branch rounds to whole rupees,
+            // and a value that rounds to 1,000 should read as 1.00K rather than
+            // as an un-suffixed 1,000 sitting next to 1.02K on the same axis.
+            Decimal::cmp($abs, '999.5') >= 0    => ['1000', 'K'],
+            default                             => ['1', ''],
+        };
+
+        if ($suffix === '') {
+            return ($negative ? '-' : '') . self::grouped($abs, Decimal::cmp($abs, '100') >= 0 ? 0 : 2);
+        }
+
+        $scaled = Decimal::div($abs, $divisor, 3) ?? '0';
+        // Three significant figures reads as a magnitude without pretending to
+        // a precision the short form cannot carry: 1.53Cr, 12.4L, 85.0K.
+        $places = Decimal::cmp($scaled, '100') >= 0 ? 0 : (Decimal::cmp($scaled, '10') >= 0 ? 1 : 2);
+
+        return ($negative ? '-' : '') . Decimal::fixed($scaled, $places) . $suffix;
+    }
+
+    /** The same short form with the currency symbol: ₹1.53Cr. */
+    public static function compactMoney(string $value, string $currency = 'INR'): string
+    {
+        return self::withSymbol(self::compact($value), $currency);
     }
 
     public static function percent(string $value, int $scale = 1): string

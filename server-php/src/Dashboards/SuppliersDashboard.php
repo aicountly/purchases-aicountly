@@ -23,15 +23,16 @@ use Aicountly\Api\Http;
  */
 final class SuppliersDashboard extends Dashboard
 {
-    /** Weights for the composite score. Published to the client with the score. */
-    private const WEIGHTS = [
-        'on_time'    => 40,
-        'acceptance' => 35,
-        'fulfilment' => 25,
-    ];
+    /**
+     * The scoring model is shared with the Overview's supplier risk card.
+     *
+     * These two aliases keep the queries and labels below reading as they did
+     * while there is exactly one definition of the weights and the minimum
+     * sample, in SupplierScore.
+     */
+    private const WEIGHTS = SupplierScore::WEIGHTS;
 
-    /** Below this many observations a component is reported but not scored. */
-    private const MIN_SAMPLE = 3;
+    private const MIN_SAMPLE = SupplierScore::MIN_SAMPLE;
 
     public function view(): string
     {
@@ -56,14 +57,7 @@ final class SuppliersDashboard extends Dashboard
                 'concentration' => $this->concentration($performance),
                 'detail'        => $this->detail(),
             ],
-            ['score_model' => [
-                'weights'      => self::WEIGHTS,
-                'min_sample'   => self::MIN_SAMPLE,
-                'period'       => $this->period->label(),
-                'description'  => 'A weighted average of the components that have at least ' . self::MIN_SAMPLE
-                    . ' observations in this period. A component with fewer is shown but not scored, and the weights are '
-                    . 're-normalised over the components that did count, so a supplier is never penalised for data that does not exist.',
-            ]],
+            ['score_model' => SupplierScore::model($this->period->label())],
         );
     }
 
@@ -73,90 +67,15 @@ final class SuppliersDashboard extends Dashboard
      * The performance facts, computed once and reused by the cards, the matrix
      * and the concentration panel.
      *
-     * On-time is judged per RECEIPT against the order's promised date, and
-     * orders still overdue with nothing received are counted separately so they
-     * cannot vanish from the picture by never producing a receipt at all.
+     * The query itself lives on the base class, because the Overview's supplier
+     * risk card and top-supplier table read exactly the same facts and two
+     * copies of this SQL would be two definitions of "on time".
      *
      * @return list<array<string, mixed>>
      */
     private function performance(): array
     {
-        [$filterSql, $filterParams] = $this->filters->orderClause('p');
-        $params = $this->period->params() + $filterParams;
-
-        return $this->rows(
-            "WITH orders AS (
-                SELECT p.supplier_account_id,
-                       COUNT(*)                                            AS po_count,
-                       COUNT(*) FILTER (WHERE p.acknowledged_at IS NOT NULL) AS acknowledged,
-                       COALESCE(SUM(p.total_amount), 0)                    AS ordered_value,
-                       AVG(EXTRACT(EPOCH FROM (p.acknowledged_at - p.issued_at)) / 3600) AS ack_hours,
-                       MAX(p.supplier_name_snapshot)                       AS supplier_name,
-                       MAX(p.currency_code)                                AS currency_code,
-                       COUNT(DISTINCT p.currency_code)                     AS currency_count
-                FROM purchase_orders p
-                WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'" . $filterSql . "
-                GROUP BY p.supplier_account_id
-            ),
-            lines AS (
-                SELECT p.supplier_account_id,
-                       COUNT(*)                                             AS line_count,
-                       COUNT(*) FILTER (WHERE l.received_qty >= l.ordered_qty) AS complete_lines,
-                       COUNT(*) FILTER (WHERE l.received_qty > 0)            AS inspected_lines,
-                       COUNT(*) FILTER (WHERE l.rejected_qty > 0)            AS rejected_lines,
-                       COUNT(*) FILTER (WHERE l.ordered_qty > l.received_qty
-                                        AND COALESCE(l.promised_date, p.promised_date) < CURRENT_DATE
-                                        AND p.status IN ('ISSUED','ACKNOWLEDGED','PARTIALLY_RECEIVED')) AS overdue_lines,
-                       COALESCE(SUM(GREATEST(l.ordered_qty - l.received_qty, 0) * l.agreed_rate), 0) AS open_exposure
-                FROM purchase_order_lines l
-                JOIN purchase_orders p ON p.po_id = l.po_id
-                WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'" . $filterSql . "
-                GROUP BY p.supplier_account_id
-            ),
-            receipts AS (
-                SELECT p.supplier_account_id,
-                       COUNT(*)                                                  AS receipt_count,
-                       COUNT(*) FILTER (WHERE r.received_at <= p.promised_date)   AS on_time_count,
-                       AVG(r.received_at - p.po_date)                             AS avg_lead_days
-                FROM purchase_receipt_requests r
-                JOIN purchase_orders p ON p.po_id = r.po_id
-                WHERE {scope} AND r.status = 'ACCEPTED' AND p.promised_date IS NOT NULL
-                  AND r.received_at BETWEEN :from AND :to" . $filterSql . "
-                GROUP BY p.supplier_account_id
-            ),
-            claims AS (
-                SELECT supplier_account_id, COUNT(*) AS claim_count,
-                       COUNT(*) FILTER (WHERE status NOT IN ('SETTLED','CLOSED','REJECTED')) AS open_claims
-                FROM purchase_claims
-                WHERE cmp_id = :ctx_cmp_id AND fy_id = :ctx_fy_id AND claim_date BETWEEN :from AND :to
-                GROUP BY supplier_account_id
-            )
-            SELECT o.supplier_account_id,
-                   o.supplier_name, o.currency_code, o.currency_count,
-                   o.po_count, o.acknowledged, o.ordered_value::text AS ordered_value, o.ack_hours,
-                   COALESCE(l.line_count, 0)      AS line_count,
-                   COALESCE(l.complete_lines, 0)  AS complete_lines,
-                   COALESCE(l.inspected_lines, 0) AS inspected_lines,
-                   COALESCE(l.rejected_lines, 0)  AS rejected_lines,
-                   COALESCE(l.overdue_lines, 0)   AS overdue_lines,
-                   COALESCE(l.open_exposure, 0)::text AS open_exposure,
-                   COALESCE(r.receipt_count, 0)   AS receipt_count,
-                   COALESCE(r.on_time_count, 0)   AS on_time_count,
-                   r.avg_lead_days,
-                   COALESCE(c.claim_count, 0)     AS claim_count,
-                   COALESCE(c.open_claims, 0)     AS open_claims,
-                   s.qualification_status, s.is_preferred, s.operational_lead_days, s.payment_terms, s.risk_flag
-            FROM orders o
-            LEFT JOIN lines    l ON l.supplier_account_id = o.supplier_account_id
-            LEFT JOIN receipts r ON r.supplier_account_id = o.supplier_account_id
-            LEFT JOIN claims   c ON c.supplier_account_id = o.supplier_account_id
-            LEFT JOIN purchase_supplier_profiles s
-                   ON s.cmp_id = :ctx_cmp_id AND s.supplier_account_id = o.supplier_account_id
-            ORDER BY o.ordered_value DESC
-            LIMIT 100",
-            $params,
-            'p',
-        );
+        return $this->supplierPerformance();
     }
 
     /**
@@ -447,54 +366,10 @@ final class SuppliersDashboard extends Dashboard
         ]);
     }
 
-    /**
-     * The composite score, with its working.
-     *
-     * Components below the minimum sample are excluded and the remaining
-     * weights re-normalised, so a supplier with one delivery is not scored as
-     * if the one delivery were the whole picture.
-     *
-     * @return array{value: ?string, components: list<array<string, mixed>>, missing: list<string>}
-     */
+    /** @return array{value: ?string, components: list<array<string, mixed>>, missing: list<string>} */
     private function score(?string $onTime, ?string $acceptance, ?string $fulfilment): array
     {
-        $inputs = [
-            'on_time'    => ['label' => 'On-time delivery', 'value' => $onTime],
-            'acceptance' => ['label' => 'Acceptance', 'value' => $acceptance],
-            'fulfilment' => ['label' => 'Line fulfilment', 'value' => $fulfilment],
-        ];
-
-        $weightTotal = 0;
-        $components = [];
-        $missing = [];
-
-        foreach ($inputs as $key => $input) {
-            if ($input['value'] === null) {
-                $missing[] = $input['label'];
-                $components[] = ['key' => $key, 'label' => $input['label'], 'weight' => self::WEIGHTS[$key], 'value' => null, 'counted' => false];
-                continue;
-            }
-            $weightTotal += self::WEIGHTS[$key];
-            $components[] = ['key' => $key, 'label' => $input['label'], 'weight' => self::WEIGHTS[$key], 'value' => $input['value'], 'counted' => true];
-        }
-
-        if ($weightTotal === 0) {
-            return ['value' => null, 'components' => $components, 'missing' => $missing];
-        }
-
-        $weighted = Decimal::ZERO;
-        foreach ($components as $component) {
-            if (!$component['counted']) {
-                continue;
-            }
-            $weighted = Decimal::add($weighted, Decimal::mul((string) $component['value'], (string) $component['weight']));
-        }
-
-        return [
-            'value'      => Decimal::div($weighted, (string) $weightTotal, 1),
-            'components' => $components,
-            'missing'    => $missing,
-        ];
+        return SupplierScore::compose($onTime, $acceptance, $fulfilment);
     }
 
     /** @param array<string, mixed> $row */

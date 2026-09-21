@@ -14,6 +14,89 @@ The view is in the **path**, not in component state, so a link to a dashboard
 is a link to that dashboard and the browser's Back button moves between them.
 Filters are query parameters for the same reason.
 
+## The Overview, above the tabs
+
+Four cards state a POSITION rather than a period total, and sit above the
+dashboard switcher because they are true of the whole screen:
+
+| Card | Panel | Derived from |
+|---|---|---|
+| Procurement health score | `health` | Five ratios this product can count |
+| Savings opportunity | `intelligence` | `InsightRules::opportunities()` — the same rules and the same total as AI Insights |
+| Pending approvals | the `my_approvals` metric | Reused, so the card and the KPI row cannot disagree |
+| Supplier risk score | `supplier_risk` | `SupplierScore`, the model the Suppliers screen uses |
+
+### The health score is this screen's model, not a standard
+
+There is no Aicountly-wide procurement scoring methodology to defer to, so the
+score names itself as this screen's and publishes everything behind it:
+
+| Component | Weight | Ratio |
+|---|---|---|
+| Supplier delivery | 30 | The supplier scorecard for the period |
+| Payables in good standing | 25 | Not-yet-due creditor balance ÷ total owed |
+| Orders on schedule | 20 | Open orders not past their promised date ÷ open orders |
+| Bills matching cleanly | 15 | Bills with no open exception ÷ bills entered |
+| Approvals cleared | 10 | Approvals decided ÷ approvals raised |
+
+**A component with no denominator is not a component worth zero.** A company
+that raised no orders this month has no "orders on schedule" ratio — it does
+not have a bad one. Such a component is reported, excluded, and the remaining
+weights are re-normalised, which is the same rule the supplier score has always
+used. `confidence` states how much of the model actually counted, and the card
+prints it whenever that is less than all of it.
+
+`Dashboards\CompositeScore` is where every score in this product is assembled,
+so the two models cannot drift into two ideas of what a missing input means.
+
+### Panels added to `overview`
+
+| Panel | Source | Note |
+|---|---|---|
+| `trend` | Books | Daily points bucketed to day / week / month, with the previous period beside each bar |
+| `ageing` | Books | The buckets already returned by the summary this screen fetches — no second call |
+| `category_spend` | Purchases + Inventory | Ordered line value, grouped by the item group **Inventory** holds |
+| `concentration` | Books (or ours) + Purchases | Top suppliers, with on-time and risk from our own receipt records |
+| `intelligence` | Purchases | Rule findings, labelled as rules |
+
+The trend's bucket width is a request parameter (`granularity`), so choosing
+"Monthly" changes what the **server** totals. Two screens adding the same daily
+points into two different sets of months is exactly the drift the
+decimal-on-the-server rule exists to prevent. The comparison series costs a
+second Books read and is only taken when a comparison is selected and the
+current range has something in it; without it the panel still draws and says
+why there are no grey bars.
+
+### Category is Inventory's fact
+
+Purchase order lines carry an `item_id`; the group that item belongs to belongs
+to Inventory and is read live through `POST v1/items/bulk-lookup`, capped at the
+200 items with the largest spend. No category table is kept here, and when
+Inventory cannot be reached the panel says so rather than inventing a
+classification out of HSN codes or item names.
+
+### The payables column has its own endpoint
+
+`GET /api/v1/dashboards/overview/supplier-payables?supplier_ids=…`
+
+Books answers bill-by-bill for **one** account at a time, so a payables column
+across five suppliers is five upstream calls. Inside the dashboard request that
+would hold every KPI and every chart behind a column nobody has scrolled to, so
+the screen paints first and asks for this after. It fails on its own: Books
+declining leaves five cells saying so and the rest of the dashboard untouched.
+
+The client sends the supplier ids it has on screen, so the column cannot end up
+describing a different five suppliers from the rows it sits in. Ids this company
+has no purchase record for are dropped rather than relayed to Books.
+
+### Short-form figures
+
+`Format::compact()` renders ₹1.53Cr / ₹12.4L / ₹85.0K for axis labels, legends
+and dense table cells. It is produced on the server like every other figure, and
+it is only ever used **beside** the exact one — in the tooltip, in the cell
+title, and in the table under every chart. Nothing in this product states a
+total in short form alone.
+
 ## What a metric card is
 
 Not a number. A contract, built by `Dashboards\Metric`:
@@ -72,6 +155,11 @@ missing and the observation period. Components below the minimum are excluded
 and the remaining weights re-normalised, so a supplier is never penalised for
 data that does not exist.
 
+It lives in `Dashboards\SupplierScore` and is used by both the Suppliers screen
+and the Overview's risk card. Two implementations of "how good is this supplier"
+would be two answers to one question on two screens of the same product, and the
+first person to notice would rightly stop trusting both.
+
 ## Currency
 
 `scope.reporting_currency` is `null` when documents in the period use more than
@@ -113,6 +201,11 @@ for a missing due date.
 
 *What would close it:* either a `no_due_date` bucket in `payables_ageing`, or
 the open-items endpoint above, from which the bucket can be derived.
+
+**3. Per-supplier payables, company-wide.** The same `acc_id` limitation is why
+the Overview's payables column is a separate, bounded endpoint rather than a
+panel: six suppliers is six calls. The open-items endpoint proposed above would
+collapse it to one, and the column would move into the dashboard response.
 
 A regression test asserts the `acc_id` requirement, so the second gap cannot be
 "fixed" by going back to a call that never worked.

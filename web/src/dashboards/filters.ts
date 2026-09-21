@@ -25,6 +25,8 @@ export function isPurchaseView(value: string | undefined): value is PurchaseView
 }
 
 export const DATE_PRESETS = [
+  { id: 'today', label: 'Today' },
+  { id: 'this_week', label: 'This week' },
   { id: 'this_month', label: 'This month' },
   { id: 'last_month', label: 'Last month' },
   { id: 'last_7_days', label: 'Last 7 days' },
@@ -37,7 +39,7 @@ export const DATE_PRESETS = [
 
 /** Parameters the API understands. Anything else in the URL is the UI's own. */
 const API_PARAMS = [
-  'preset', 'from', 'to', 'compare',
+  'preset', 'from', 'to', 'compare', 'granularity',
   'supplier_id', 'buyer', 'warehouse_id', 'q',
   'view', 'horizon', 'category', 'rfq_id', 'limit', 'offset',
 ] as const

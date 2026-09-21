@@ -345,6 +345,51 @@ final class InsightRules
     }
 
     /**
+     * What the opportunity cards add up to, without counting anything twice.
+     *
+     * Two cards can describe the same rupees — a fragmented-buying card and a
+     * price-rise card on the same item are one saving seen from two angles —
+     * and adding both produces a total nobody could ever realise. A card that
+     * overlaps one already counted is excluded and SAID to be excluded, so the
+     * headline figure and the cards under it can be reconciled by hand.
+     *
+     * The Overview's savings card and the AI Insights total are the same
+     * number because they are this function.
+     *
+     * @param list<array<string, mixed>> $opportunities
+     * @return array{total: string, counted: list<string>, overlapping: int}
+     */
+    public static function opportunityTotal(array $opportunities): array
+    {
+        $counted = [];
+        $total = Decimal::ZERO;
+        $overlapping = 0;
+
+        foreach ($opportunities as $opportunity) {
+            if (($opportunity['estimate'] ?? null) === null) {
+                continue;
+            }
+
+            $overlapsCounted = false;
+            foreach ((array) ($opportunity['overlaps'] ?? []) as $other) {
+                if (isset($counted[$other])) {
+                    $overlapsCounted = true;
+                    break;
+                }
+            }
+            if ($overlapsCounted) {
+                $overlapping++;
+                continue;
+            }
+
+            $counted[(string) $opportunity['id']] = true;
+            $total = Decimal::add($total, (string) $opportunity['estimate']);
+        }
+
+        return ['total' => $total, 'counted' => array_keys($counted), 'overlapping' => $overlapping];
+    }
+
+    /**
      * Anomalies worth a human look. A review candidate, never an accusation.
      *
      * @return list<array<string, mixed>>

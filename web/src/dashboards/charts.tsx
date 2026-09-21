@@ -388,3 +388,385 @@ export function ShareBar({
     </ChartFrame>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Sparkline — the history behind one KPI
+// ---------------------------------------------------------------------------
+
+/**
+ * A 30px line under a metric.
+ *
+ * It is decoration and is marked as such: the figure above it is the answer,
+ * and the accessible summary states the range the line covers rather than
+ * asking a screen-reader user to imagine a shape. There is no axis, no grid and
+ * no tooltip, because at this size all three are noise.
+ */
+export function Sparkline({ points, label }: { points: SeriesPoint[]; label: string }) {
+  if (points.length < 2) return <div className="purchase-spark" aria-hidden="true" />
+
+  const width = 100
+  const height = 26
+  const values = points.map((point) => px(point.value))
+  const max = Math.max(...values)
+  const min = Math.min(...values, 0)
+  const span = max - min || 1
+
+  const coords = points.map((point, index) => ({
+    x: (index / (points.length - 1)) * width,
+    y: height - ((px(point.value) - min) / span) * (height - 2) - 1,
+  }))
+
+  const line = coords.map((coord, index) => `${index === 0 ? 'M' : 'L'}${coord.x.toFixed(2)},${coord.y.toFixed(2)}`).join(' ')
+  const area = `${line} L${width},${height} L0,${height} Z`
+  const last = coords[coords.length - 1]
+
+  return (
+    <div className="purchase-spark">
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={label}>
+        <path d={area} className="purchase-chart__area" />
+        <path d={line} className="purchase-chart__line" vectorEffect="non-scaling-stroke" />
+        {/* The most recent point, marked: a line whose end a reader has to hunt
+            for is a line that gets read backwards. */}
+        <circle cx={last.x} cy={last.y} r={1.6} className="purchase-chart__point" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Grouped columns — this period against the last
+// ---------------------------------------------------------------------------
+
+export interface GroupedDatum {
+  key: string
+  label: string
+  value: string
+  formatted: string
+  previousValue: string | null
+  previousFormatted: string | null
+  previousLabel: string | null
+}
+
+/**
+ * Two bars per bucket, drawn as HTML rather than SVG.
+ *
+ * A grid of flex columns reflows at any width without recomputing a viewBox,
+ * and — the reason that matters — the label under each bucket is real text that
+ * wraps, ellipsises and scales with the browser's font size. SVG text does none
+ * of those things, which is why an SVG chart is the first thing to become
+ * unreadable at 200% zoom.
+ */
+export function GroupedColumns({
+  title,
+  data,
+  currentLabel,
+  previousLabel,
+  unitLabel,
+}: {
+  title: string
+  data: GroupedDatum[]
+  currentLabel: string
+  previousLabel: string
+  unitLabel: string
+}) {
+  const max = data.reduce(
+    (highest, row) => Math.max(highest, px(row.value), row.previousValue === null ? 0 : px(row.previousValue)),
+    0,
+  )
+  const hasPrevious = data.some((row) => row.previousValue !== null)
+  // Every label when there are few buckets; every Nth when there are many.
+  // Thirty-one labels in a 560px panel are thirty-one ellipses, which tell the
+  // reader less than eight readable dates and the first and last anchored.
+  const labelStep = Math.max(1, Math.ceil(data.length / 8))
+  const labelled = (index: number) => index === 0 || index === data.length - 1 || index % labelStep === 0
+  // A bucket worth something real but tiny still gets a visible sliver, so it
+  // reads differently from a bucket with nothing in it.
+  const heightOf = (value: string) => (max === 0 ? 0 : Math.max((px(value) / max) * 100, px(value) > 0 ? 1.5 : 0))
+
+  return (
+    <ChartFrame
+      title={title}
+      summary={`${title}. ${data
+        .map((row) => `${row.label}: ${row.formatted}${row.previousFormatted ? `, against ${row.previousFormatted} in ${row.previousLabel}` : ''}`)
+        .join('. ')}.`}
+      table={
+        <table className="purchase-table">
+          <caption className="purchase-sr-only">{title}, as figures</caption>
+          <thead>
+            <tr>
+              <th scope="col">Period</th>
+              <th scope="col" className="is-numeric">{currentLabel}</th>
+              {hasPrevious && <th scope="col" className="is-numeric">{previousLabel}</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((row) => (
+              <tr key={row.key}>
+                <th scope="row" style={{ fontWeight: 500 }}>{row.label}</th>
+                <td className="is-numeric">{row.formatted}</td>
+                {hasPrevious && (
+                  <td className="is-numeric">
+                    {row.previousFormatted ?? '—'}
+                    {row.previousLabel && <span className="purchase-table__sub">{row.previousLabel}</span>}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      }
+    >
+      <div className="purchase-columns" role="presentation">
+        <div className="purchase-columns__plot">
+          {/* Four gridlines, behind the bars. Fewer than a reader needs to
+              judge a height, and more would be a cage. */}
+          {[0, 25, 50, 75, 100].map((fraction) => (
+            <span key={fraction} className="purchase-columns__grid" style={{ bottom: `${fraction}%` }} />
+          ))}
+
+          {data.map((row, index) => (
+            <div key={row.key} className="purchase-columns__bucket">
+              <div className="purchase-columns__bars">
+                <span
+                  className="purchase-columns__bar is-current"
+                  style={{ height: `${heightOf(row.value)}%` }}
+                  title={`${row.label}: ${row.formatted}`}
+                />
+                {row.previousValue !== null && (
+                  <span
+                    className="purchase-columns__bar is-previous"
+                    style={{ height: `${heightOf(row.previousValue)}%` }}
+                    title={`${row.previousLabel}: ${row.previousFormatted}`}
+                  />
+                )}
+              </div>
+              {/* The bucket keeps its label slot either way, so the bars all
+                  stand on the same baseline whether their date is printed. */}
+              <span className="purchase-columns__label" title={row.label}>
+                {labelled(index) ? row.label : ''}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <p className="purchase-legend" aria-hidden="true">
+        <span className="purchase-legend__item">
+          <span className="purchase-legend__swatch is-current" /> {currentLabel}
+        </span>
+        {hasPrevious && (
+          <span className="purchase-legend__item">
+            <span className="purchase-legend__swatch is-previous" /> {previousLabel}
+          </span>
+        )}
+        <span className="purchase-legend__unit">{unitLabel}</span>
+      </p>
+    </ChartFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Ageing columns — an amount above each bucket
+// ---------------------------------------------------------------------------
+
+export interface BucketDatum {
+  id: string
+  label: string
+  value: string
+  formatted: string
+  compact: string
+  sharePc: string | null
+  tone: 'neutral' | 'warning' | 'danger'
+  onOpen?: () => void
+}
+
+/**
+ * The ageing buckets, worst on the right.
+ *
+ * Each column carries its amount above the bar, because the question a reader
+ * has here is "how much is over ninety days", not "which bar is tallest" — and
+ * a bar chart that makes you estimate the number from a height is a bar chart
+ * that gets photographed and argued about.
+ */
+export function BucketColumns({ title, data }: { title: string; data: BucketDatum[] }) {
+  const max = data.reduce((highest, row) => Math.max(highest, px(row.value)), 0)
+
+  return (
+    <ChartFrame
+      title={title}
+      summary={`${title}. ${data.map((row) => `${row.label}: ${row.formatted}`).join('. ')}.`}
+      table={
+        <table className="purchase-table">
+          <caption className="purchase-sr-only">{title}, as figures</caption>
+          <thead>
+            <tr>
+              <th scope="col">Bucket</th>
+              <th scope="col" className="is-numeric">Amount</th>
+              <th scope="col" className="is-numeric">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((row) => (
+              <tr key={row.id}>
+                <th scope="row" style={{ fontWeight: 500 }}>{row.label}</th>
+                <td className="is-numeric">{row.formatted}</td>
+                <td className="is-numeric">{row.sharePc === null ? '—' : `${row.sharePc}%`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      }
+    >
+      <div className="purchase-buckets" role="presentation">
+        {data.map((row) => {
+          const height = max === 0 ? 0 : Math.max((px(row.value) / max) * 100, px(row.value) > 0 ? 3 : 0)
+          const body = (
+            <>
+              <span className="purchase-buckets__amount">{row.compact}</span>
+              <span className="purchase-buckets__track">
+                <span className={`purchase-buckets__fill is-${row.tone}`} style={{ height: `${height}%` }} />
+              </span>
+              <span className="purchase-buckets__label">{row.label}</span>
+            </>
+          )
+
+          return row.onOpen ? (
+            <button key={row.id} type="button" className="purchase-buckets__bucket" onClick={row.onOpen}>
+              {body}
+              <span className="purchase-sr-only">
+                Open {row.label}: {row.formatted}
+              </span>
+            </button>
+          ) : (
+            <div key={row.id} className="purchase-buckets__bucket" title={`${row.label}: ${row.formatted}`}>
+              {body}
+            </div>
+          )
+        })}
+      </div>
+    </ChartFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Donut — the split of one total
+// ---------------------------------------------------------------------------
+
+export interface SliceDatum {
+  id: string
+  label: string
+  formatted: string
+  compact: string
+  sharePc: string | null
+}
+
+/**
+ * A donut, drawn with one stroked circle per slice.
+ *
+ * `stroke-dasharray` on a shared circle keeps every slice a single element with
+ * no arc arithmetic and no path strings to get wrong — the geometry is one
+ * number per slice, its share, which is the number the legend prints too.
+ *
+ * The palette is deliberately a run of greens down to a neutral. A rainbow
+ * would imply the categories are of different kinds; they are the same kind in
+ * different amounts, and a sequence says that.
+ */
+export function Donut({
+  title,
+  centreValue,
+  centreLabel,
+  data,
+  onSliceOpen,
+}: {
+  title: string
+  centreValue: string
+  centreLabel: string
+  data: SliceDatum[]
+  onSliceOpen?: (slice: SliceDatum) => void
+}) {
+  const palette = ['#187b12', '#25b003', '#4fc233', '#8ad976', '#b9e8ad', '#dcefd4', '#cfd8d1']
+  const radius = 15.915  // circumference 100, so a share IS the dash length
+  let consumed = 0
+
+  const slices = data.map((slice, index) => {
+    const share = Math.max(px(slice.sharePc), 0)
+    const offset = consumed
+    consumed += share
+    return { slice, share, offset, colour: palette[Math.min(index, palette.length - 1)] }
+  })
+
+  return (
+    <ChartFrame
+      title={title}
+      summary={`${title}. Total ${centreValue}. ${data.map((row) => `${row.label}: ${row.formatted}${row.sharePc ? `, ${row.sharePc}%` : ''}`).join('. ')}.`}
+      table={
+        <table className="purchase-table">
+          <caption className="purchase-sr-only">{title}, as figures</caption>
+          <thead>
+            <tr>
+              <th scope="col">Category</th>
+              <th scope="col" className="is-numeric">Value</th>
+              <th scope="col" className="is-numeric">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((row) => (
+              <tr key={row.id}>
+                <th scope="row" style={{ fontWeight: 500 }}>{row.label}</th>
+                <td className="is-numeric">{row.formatted}</td>
+                <td className="is-numeric">{row.sharePc === null ? '—' : `${row.sharePc}%`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      }
+    >
+      <div className="purchase-donut">
+        <div className="purchase-donut__ring">
+          <svg viewBox="0 0 42 42" role="presentation">
+            <circle cx="21" cy="21" r={radius} className="purchase-donut__track" />
+            {slices.map(({ slice, share, offset, colour }) => (
+              <circle
+                key={slice.id}
+                cx="21"
+                cy="21"
+                r={radius}
+                fill="transparent"
+                stroke={colour}
+                strokeWidth="5.5"
+                strokeDasharray={`${share} ${100 - share}`}
+                // -25 puts the first slice at twelve o'clock rather than at
+                // three, which is where a reader starts.
+                strokeDashoffset={25 - offset}
+              >
+                <title>{`${slice.label}: ${slice.formatted}`}</title>
+              </circle>
+            ))}
+          </svg>
+          <div className="purchase-donut__centre">
+            <strong>{centreValue}</strong>
+            <span>{centreLabel}</span>
+          </div>
+        </div>
+
+        <ul className="purchase-donut__legend">
+          {slices.map(({ slice, colour }) => (
+            <li key={slice.id}>
+              <span className="purchase-donut__swatch" style={{ background: colour }} aria-hidden />
+              <span className="purchase-donut__name" title={slice.label}>
+                {onSliceOpen ? (
+                  <button type="button" className="purchase-table__link" onClick={() => onSliceOpen(slice)}>
+                    {slice.label}
+                  </button>
+                ) : (
+                  slice.label
+                )}
+              </span>
+              <span className="purchase-donut__share">{slice.sharePc === null ? '—' : `${slice.sharePc}%`}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </ChartFrame>
+  )
+}

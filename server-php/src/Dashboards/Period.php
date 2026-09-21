@@ -28,7 +28,7 @@ final class Period
     }
 
     /** Presets the UI offers. Resolved on the server so every endpoint agrees. */
-    public const PRESETS = ['this_month', 'last_month', 'last_7_days', 'last_30_days', 'last_90_days', 'this_quarter', 'this_year', 'custom'];
+    public const PRESETS = ['today', 'this_week', 'this_month', 'last_month', 'last_7_days', 'last_30_days', 'last_90_days', 'this_quarter', 'this_year', 'custom'];
 
     public static function fromRequest(): self
     {
@@ -105,6 +105,11 @@ final class Period
     private static function resolvePreset(string $preset, \DateTimeImmutable $today): array
     {
         return match ($preset) {
+            'today' => [$today->format('Y-m-d'), $today->format('Y-m-d')],
+            // Monday-start, which is what a purchase week is run on here. A
+            // Sunday-start week would put two working days in the wrong bucket
+            // every time somebody read the dashboard on a Monday morning.
+            'this_week' => [$today->modify('monday this week')->format('Y-m-d'), $today->format('Y-m-d')],
             'last_month' => [
                 $today->modify('first day of last month')->format('Y-m-d'),
                 $today->modify('last day of last month')->format('Y-m-d'),

@@ -57,6 +57,14 @@ export interface DashboardMetric {
   change_tone: 'is-positive' | 'is-negative' | 'is-neutral'
   footnote: string | null
   drilldown?: Drilldown
+  /**
+   * The history behind the figure, when one genuinely exists.
+   *
+   * Absent — not an empty array and not a row of zeroes — for a figure that is
+   * a position rather than a period total. The card reserves the space either
+   * way so a row of six keeps one baseline.
+   */
+  series?: { label: string; value: string; formatted: string }[]
 }
 
 export interface DashboardScope {
@@ -369,4 +377,200 @@ export interface AskAnswer {
   next_action: { label: string; route: string | null; filters?: Record<string, string> } | null
   suggestions?: { id: string; question: string }[]
   ai?: { available: boolean; reason: string | null }
+}
+
+// ---------------------------------------------------------------------------
+// Overview — the executive strip and the 2026 panels
+// ---------------------------------------------------------------------------
+
+export interface ScoreComponent {
+  key: string
+  label: string
+  weight: number
+  value: string | null
+  counted: boolean
+  /** What was divided by what. Null on the supplier model, which predates it. */
+  basis?: string | null
+  sample?: number | null
+}
+
+export interface ScoreBand {
+  id: 'good' | 'fair' | 'poor' | 'low' | 'medium' | 'high' | 'unknown'
+  label: string
+  tone: 'success' | 'warning' | 'danger' | 'neutral'
+  action?: string
+}
+
+export type HealthPanel = Panel<{
+  score: string | null
+  score_formatted: string | null
+  band: ScoreBand
+  summary: string
+  components: ScoreComponent[]
+  missing: string[]
+  counted_weight: number
+  confidence: { counted: number; total: number; counted_weight: number; label: string; partial: boolean }
+  basis: string
+  method: string
+}>
+
+export type SupplierRiskPanel = Panel<{
+  score: string | null
+  score_formatted: string | null
+  band: ScoreBand
+  components: ScoreComponent[]
+  missing: string[]
+  suppliers: number
+  flagged: number
+  receipts: number
+  direction: string
+  basis: string
+  route: string
+}>
+
+export interface OpportunityCardSummary {
+  id: string
+  kind: string
+  title: string
+  detail: string
+  estimate_formatted: string | null
+  baseline_formatted: string
+  assumption: string
+  counted_in_total: boolean
+  action_label: string
+  route: string
+  filters: Record<string, string>
+}
+
+export type IntelligencePanel = Panel<{
+  total: string
+  total_formatted: string
+  total_compact: string
+  currency: string
+  card_count: number
+  overlapping: number
+  cards: OpportunityCardSummary[]
+  method: string
+  method_label: string
+  narrowed_by_filters: boolean
+  /** Present when filters are applied that these findings do not honour. */
+  scope_note: string | null
+  basis: string
+  route: string
+}>
+
+export interface TrendBucket {
+  key: string
+  label: string
+  amount: string
+  formatted: string
+  compact: string
+  previous_amount: string | null
+  previous_formatted: string | null
+  previous_label: string | null
+}
+
+export type SpendTrendPanel = Panel<{
+  granularity: 'day' | 'week' | 'month'
+  granularity_label: string
+  granularity_options: string[]
+  currency: string
+  points: TrendBucket[]
+  total: string
+  total_formatted: string
+  total_compact: string
+  comparison: {
+    label: string
+    available: boolean
+    reason: string | null
+    previous: string | null
+    current: string | null
+  }
+  /** Present only when Books answered about days outside the range asked for. */
+  outside_range: { points: number; amount: string; formatted: string; note: string } | null
+  basis: string
+}>
+
+export interface AgeingBucketRow extends AgeingBucket {
+  compact: string
+  route: string
+  filters: Record<string, string>
+}
+
+export type AgeingPanel = Panel<{
+  as_of: string
+  as_of_label: string
+  currency: string
+  buckets: AgeingBucketRow[]
+  total: string
+  total_formatted: string
+  basis: string
+  caveat: string
+}>
+
+export interface CategorySlice {
+  id: string
+  label: string
+  amount: string
+  formatted: string
+  compact: string
+  share_pc: string | null
+  /** How many smaller categories this slice rolls up. */
+  rolled_up?: number
+  /** True for the slice covering spend beyond the item lookup's cap. */
+  capped?: boolean
+}
+
+export type CategorySpendPanel = Panel<{
+  currency: string
+  total: string
+  total_formatted: string
+  total_compact: string
+  categories: CategorySlice[]
+  /** The part of the total the split actually classified. */
+  classified?: string
+  source: string
+  basis: string
+  route?: string
+}>
+
+export interface TopSupplierRow extends ConcentrationRow {
+  compact_amount: string
+  on_time_pc: string | null
+  on_time_label: string
+  on_time_sample: number
+  score: string | null
+  risk: ScoreBand
+  overdue_lines: number
+  open_claims: number
+  route: string
+  filters: Record<string, string>
+}
+
+export type TopSuppliersPanel = Panel<{
+  basis: string
+  /** False when the reader lacks supplier.view; the scorecard columns are then empty. */
+  rated: boolean
+  scorecard_basis: string
+  payables_basis: string
+  unrated: number
+  base_source: string
+  base_amount: string
+  base_formatted: string
+  currency: string
+  suppliers: TopSupplierRow[]
+  others: { amount: string; formatted: string; share_pc: string | null }
+}>
+
+/** One supplier's open payable, fetched after the dashboard has drawn. */
+export type SupplierPayable =
+  | { supplier_account_id: number; available: true; pending: string; formatted: string; compact: string; overdue: string; overdue_formatted: string; bills: number }
+  | { supplier_account_id: number; available: false; reason: string }
+
+export interface SupplierPayablesResponse {
+  as_on: string
+  as_on_label: string
+  currency: string
+  suppliers: SupplierPayable[]
+  basis: string
 }

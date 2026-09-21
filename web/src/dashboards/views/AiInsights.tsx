@@ -7,8 +7,8 @@
  * will treat the weakest as if it were the strongest.
  */
 
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Search, Sparkles } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
 import { usePurchases } from '../../context/PurchasesContext'
@@ -284,7 +284,19 @@ function AskPurchases({
   onOpen: (route: string, filters?: Record<string, string>) => void
 }) {
   const { scope } = usePurchases()
-  const [question, setQuestion] = useState('')
+  // A question typed into the header search arrives as `?ask=`. It seeds the
+  // box but is NOT submitted: a page that fires a query the moment it opens is
+  // a page you cannot reload without asking again.
+  const [searchParams] = useSearchParams()
+  const asked = searchParams.get('ask')
+  const [question, setQuestion] = useState(asked ?? '')
+
+  // An effect, not just an initial value: searching again from the header
+  // while this screen is already open changes the parameter without
+  // remounting, and a box that ignored that would swallow the question.
+  useEffect(() => {
+    if (asked !== null && asked !== '') setQuestion(asked)
+  }, [asked])
   const [answer, setAnswer] = useState<AskAnswer | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)

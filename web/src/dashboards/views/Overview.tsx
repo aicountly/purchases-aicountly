@@ -3,35 +3,79 @@
  *
  * The screen a purchase head reads first thing: what needs a decision, what is
  * stuck, and what was actually spent.
+ *
+ * The order on this page is the order of those questions. The briefing and the
+ * priority inbox come first because they are the only parts of the screen with
+ * something for the reader to DO; the trend, the suppliers, the split and the
+ * ageing come after, because they are context for the decisions above them.
+ *
+ * Every panel fails on its own. One upstream refusing is one panel saying why,
+ * never an empty dashboard — which is the whole reason the server sends each
+ * panel with its own `available` flag rather than one status for the page.
  */
 
 import { useNavigate } from 'react-router-dom'
 import { ArrowUpRight, Plus } from 'lucide-react'
 import { DashboardPanel, EmptyState, PanelUnavailable, PriorityCard } from '../shell'
-import { BarChart, ShareBar, TrendChart } from '../charts'
+import { ExecutiveStrip } from '../overview/ExecutiveStrip'
+import { SpendTrendPanel } from '../overview/SpendTrendPanel'
+import { TopSuppliersPanel } from '../overview/TopSuppliersPanel'
+import { CategorySpendPanel } from '../overview/CategorySpendPanel'
+import { PayablesAgeingPanel } from '../overview/PayablesAgeingPanel'
+import { AiBanner, AiInsightsPanel } from '../overview/AiInsights'
+import type { SupplierPayablesState } from '../overview/useSupplierPayables'
 import type {
+  AgeingPanel,
   BriefingItem,
-  ConcentrationRow,
+  CategorySpendPanel as CategorySpendPanelData,
   DashboardResponse,
+  HealthPanel,
+  IntelligencePanel,
   Panel,
   PipelineStage,
   PriorityItem,
-  TrendPoint,
+  SpendTrendPanel as SpendTrendPanelData,
+  SupplierRiskPanel,
+  TopSuppliersPanel as TopSuppliersPanelData,
 } from '../types'
 
 type BriefingPanel = Panel<{ method: string; method_label: string; items: BriefingItem[] }>
-type TrendPanel = Panel<{ points: TrendPoint[]; currency: string; basis: string; total: string }>
 type PipelinePanel = Panel<{ stages: PipelineStage[]; basis: string }>
 type InboxPanel = Panel<{ items: PriorityItem[]; basis: string }>
-type ConcentrationPanel = Panel<{
-  basis: string
-  base_formatted: string
-  suppliers: ConcentrationRow[]
-  others: { amount: string; formatted: string; share_pc: string | null }
-}>
 type ActionsPanel = Panel<{ actions: { id: string; label: string; route: string; tone: string }[] }>
 
-export function OverviewDashboard({ data }: { data: DashboardResponse }) {
+/** The supplier ids the payables column will be asked about, in table order. */
+export function topSupplierIds(data: DashboardResponse): number[] {
+  const panel = data.panels.concentration as TopSuppliersPanelData
+  if (!panel.available) return []
+
+  return panel.suppliers
+    .map((row) => row.supplier_account_id)
+    .filter((id): id is number => typeof id === 'number' && id > 0)
+}
+
+export function OverviewExecutive({ data }: { data: DashboardResponse }) {
+  return (
+    <ExecutiveStrip
+      health={data.panels.health as HealthPanel}
+      intelligence={data.panels.intelligence as IntelligencePanel}
+      supplierRisk={data.panels.supplier_risk as SupplierRiskPanel}
+      approvals={data.metrics.find((metric) => metric.id === 'my_approvals')}
+    />
+  )
+}
+
+export function OverviewDashboard({
+  data,
+  payables,
+  granularity,
+  onGranularityChange,
+}: {
+  data: DashboardResponse
+  payables: SupplierPayablesState
+  granularity: string
+  onGranularityChange: (next: string) => void
+}) {
   const navigate = useNavigate()
   const open = (route: string, filters: Record<string, string> = {}) => {
     const query = new URLSearchParams(filters).toString()
@@ -39,16 +83,19 @@ export function OverviewDashboard({ data }: { data: DashboardResponse }) {
   }
 
   const briefing = data.panels.briefing as BriefingPanel
-  const trend = data.panels.trend as TrendPanel
+  const trend = data.panels.trend as SpendTrendPanelData
   const pipeline = data.panels.pipeline as PipelinePanel
   const inbox = data.panels.priority_inbox as InboxPanel
-  const concentration = data.panels.concentration as ConcentrationPanel
+  const suppliers = data.panels.concentration as TopSuppliersPanelData
+  const ageing = data.panels.ageing as AgeingPanel
+  const categories = data.panels.category_spend as CategorySpendPanelData
+  const intelligence = data.panels.intelligence as IntelligencePanel
   const actions = data.panels.quick_actions as ActionsPanel
 
   return (
     <>
       {actions.available && actions.actions.length > 0 && (
-        <div className="purchase-header-actions" style={{ marginTop: -4 }}>
+        <div className="purchase-header-actions" style={{ justifyContent: 'flex-start' }}>
           {actions.actions.map((action) => (
             <button
               key={action.id}
@@ -76,7 +123,7 @@ export function OverviewDashboard({ data }: { data: DashboardResponse }) {
           ) : (
             <div
               className="purchase-priority-list"
-              style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}
+              style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}
             >
               {briefing.items.map((item) => (
                 <PriorityCard key={item.id} item={item} onReview={() => open(item.route, item.filters)} />
@@ -84,27 +131,23 @@ export function OverviewDashboard({ data }: { data: DashboardResponse }) {
             </div>
           )}
         </DashboardPanel>
+      </div>
 
-        <DashboardPanel title="Purchase trend" description={trend.available ? trend.basis : undefined}>
-          {!trend.available ? (
-            <PanelUnavailable reason={trend.reason} kind={trend.kind} />
-          ) : trend.points.length === 0 ? (
-            <EmptyState title="No posted purchases in this period.">
-              Smart Books answered; it has nothing dated in this range.
-            </EmptyState>
-          ) : (
-            <TrendChart
-              title="Net posted purchases by day"
-              unitLabel={`Amount in ${trend.currency}`}
-              points={trend.points.map((point) => ({
-                label: point.label ?? point.date,
-                value: point.amount,
-                formatted: point.formatted ?? point.amount,
-              }))}
-            />
-          )}
-        </DashboardPanel>
+      {/* Row three: what was spent, with whom, and on what. */}
+      <div className="purchase-analytics-grid">
+        <SpendTrendPanel panel={trend} granularity={granularity} onGranularityChange={onGranularityChange} />
+        <TopSuppliersPanel panel={suppliers} payables={payables} />
+        <CategorySpendPanel panel={categories} />
+      </div>
 
+      {/* Row four: what is owed, what the rules found, and where to go next. */}
+      <div className="purchase-bottom-grid">
+        <PayablesAgeingPanel panel={ageing} />
+        <AiInsightsPanel panel={intelligence} />
+        <AiBanner />
+      </div>
+
+      <div className="purchase-dashboard-grid">
         <DashboardPanel title="Priority inbox" description={inbox.available ? inbox.basis : undefined}>
           {!inbox.available ? (
             <PanelUnavailable reason={inbox.reason} kind={inbox.kind} />
@@ -122,7 +165,6 @@ export function OverviewDashboard({ data }: { data: DashboardResponse }) {
         <DashboardPanel
           title="Procurement pipeline"
           description={pipeline.available ? pipeline.basis : undefined}
-          className="purchase-span-all"
         >
           {!pipeline.available ? (
             <PanelUnavailable reason={pipeline.reason} kind={pipeline.kind} />
@@ -145,49 +187,6 @@ export function OverviewDashboard({ data }: { data: DashboardResponse }) {
                   </span>
                 </button>
               ))}
-            </div>
-          )}
-        </DashboardPanel>
-
-        <DashboardPanel
-          title="Supplier concentration"
-          description={concentration.available ? concentration.basis : undefined}
-          className="purchase-span-all"
-        >
-          {!concentration.available ? (
-            <PanelUnavailable reason={concentration.reason} kind={concentration.kind} />
-          ) : concentration.suppliers.length === 0 ? (
-            <EmptyState title="No supplier spend in this period." />
-          ) : (
-            <div className="purchase-dashboard-grid" style={{ gap: 24 }}>
-              <ShareBar
-                title="Share of purchases by supplier"
-                totalLabel={concentration.base_formatted}
-                data={concentration.suppliers.map((row) => ({
-                  id: String(row.supplier_account_id ?? row.supplier_name),
-                  label: row.supplier_name ?? `Account ${row.supplier_account_id}`,
-                  formatted: row.formatted_amount,
-                  sharePc: row.share_pc,
-                  onOpen: row.supplier_account_id
-                    ? () => open('/dashboard/suppliers', { supplier_id: String(row.supplier_account_id) })
-                    : undefined,
-                }))}
-                others={{ formatted: concentration.others.formatted, sharePc: concentration.others.share_pc }}
-              />
-
-              <BarChart
-                title="Supplier spend"
-                unitLabel="Amount"
-                data={concentration.suppliers.map((row) => ({
-                  id: String(row.supplier_account_id ?? row.supplier_name),
-                  label: row.supplier_name ?? `Account ${row.supplier_account_id}`,
-                  value: row.amount,
-                  formatted: row.formatted_amount,
-                  onOpen: row.supplier_account_id
-                    ? () => open('/purchase-orders', { supplier_id: String(row.supplier_account_id) })
-                    : undefined,
-                }))}
-              />
             </div>
           )}
         </DashboardPanel>

@@ -38,6 +38,20 @@ final class DashboardsController extends Controller
         Http::data(self::dashboard($view, $auth, $ctx)->build());
     }
 
+    /**
+     * Open payable per supplier, for the Overview's top-supplier table.
+     *
+     * Its own endpoint rather than a panel, because it is one Smart Books call
+     * per supplier: the dashboard paints first and this column arrives after.
+     */
+    public static function supplierPayables(): void
+    {
+        [$auth, $ctx] = self::enter();
+
+        $dashboard = new OverviewDashboard($ctx, $auth, Period::fromRequest(), Filters::fromRequest());
+        Http::data($dashboard->supplierPayables());
+    }
+
     /** The question box on AI Insights. */
     public static function ask(): void
     {
