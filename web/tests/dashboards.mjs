@@ -295,7 +295,9 @@ await check('the mobile menu opens and closes without trapping the page', async 
   await menu.click()
   await small.waitForTimeout(300)
   ok(await small.locator('.app-shell__sidebar.is-open').isVisible(), 'the sidebar slid in')
-  await small.locator('.app-shell__close').click()
+  // The same button closes it — it swaps its icon and its label rather than
+  // hiding a second control inside the panel.
+  await small.getByRole('button', { name: 'Close the menu' }).click()
   await small.waitForTimeout(300)
   ok((await small.locator('.app-shell__sidebar.is-open').count()) === 0, 'and slid out again')
   await mobile.close()
@@ -361,15 +363,14 @@ await check('the owner gets the whole product', async () => {
   await page.goto(`${BASE}/dashboard/overview`, { waitUntil: 'networkidle' })
   await settle()
 
-  // Groups, not links: the sidebar collapses a group you are not in, so what a
-  // permission decides is whether the GROUP appears at all. Three of the six
-  // contain nothing that is ungated, and those three are precisely the ones
-  // that vanished — which is the screenshot this bug was reported with.
+  // The navigation is flat now, so what a permission decides is whether an
+  // ENTRY appears. Most of them are gated, and they are exactly what vanished
+  // in the screenshot this bug was reported with.
   const navText = (await page.locator('nav[aria-label="Purchases"]').textContent()) || ''
-  for (const group of ['Procurement', 'Purchase processing', 'Relationships & finance']) {
-    ok(navText.includes(group), `the ${group} group is there`)
+  for (const entry of ['Requisitions', 'Purchase orders', 'Purchase bills', 'Suppliers', 'Reports', 'Access']) {
+    ok(navText.includes(entry), `${entry} is in the navigation`)
   }
-  ok(navText.includes('Workspace') && navText.includes('Administration'), 'and the ungated ones too')
+  ok(navText.includes('Dashboard') && navText.includes('Settings'), 'and the ungated ones too')
 
   // No banner: there is nothing to explain.
   eq(await page.locator('text=You have no permissions in Aicountly Purchases yet').count(), 0, 'no notice for the owner')
@@ -402,11 +403,78 @@ await check('a delegate is told why the app is empty, not left to guess', async 
   )
 
   const navText = (await delegate.locator('nav[aria-label="Purchases"]').textContent()) || ''
-  for (const group of ['Procurement', 'Purchase processing', 'Relationships & finance']) {
-    ok(!navText.includes(group), `the ${group} group is correctly hidden`)
+  for (const entry of ['Requisitions', 'Purchase orders', 'Purchase bills', 'Reports', 'Access']) {
+    ok(!navText.includes(entry), `${entry} is correctly hidden`)
   }
+  ok(navText.includes('Dashboard'), 'but what needs no permission stays')
 
   await delegateCtx.close()
+})
+
+await check('with no company chosen the launcher is what you get, not a broken shell', async () => {
+  const fresh = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await fresh.addInitScript(() => {
+    try {
+      localStorage.setItem('auth_token', 'preview-auth-token')
+      localStorage.removeItem('purchases:scope')
+    } catch {}
+  })
+  const first = await fresh.newPage()
+  await first.goto(`${BASE}/`, { waitUntil: 'networkidle' })
+  await first.waitForTimeout(900)
+
+  ok(
+    await first.getByRole('heading', { name: /Which company are you buying for/ }).isVisible(),
+    'the launcher is the page',
+  )
+  // Not the application frame: a sidebar of links that all refuse to load is
+  // exactly what this replaced.
+  eq(await first.locator('.app-shell__sidebar').count(), 0, 'no application frame behind it')
+
+  const cards = first.locator('.launcher__card')
+  ok((await cards.count()) >= 2, 'the companies Manage listed are offered')
+
+  // Search narrows, and the count beside the heading agrees with what is drawn.
+  await first.locator('.launcher__search input').fill('deccan')
+  await first.waitForTimeout(350)
+  eq(await first.locator('.launcher__card').count(), 1, 'search narrows the list')
+  await first.locator('.launcher__search input').fill('')
+  await first.waitForTimeout(350)
+
+  // Choosing one asks for the year before opening anything: every document
+  // here is filed against a year, so it cannot be skipped.
+  await cards.first().locator('.launcher__card-text').click()
+  await first.waitForTimeout(800)
+  ok(await first.locator('.launcher__confirm').isVisible(), 'the year and branch step appears')
+  ok(await first.locator('#launcher-fy').isVisible(), 'with a financial year to pick')
+
+  await first.getByRole('button', { name: /^Open/ }).click()
+  await first.waitForTimeout(1200)
+  ok(
+    await first.getByRole('heading', { name: 'Purchase overview' }).isVisible(),
+    'and opening it lands on the dashboard',
+  )
+  ok((await first.locator('.app-shell__sidebar').count()) === 1, 'now the frame is there')
+
+  await fresh.close()
+})
+
+await check('the launcher and the shell hold together on a phone', async () => {
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  await phone.addInitScript(() => {
+    try {
+      localStorage.setItem('auth_token', 'preview-auth-token')
+      localStorage.removeItem('purchases:scope')
+    } catch {}
+  })
+  const small = await phone.newPage()
+  await small.goto(`${BASE}/`, { waitUntil: 'networkidle' })
+  await small.waitForTimeout(900)
+  const overflow = await small.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  )
+  eq(overflow, 0, 'the launcher does not scroll sideways at 390px')
+  await phone.close()
 })
 
 await browser.close()

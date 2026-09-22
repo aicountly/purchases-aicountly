@@ -95,10 +95,10 @@ export default function PurchaseDashboards() {
         const query = kept.toString()
         navigate(query === '' ? `/dashboard/${next}` : `/dashboard/${next}?${query}`)
       }}
-      contextControls={
+      headerControls={
         <>
-          <label>
-            Period
+          <label className="purchase-header-period">
+            <span className="purchase-sr-only">Period</span>
             <select value={preset} onChange={(event) => filters.set({ preset: event.target.value })}>
               {DATE_PRESETS.map((option) => (
                 <option key={option.id} value={option.id}>
@@ -108,6 +108,21 @@ export default function PurchaseDashboards() {
             </select>
           </label>
 
+          {canExport && data && (
+            <a
+              className="purchase-button purchase-button--secondary"
+              href={exportUrl()}
+              // The export runs the same code as the screen, with the same
+              // filters, so its totals cannot drift from what is displayed.
+              download
+            >
+              <Download size={15} aria-hidden /> Export
+            </a>
+          )}
+        </>
+      }
+      contextControls={
+        <>
           {preset === 'custom' && (
             <>
               <label>
@@ -188,19 +203,13 @@ export default function PurchaseDashboards() {
             </button>
           )}
 
-          {canExport && data && (
-            <a
-              className="purchase-button purchase-button--secondary"
-              href={exportUrl()}
-              style={{ marginLeft: 'auto' }}
-              // The export runs the same code as the screen, with the same
-              // filters, so its totals cannot drift from what is displayed.
-              download
-            >
-              <Download size={15} aria-hidden /> Export
-            </a>
-          )}
         </>
+      }
+      filtersApplied={
+        filters.get('q') !== null ||
+        filters.get('supplier_id') !== null ||
+        filters.get('warehouse_id') !== null ||
+        filters.get('buyer') !== null
       }
       sources={data?.sources ?? []}
       metrics={data?.metrics ?? []}
