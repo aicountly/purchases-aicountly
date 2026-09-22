@@ -142,7 +142,7 @@ await apiPost(`v1/purchase-orders/${seeded.po_id}/submit`, {}, BUYER)
 // back to whatever `npx playwright install chromium` put in place.
 const executablePath = process.env.PURCHASE_CHROMIUM_PATH || undefined
 const browser = await chromium.launch(executablePath ? { executablePath } : {})
-const ctx = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+const ctx = await browser.newContext({ viewport: { width: 1440, height: 950 }, acceptDownloads: true })
 await ctx.addInitScript(() => {
   try {
     localStorage.setItem('auth_token', 'preview-auth-token')
@@ -574,6 +574,81 @@ await check('a sparkline breaks at months it cannot rate rather than drawing zer
   const label = (await sparks.first().getAttribute('aria-label')) || ''
   ok(/On-time delivery for/.test(label), `the sparkline names its supplier: ${label.slice(0, 60)}`)
   ok(!/\b0%/.test(label) || /\d+%/.test(label), 'rated months carry a percentage')
+})
+
+await check('a supplier statement is read, checked, then reconciled', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const pathMod = await import('node:path')
+
+  // A statement shaped like the ones that actually arrive: a letterhead above
+  // the table, Indian lakh grouping, and the same invoice written two ways.
+  const csv = [
+    'Shree Cement Ltd.,,,',
+    'Statement of account,,,',
+    '01 Aug 2026 to 31 Aug 2026,,,',
+    'Bill Date,Invoice No,Particulars,Amount',
+    '01/08/2026,INV-0001,Cement OPC,"2,00,000.00"',
+    '10/08/2026,INV/0002,Freight,"45,000.25"',
+    '15/08/2026,INV-0003,Admixture,"11,000.00"',
+    '22/08/2026,INV-9999,Unknown charge,"7,500.00"',
+  ].join('\n')
+  const file = pathMod.join(os.tmpdir(), 'purchases-browser-statement.csv')
+  await fs.writeFile(file, csv, 'utf8')
+
+  await page.goto(`${BASE}/statements`, { waitUntil: 'networkidle' })
+  await settle()
+
+  await page.locator('input[type="file"]').setInputFiles(file)
+  await page.waitForTimeout(1500)
+
+  // Step two must show what it decided BEFORE anything is compared.
+  ok(
+    (await page.locator('text=/read as a letterhead and skipped/').count()) > 0,
+    'it says it skipped the letterhead',
+  )
+  const mapped = await page.locator('select').first().inputValue()
+  eq(mapped, '0', 'the date column was found')
+
+  await page.locator('input[placeholder="Account id"]').fill('601')
+  await page.locator('input[type="date"]').first().fill('2026-08-01')
+  await page.locator('input[type="date"]').nth(1).fill('2026-08-31')
+  await page.getByRole('button', { name: /Reconcile/ }).click()
+  await page.waitForTimeout(1800)
+
+  const body = (await page.locator('.purchase-dashboard-content').textContent()) || ''
+
+  // All four answers, and the one that proves the matching works: INV/0002 on
+  // the statement is INV/0002 in Books, and INV-0001 is INV/0001 — punctuation
+  // must not create two false exceptions.
+  ok(/Agreed/.test(body), 'the agreed bucket is shown')
+  ok(/Same bill, different amount/.test(body), 'so is the disagreement bucket')
+  ok(/On the statement only/.test(body), 'and what the supplier billed that we have not')
+  ok(/In Smart Books only/.test(body), 'and what we hold that they did not list')
+  ok(/INV-9999/.test(body), 'the unknown invoice is named')
+
+  // Nothing is kept. That claim is on the screen because it is a promise.
+  ok(/read and discarded/.test(body), 'and it says the file was not kept')
+
+  await fs.unlink(file).catch(() => {})
+})
+
+await check('a report downloads as a real PDF, not a renamed CSV', async () => {
+  await page.goto(`${BASE}/reports`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: /PDF/ }).first().click(),
+  ])
+
+  const path = await download.path()
+  ok(path !== null, 'the browser received a file')
+
+  const fs = await import('node:fs/promises')
+  const head = (await fs.readFile(path)).subarray(0, 8).toString('latin1')
+  ok(head.startsWith('%PDF-'), `and its first bytes are a PDF header, got ${JSON.stringify(head)}`)
+  ok(download.suggestedFilename().endsWith('.pdf'), 'named as a PDF')
 })
 
 await browser.close()

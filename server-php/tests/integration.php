@@ -38,6 +38,15 @@ use Aicountly\Api\Dashboards\OverviewDashboard;
 use Aicountly\Api\Dashboards\Period;
 use Aicountly\Api\Dashboards\ProcurementDashboard;
 use Aicountly\Api\Dashboards\SuppliersDashboard;
+use Aicountly\Api\Import\ColumnMap;
+use Aicountly\Api\Import\CsvReader;
+use Aicountly\Api\Import\DocumentReader;
+use Aicountly\Api\Import\PdfTextReader;
+use Aicountly\Api\Import\StatementReconciler;
+use Aicountly\Api\Import\Values;
+use Aicountly\Api\Import\XlsxReader;
+use Aicountly\Api\Pdf\PdfDocument;
+use Aicountly\Api\Pdf\ReportRenderer;
 
 $passed = 0;
 $failed = 0;
@@ -2141,6 +2150,233 @@ check('the session endpoint reports ownership the client can act on', function (
         $data = $sent->payload['data'] ?? [];
         assertSame(true, $data['is_owner'], 'the client is told they are the owner');
         assertTrue(in_array('reports.view', $data['permissions'] ?? [], true), 'and handed the permissions that prove it');
+    } finally {
+        Auth::adopt(null);
+    }
+});
+
+echo "\nImport, reconciliation and print\n";
+
+check('an amount is read the way its own notation means it', function () {
+    // The two that matter most and are most often wrong. Indian lakh grouping
+    // is not a decimal point, and European notation is the mirror image of
+    // Western — read either one naively and the figure is out by 100x.
+    assertSame('125000', Values::amount('1,25,000.00'), 'Indian grouping');
+    assertSame('1250', Values::amount('1.250,00'), 'European separators');
+    assertSame('98400.5', Values::amount('₹ 98,400.50'), 'a currency symbol and Western grouping');
+
+    // Accounting writes a negative three different ways and means one thing.
+    assertSame('-2500', Values::amount('(2,500.00)'), 'parentheses');
+    assertSame('-2500', Values::amount('2500.00-'), 'trailing minus');
+    assertSame('-2500', Values::amount('-2,500'), 'leading minus');
+
+    // NOT ZERO. A parser that answers 0 for text it cannot read hands back a
+    // figure that looks like an answer and reconciles against nothing.
+    assertSame(null, Values::amount('subtotal'), 'unreadable text is null');
+    assertSame(null, Values::amount(''), 'and so is blank');
+});
+
+check('a date is read day-first, and refuses what it cannot tell', function () {
+    assertSame('2026-04-05', Values::date('05/04/2026'), 'day-first, as every statement here is written');
+    assertSame('2026-04-13', Values::date('13/04/2026'), 'a first part above 12 can only be a day');
+    assertSame('2026-04-05', Values::date('5 Apr 2026'), 'a month name is unambiguous');
+    assertSame('2026-04-05', Values::date('2026-04-05'), 'ISO passes through');
+    assertSame(null, Values::date('last Tuesday'), 'and prose is refused');
+
+    // Reduced for matching only; the original is what any screen shows.
+    assertSame(Values::reference('INV-4460'), Values::reference('inv/004460'), 'one reference, two spellings');
+});
+
+check('a delimited file is read by counting, not by assuming commas', function () {
+    $table = CsvReader::read("Date;Invoice;Amount\n2026-04-05;INV-4460;1.250,00\n2026-05-05;INV-4461;98.400,50\n");
+
+    assertSame(['Date', 'Invoice', 'Amount'], $table->headers, 'semicolons were found');
+    assertSame(2, count($table->rows), 'both rows survived');
+    assertSame('1.250,00', $table->rows[0][2], 'and the cell is untouched — interpretation is a separate step');
+    assertTrue(str_contains(implode(' ', $table->notes), 'semicolon'), 'and the reader says what it decided');
+});
+
+check('a workbook survives shared strings, date serials and skipped columns', function () {
+    $path = sys_get_temp_dir() . '/purchases-test-book.xlsx';
+    @unlink($path);
+
+    $zip = new \ZipArchive();
+    assertTrue($zip->open($path, \ZipArchive::CREATE) === true, 'the fixture workbook was created');
+    $zip->addFromString('xl/workbook.xml',
+        '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<sheets><sheet name="Statement" sheetId="1"/></sheets></workbook>');
+    $zip->addFromString('xl/sharedStrings.xml',
+        '<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<si><t>Date</t></si><si><t>Invoice</t></si><si><t>Narration</t></si><si><t>Amount</t></si><si><t>Cement</t></si></sst>');
+    $zip->addFromString('xl/styles.xml',
+        '<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<numFmts count="1"><numFmt numFmtId="164" formatCode="dd-mm-yyyy"/></numFmts>'
+        . '<cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs></styleSheet>');
+    // Row 3 has NO column C. A reader that appends values in order shifts the
+    // amount one column left and imports the narration as money.
+    $zip->addFromString('xl/worksheets/sheet1.xml',
+        '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        . '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c></row>'
+        . '<row r="2"><c r="A2" s="1"><v>46117</v></c><c r="B2" t="inlineStr"><is><t>INV-4460</t></is></c><c r="C2" t="s"><v>4</v></c><c r="D2"><v>125000.00</v></c></row>'
+        . '<row r="3"><c r="A3" s="1"><v>46147</v></c><c r="B3" t="inlineStr"><is><t>INV-4461</t></is></c><c r="D3"><v>98400.5</v></c></row>'
+        . '</sheetData></worksheet>');
+    $zip->close();
+
+    $table = XlsxReader::read($path);
+    @unlink($path);
+
+    assertSame(['Date', 'Invoice', 'Narration', 'Amount'], $table->headers, 'shared strings were resolved');
+    // 46117 is 5 April 2026 once Excel's 1900 leap-year bug is accounted for.
+    assertSame('2026-04-05', $table->rows[0][0], 'a date serial became a date');
+    assertSame('Cement', $table->rows[0][2], 'an inline string was read');
+    assertSame('', $table->rows[1][2], 'the skipped column is BLANK');
+    assertSame('98400.5', $table->rows[1][3], 'so the amount stayed in its own column');
+});
+
+check('a PDF this product writes is a PDF this product can read back', function () {
+    $pdf = new PdfDocument();
+    $pdf->text('Supplier statement', 40, 14, PdfDocument::FONT_BOLD);
+    $pdf->advance(24);
+    $pdf->text('Date', 40, 9, PdfDocument::FONT_BOLD);
+    $pdf->text('Invoice', 150, 9, PdfDocument::FONT_BOLD);
+    $pdf->textRight('Amount', 540, 9, PdfDocument::FONT_BOLD);
+    $pdf->advance(18);
+    foreach ([['2026-04-05', 'INV-4460', '1,25,000.00'], ['2026-05-05', 'INV-4461', '98,400.50']] as $row) {
+        $pdf->text($row[0], 40, 9);
+        $pdf->text($row[1], 150, 9);
+        $pdf->textRight($row[2], 540, 9);
+        $pdf->advance(16);
+    }
+
+    $bytes = $pdf->render('Statement');
+    assertTrue(str_starts_with($bytes, '%PDF-'), 'it is a PDF');
+    assertTrue(str_contains($bytes, 'startxref'), 'with a cross-reference table');
+
+    $table = PdfTextReader::read($bytes);
+    $flat = array_map(static fn (array $r) => implode('|', $r), $table->rows);
+
+    assertTrue(in_array('2026-04-05|INV-4460|1,25,000.00', $flat, true), 'the row came back whole: ' . implode(' / ', $flat));
+    assertTrue(in_array('Date|Invoice|Amount', $flat, true), 'and so did the heading');
+});
+
+check('a scan is reported as a scan, not as an empty document', function () {
+    // A PDF with a page and no text operators — what a scanner produces.
+    $bare = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+    $table = PdfTextReader::read($bare);
+
+    assertTrue($table->isEmpty(), 'nothing was read');
+    // The distinction that matters: "there is no text in this file" is a
+    // different problem from "this file is empty", and only one of them is
+    // fixed by exporting a CSV instead.
+    assertTrue(
+        str_contains(implode(' ', $table->notes), 'no text layer') || str_contains(implode(' ', $table->notes), 'decompressed'),
+        'and the reason says the file has no text to read: ' . implode(' ', $table->notes),
+    );
+});
+
+check('the header row is found below a letterhead, not assumed to be first', function () {
+    $table = CsvReader::read(
+        "Shree Cement Ltd.,,,\n"
+        . "Statement of account,,,\n"
+        . "01 Apr 2026 to 30 Sep 2026,,,\n"
+        . "Bill Date,Invoice No,Particulars,Amount\n"
+        . "05/04/2026,INV-4460,Cement,1,25,000.00\n"
+    );
+
+    $map = ColumnMap::detect($table);
+    assertSame(3, $map->headerRow, 'the fourth row is the heading');
+    assertSame(0, $map->columns['date'], 'Bill Date is the date');
+    assertSame(1, $map->columns['reference'], 'Invoice No is the reference');
+    assertSame(2, $map->columns['description'], 'Particulars is the narration');
+    assertTrue(str_contains(implode(' ', $map->notes), 'letterhead'), 'and it says it skipped a letterhead');
+});
+
+check('a reconciliation sorts every line into one of four answers', function () use ($ctx, $auth) {
+    $statement = CsvReader::read(
+        "Date,Invoice,Amount\n"
+        . "2026-08-01,INV-0001,200000.00\n"    // agrees with Books
+        . "2026-08-10,INV/0002,45000.25\n"     // agrees, written differently
+        . "2026-08-15,INV-0003,11000.00\n"     // Books says 10,000
+        . "2026-08-22,INV-9999,7500.00\n"      // Books has never seen this
+    );
+    $map = ColumnMap::detect($statement);
+
+    $ledger = (new \Aicountly\Api\Dashboards\BooksReader($ctx, $auth->sesKey()))->supplierLedger(601, '2026-08-01', '2026-08-31');
+    assertTrue($ledger['ok'], 'the ledger was read');
+    assertSame(4, count($ledger['rows']), 'including the settled bill, which openItems() would have dropped');
+
+    $report = StatementReconciler::reconcile($map->dataRows($statement), $map, $ledger['rows'], 'INR');
+    $buckets = [];
+    foreach ($report['buckets'] as $bucket) {
+        $buckets[$bucket['id']] = $bucket;
+    }
+
+    assertSame(2, $buckets['agreed']['count'], 'two lines agree');
+    assertSame(1, $buckets['differs']['count'], 'one is the same bill for different money');
+    assertSame(1, $buckets['only_statement']['count'], 'one is billed to us and unknown to Books');
+    assertSame(1, $buckets['only_books']['count'], 'and one bill is ours and not on their statement');
+
+    // INV/0002 and INV-0002 are the same document, and matching them is the
+    // difference between a clean reconciliation and four false exceptions.
+    $refs = array_map(static fn (array $r) => $r['statement']['reference'], $buckets['agreed']['rows']);
+    assertTrue(in_array('INV/0002', $refs, true), 'punctuation did not break the match');
+
+    assertSame('INV-9999', $buckets['only_statement']['rows'][0]['reference'], 'the unknown one is named');
+});
+
+check('a reconciliation reports and never writes', function () use ($ctx, $auth) {
+    // The whole safety property in one assertion: Books owns the ledger, and a
+    // statement is the supplier's opinion of it. Nothing about reconciling may
+    // change a bill, a payable or a voucher.
+    resetDatabase();
+    $before = (int) Db::scalar('SELECT COUNT(*) FROM purchase_bill_requests');
+
+    $statement = CsvReader::read("Date,Invoice,Amount\n2026-08-01,INV-0001,999999.00\n");
+    $map = ColumnMap::detect($statement);
+    $ledger = (new \Aicountly\Api\Dashboards\BooksReader($ctx, $auth->sesKey()))->supplierLedger(601, '2026-08-01', '2026-08-31');
+
+    $report = StatementReconciler::reconcile($map->dataRows($statement), $map, $ledger['rows'], 'INR');
+
+    assertTrue($report['lines_read'] === 1, 'the line was read');
+    assertSame($before, (int) Db::scalar('SELECT COUNT(*) FROM purchase_bill_requests'), 'and nothing was created');
+});
+
+check('a dashboard prints, and an unavailable figure prints as Unavailable', function () use ($ctx, $auth) {
+    resetDatabase();
+    $payload = dashboardFor('overview', $ctx, $auth, ['preset' => 'this_year']);
+    $pdf = ReportRenderer::render($payload, 'Purchase overview', 'Company 88');
+
+    assertTrue(str_starts_with($pdf, '%PDF-'), 'a PDF was produced');
+    assertTrue(strlen($pdf) > 1200, 'with content in it');
+    assertTrue(str_contains($pdf, 'Purchase overview'), 'titled with the report, not the route');
+
+    // A printout is circulated, filed and quoted months later. A zero standing
+    // in for "we could not ask" becomes a fact the moment it is printed.
+    $hasUnavailable = false;
+    foreach ($payload['metrics'] as $metric) {
+        if ($metric['status'] !== 'ready') {
+            $hasUnavailable = true;
+            break;
+        }
+    }
+    if ($hasUnavailable) {
+        assertTrue(str_contains($pdf, 'Unavailable'), 'and it says so on the page');
+    }
+});
+
+check('the export endpoint answers with a real PDF when asked for one', function () use ($ctx, $auth) {
+    resetDatabase();
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => '0', 'format' => 'pdf', 'preset' => 'this_year'];
+    Auth::adopt($auth);
+
+    try {
+        \Aicountly\Api\Controllers\DashboardsController::export('overview');
+        throw new \RuntimeException('export returned without responding');
+    } catch (ResponseSent $sent) {
+        $data = $sent->payload['data'] ?? [];
+        assertSame('pdf', $data['format'] ?? null, 'the PDF branch answered');
+        $bytes = base64_decode((string) ($data['pdf'] ?? ''), true);
+        assertTrue(is_string($bytes) && str_starts_with($bytes, '%PDF-'), 'and the bytes are a PDF');
     } finally {
         Auth::adopt(null);
     }

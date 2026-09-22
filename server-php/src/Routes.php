@@ -10,6 +10,7 @@ use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
 use Aicountly\Api\Controllers\DashboardController;
 use Aicountly\Api\Controllers\DashboardsController;
+use Aicountly\Api\Controllers\ImportController;
 use Aicountly\Api\Controllers\ManageController;
 use Aicountly\Api\Controllers\PurchaseOrdersController;
 use Aicountly\Api\Controllers\RequisitionsController;
@@ -130,6 +131,12 @@ final class Routes
         $router->get('v1/dashboards/{view}', [DashboardsController::class, 'show']);
         $router->get('v1/dashboards/{view}/export', [DashboardsController::class, 'export']);
         $router->post('v1/insights/ask', [DashboardsController::class, 'ask']);
+
+        // Reading an uploaded document. Both are POST because both take a file;
+        // neither writes anything, and `preview` deliberately has no side
+        // effects at all so a mapping can be checked before it is acted on.
+        $router->post('v1/import/preview', [ImportController::class, 'preview']);
+        $router->post('v1/import/reconcile-statement', [ImportController::class, 'reconcile']);
 
         // The original summary endpoint, kept for anything already calling it.
         $router->get('v1/dashboard', [DashboardController::class, 'index']);

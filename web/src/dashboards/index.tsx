@@ -7,11 +7,11 @@
  * does not change the URL is a switcher the Back button cannot undo.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
-import { Download } from 'lucide-react'
+import { Download, FileText } from 'lucide-react'
 import { usePurchases } from '../context/PurchasesContext'
-import { getApiBaseUrl } from '../config'
+import { api } from '../services/api'
 import { PurchaseDashboardShell } from './shell'
 import { DATE_PRESETS, isPurchaseView, useDashboardFilters, type PurchaseViewId } from './filters'
 import { useDashboard } from './useDashboard'
@@ -49,7 +49,7 @@ export default function PurchaseDashboards() {
   const { view } = useParams<{ view: string }>()
   const navigate = useNavigate()
   const filters = useDashboardFilters()
-  const { session, can } = usePurchases()
+  const { can } = usePurchases()
 
   const resolved: PurchaseViewId = isPurchaseView(view) ? view : 'overview'
   const { data, loading, refreshing, error, retryable, fetchedAt, refresh } = useDashboard(resolved, filters.apiParams)
@@ -66,17 +66,30 @@ export default function PurchaseDashboards() {
 
   const preset = filters.get('preset') ?? 'this_month'
   const canExport = can('reports.view')
+  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
 
-  const exportUrl = () => {
-    const params = new URLSearchParams(
-      Object.entries(filters.apiParams).map(([key, value]) => [key, String(value)]),
-    )
-    if (session) {
-      params.set('cmp_id', String(session.context.cmp_id))
-      params.set('fy_id', String(session.context.fy_id))
-      params.set('bo_id', String(session.context.bo_id))
+  /**
+   * Take the figures, in the format asked for.
+   *
+   * Fetched with the session key rather than linked to: this API authenticates
+   * with a bearer token and a plain <a href> cannot carry one, so the link this
+   * replaced was answering 401 and the click did nothing visible.
+   */
+  const take = async (format: 'csv' | 'pdf') => {
+    setExporting(format)
+    setExportError(null)
+    try {
+      await api.download(
+        `v1/dashboards/${resolved}/export`,
+        `purchases-${resolved}-${filters.get('preset') ?? 'period'}.${format}`,
+        { ...filters.apiParams, format },
+      )
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'That export could not be produced.')
+    } finally {
+      setExporting(null)
     }
-    return `${getApiBaseUrl()}/v1/dashboards/${resolved}/export?${params.toString()}`
   }
 
   return (
@@ -109,15 +122,27 @@ export default function PurchaseDashboards() {
           </label>
 
           {canExport && data && (
-            <a
-              className="purchase-button purchase-button--secondary"
-              href={exportUrl()}
-              // The export runs the same code as the screen, with the same
-              // filters, so its totals cannot drift from what is displayed.
-              download
-            >
-              <Download size={15} aria-hidden /> Export
-            </a>
+            <>
+              {/* Both run the same code as the screen, with the same filters,
+                  so neither can drift from what is displayed. */}
+              <button
+                type="button"
+                className="purchase-button purchase-button--secondary"
+                onClick={() => void take('csv')}
+                disabled={exporting !== null}
+              >
+                <Download size={15} aria-hidden /> {exporting === 'csv' ? 'Exporting…' : 'Export'}
+              </button>
+              <button
+                type="button"
+                className="purchase-button purchase-button--secondary"
+                onClick={() => void take('pdf')}
+                disabled={exporting !== null}
+                title="Print-ready PDF of this screen"
+              >
+                <FileText size={15} aria-hidden /> {exporting === 'pdf' ? 'Printing…' : 'PDF'}
+              </button>
+            </>
           )}
         </>
       }
@@ -218,6 +243,12 @@ export default function PurchaseDashboards() {
       fetchedAt={fetchedAt}
       onRefresh={refresh}
     >
+      {exportError !== null && (
+        <div className="purchase-notice purchase-notice--danger" style={{ marginBottom: '1rem' }}>
+          {exportError}
+        </div>
+      )}
+
       {error && (
         <div className="purchase-notice purchase-notice--danger">
           <div>

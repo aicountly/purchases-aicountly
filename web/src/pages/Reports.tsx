@@ -12,9 +12,10 @@
  * them.
  */
 
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { BarChart3, Download, ExternalLink } from 'lucide-react'
-import { getApiBaseUrl } from '../config'
+import { BarChart3, Download, ExternalLink, FileText, Loader2 } from 'lucide-react'
+import { api } from '../services/api'
 import { usePurchases } from '../context/PurchasesContext'
 import '../dashboards/purchase.css'
 
@@ -47,18 +48,23 @@ const REPORTS = [
 ] as const
 
 export default function Reports() {
-  const { scope } = usePurchases()
+  usePurchases()
+  const [busy, setBusy] = useState<string | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
 
-  // The same link the dashboard's own Export button builds, so a report taken
-  // from here and one taken from the screen are the same request.
-  const exportUrl = (view: string) => {
-    const params = new URLSearchParams()
-    if (scope) {
-      params.set('cmp_id', String(scope.cmp_id))
-      params.set('fy_id', String(scope.fy_id))
-      params.set('bo_id', String(scope.bo_id))
+  // Fetched with the session key and saved from the Blob. A plain link cannot
+  // carry a bearer token, so a link here answers 401 and the click looks like
+  // it did nothing.
+  const take = async (view: string, format: 'csv' | 'pdf') => {
+    setBusy(`${view}:${format}`)
+    setFailed(null)
+    try {
+      await api.download(`v1/dashboards/${view}/export`, `purchases-${view}.${format}`, { format })
+    } catch (error) {
+      setFailed(error instanceof Error ? error.message : 'That export could not be produced.')
+    } finally {
+      setBusy(null)
     }
-    return `${getApiBaseUrl()}/v1/dashboards/${view}/export?${params.toString()}`
   }
 
   return (
@@ -74,6 +80,12 @@ export default function Reports() {
       </header>
 
       <div className="purchase-dashboard-content">
+        {failed !== null && (
+          <div className="purchase-notice purchase-notice--danger" style={{ marginBottom: '1rem' }}>
+            {failed}
+          </div>
+        )}
+
         <div className="purchase-dashboard-grid">
           <section className="purchase-panel purchase-span-all">
             <header className="purchase-panel__header">
@@ -111,12 +123,32 @@ export default function Reports() {
                             >
                               <ExternalLink size={14} aria-hidden /> Open
                             </Link>
-                            <a
+                            <button
+                              type="button"
                               className="purchase-button purchase-button--secondary"
-                              href={exportUrl(report.view)}
+                              onClick={() => void take(report.view, 'csv')}
+                              disabled={busy !== null}
                             >
-                              <Download size={14} aria-hidden /> CSV
-                            </a>
+                              {busy === `${report.view}:csv` ? (
+                                <Loader2 size={14} aria-hidden />
+                              ) : (
+                                <Download size={14} aria-hidden />
+                              )}{' '}
+                              CSV
+                            </button>
+                            <button
+                              type="button"
+                              className="purchase-button purchase-button--secondary"
+                              onClick={() => void take(report.view, 'pdf')}
+                              disabled={busy !== null}
+                            >
+                              {busy === `${report.view}:pdf` ? (
+                                <Loader2 size={14} aria-hidden />
+                              ) : (
+                                <FileText size={14} aria-hidden />
+                              )}{' '}
+                              PDF
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -137,12 +169,16 @@ export default function Reports() {
             <div className="purchase-panel__body">
               <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'grid', gap: '0.5rem', fontSize: '0.89rem' }}>
                 <li>
-                  <strong>PDF output.</strong> Exports are CSV only. A print-ready renderer is not
-                  wired up, so there is nothing here that produces one.
+                  <strong>Reading a scan.</strong> A PDF with text in it is read exactly. A scanned or
+                  photographed document is a picture, and getting figures out of a picture needs
+                  optical character recognition, which is not installed on this server. The reader
+                  says which of the two it was given rather than returning an empty result.
                 </li>
                 <li>
-                  <strong>Supplier statement reconciliation.</strong> Matching a supplier&apos;s own
-                  statement against our ledger needs an import pipeline that does not exist yet.
+                  <strong>Creating a bill from an uploaded invoice.</strong> A document can be read —
+                  that is what statement reconciliation uses — but nothing turns one into a bill. A
+                  bill is a financial document, and creating one from a parsed file needs the
+                  duplicate refusal, tolerance and approval rules manual entry already has.
                 </li>
                 <li>
                   <strong>Scheduled delivery.</strong> Nothing here emails or files a report on a

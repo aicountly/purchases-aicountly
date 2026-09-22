@@ -5,6 +5,7 @@ import { PurchasesProvider, usePurchases } from './context/PurchasesContext'
 import { AppShell } from './shell/AppShell'
 import ChooseCompany from './pages/ChooseCompany'
 import Reports from './pages/Reports'
+import Statements from './pages/Statements'
 import SignIn from './pages/SignIn'
 import PurchaseDashboards from './dashboards'
 import { RequisitionDetail, RequisitionEditor, RequisitionsList } from './pages/Requisitions'
@@ -127,6 +128,7 @@ export default function App() {
             </Route>
 
             <Route path="reports" element={<RequireScope><Reports /></RequireScope>} />
+            <Route path="statements" element={<RequireScope><Statements /></RequireScope>} />
             <Route path="claims" element={<RequireScope><Claims /></RequireScope>} />
             <Route path="suppliers" element={<RequireScope><Suppliers /></RequireScope>} />
             <Route path="approvals" element={<RequireScope><Approvals /></RequireScope>} />

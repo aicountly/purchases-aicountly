@@ -13,6 +13,7 @@ use Aicountly\Api\Dashboards\Period;
 use Aicountly\Api\Dashboards\ProcurementDashboard;
 use Aicountly\Api\Dashboards\SuppliersDashboard;
 use Aicountly\Api\Http;
+use Aicountly\Api\Pdf\ReportRenderer;
 use Aicountly\Api\Permissions;
 
 /**
@@ -26,6 +27,15 @@ final class DashboardsController extends Controller
 {
     /** The switcher's contents, and the only views this controller will serve. */
     public const VIEWS = ['overview', 'procurement', 'suppliers', 'bills-payables', 'ai-insights'];
+
+    /** Printed as the report's own heading, so a PDF is not titled "bills-payables". */
+    private const TITLES = [
+        'overview'       => 'Purchase overview',
+        'procurement'    => 'Procurement workspace',
+        'suppliers'      => 'Supplier performance',
+        'bills-payables' => 'Bills and payables',
+        'ai-insights'    => 'Purchase intelligence',
+    ];
 
     public static function show(string $view): void
     {
@@ -65,6 +75,30 @@ final class DashboardsController extends Controller
         Permissions::assert($ctx, $auth, 'reports.view');
 
         $payload = self::dashboard($view, $auth, $ctx)->build();
+        $format = strtolower((string) (Http::param('format') ?? 'csv'));
+        $stem = 'purchases-' . $view . '-' . ($payload['period']['from'] ?? 'from') . '-to-' . ($payload['period']['to'] ?? 'to');
+
+        if ($format === 'pdf') {
+            // The SAME payload the screen drew and the CSV exports. All three
+            // render one array, so a figure cannot differ between what somebody
+            // saw, exported and printed.
+            $pdf = ReportRenderer::render(
+                $payload,
+                self::TITLES[$view] ?? 'Purchases report',
+                'Company ' . $ctx->cmpId . '  ·  Financial year ' . $ctx->fyId,
+            );
+
+            if (PHP_SAPI === 'cli') {
+                Http::data(['view' => $view, 'format' => 'pdf', 'bytes' => strlen($pdf), 'pdf' => base64_encode($pdf)]);
+            }
+
+            header('Content-Type: application/pdf');
+            header('Content-Disposition: attachment; filename="' . $stem . '.pdf"');
+            header('Cache-Control: no-store');
+            echo $pdf;
+            exit;
+        }
+
         $rows = self::flatten($payload);
 
         if (PHP_SAPI === 'cli') {
@@ -72,10 +106,8 @@ final class DashboardsController extends Controller
             Http::data(['view' => $view, 'csv' => self::csv($rows)]);
         }
 
-        $filename = 'purchases-' . $view . '-' . ($payload['period']['from'] ?? 'from') . '-to-' . ($payload['period']['to'] ?? 'to') . '.csv';
-
         header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Content-Disposition: attachment; filename="' . $stem . '.csv"');
         header('Cache-Control: no-store');
         echo self::csv($rows);
         exit;
