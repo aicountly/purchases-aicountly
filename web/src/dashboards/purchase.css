@@ -564,6 +564,15 @@
   white-space: nowrap;
 }
 
+.purchase-chips .purchase-segment__count,
+.purchase-chip .purchase-segment__count {
+  display: inline;
+  font-size: inherit;
+  font-weight: 700;
+  margin-left: 0.35rem;
+  opacity: 0.75;
+}
+
 .purchase-chips button.is-active,
 .purchase-chip.is-active {
   background: var(--purchase-brand-tint);
@@ -1103,3 +1112,141 @@
 
 .purchase-context select,
 .purchase-context input { min-height: 34px; padding-block: 0.35rem; font-size: 0.85rem; }
+
+/* ------------------------------------------------------------------ *
+ * Donut
+ * ------------------------------------------------------------------ */
+
+.purchase-donut {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.purchase-donut svg { flex-shrink: 0; }
+
+.purchase-donut__value {
+  font-size: 19px;
+  font-weight: 700;
+  fill: var(--purchase-ink);
+}
+
+.purchase-donut__label {
+  font-size: 11px;
+  fill: var(--purchase-muted);
+}
+
+.purchase-donut__legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+  min-width: 11rem;
+  /* Capped: left to grow, the share column drifts to the far edge of a wide
+     card and stops reading as part of the same row. */
+  max-width: 21rem;
+  flex: 0 1 18rem;
+}
+
+.purchase-donut__legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  min-width: 0;
+}
+
+.purchase-donut__legend i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.purchase-donut__legend-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--purchase-ink-soft);
+}
+
+.purchase-donut__legend-share {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--purchase-ink);
+}
+
+/* ------------------------------------------------------------------ *
+ * Sparkline and line-chart chrome
+ * ------------------------------------------------------------------ */
+
+.purchase-spark { display: block; overflow: visible; }
+
+.purchase-chart--line {
+  display: block;
+  margin: 0 auto;
+  max-width: 720px;
+}
+
+.purchase-chart__tick {
+  font-size: 10px;
+  fill: var(--purchase-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-chart__endlabel {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The index base. One emphasised rule on the plot, solid like every other. */
+.purchase-chart__baseline {
+  stroke: var(--purchase-border-strong);
+  stroke-width: 1.25;
+}
+
+/* Status, not series: these are outcomes, and each carries its own label. */
+.purchase-segment__count.is-good { color: var(--purchase-good); }
+.purchase-segment__count.is-warn { color: var(--purchase-warn); }
+.purchase-segment__count.is-bad { color: var(--purchase-bad); }
+
+/* The ageing total, as the design sets it beside the bars. */
+.purchase-total-tile {
+  background: var(--purchase-brand-tint);
+  border: 1px solid var(--purchase-brand-tint-strong);
+  border-radius: var(--purchase-radius-sm);
+  padding: 1rem 1.15rem;
+  text-align: center;
+  align-self: center;
+  min-width: 10rem;
+}
+
+.purchase-total-tile span {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--purchase-muted);
+  margin-bottom: 0.25rem;
+}
+
+.purchase-total-tile strong {
+  display: block;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--purchase-brand-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-ageing {
+  display: flex;
+  gap: 1.25rem;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.purchase-ageing > .purchase-chart { flex: 1 1 18rem; min-width: 0; }

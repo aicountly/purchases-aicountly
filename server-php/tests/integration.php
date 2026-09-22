@@ -1193,6 +1193,65 @@ check('a rate is not stated from too small a sample', function () use ($ctx, $au
     assertTrue(str_contains($row['on_time_label'], 'too few to rate'), 'in words as well');
 });
 
+check('a sparkline month with too few deliveries is a gap, never a zero', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $receipts = new ReceiptService($ctx, $auth);
+
+    // August: three deliveries, all on time — enough to rate.
+    // September: one delivery — not enough, and that is the whole point.
+    foreach ([['2026-08-05', '2026-08-20', '2026-08-18'], ['2026-08-05', '2026-08-20', '2026-08-18'],
+              ['2026-08-05', '2026-08-20', '2026-08-18'], ['2026-09-05', '2026-09-20', '2026-09-18']] as [$poDate, $promised, $received]) {
+        $po = $orders->create(poInput(['po_date' => $poDate, 'promised_date' => $promised]));
+        $orders->submit((int) $po['po_id']);
+        $orders->issue((int) $po['po_id']);
+        $receipts->request((int) $po['po_id'], ['received_at' => $received]);
+    }
+
+    $rows = dashboardFor('suppliers', $ctx, $auth, ['from' => '2026-08-01', 'to' => '2026-09-30'])['panels']['matrix']['rows'];
+    $points = [];
+    foreach ($rows[0]['trend_points'] as $point) {
+        $points[$point['period']] = $point;
+    }
+
+    assertSame('100', $points['2026-08']['on_time_pc'] ?? null, 'three on-time deliveries rate the month');
+    assertSame(3, $points['2026-08']['sample'] ?? null, 'with its sample stated');
+
+    // The month happened and had a delivery. It is reported, with its count,
+    // and WITHOUT a rate — a null the chart leaves as a gap. A 0 here would
+    // draw a collapse that did not happen.
+    assertTrue(array_key_exists('2026-09', $points), 'the thin month is still reported');
+    assertSame(null, $points['2026-09']['on_time_pc'], 'but carries no rate');
+    assertSame(1, $points['2026-09']['sample'], 'only its count');
+});
+
+check('a price path is indexed to 100 at the first month, in exact decimal', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+
+    // The same item at 200, then 250, then 300 — a path, not two endpoints.
+    foreach ([['2026-07-05', 200], ['2026-08-05', 250], ['2026-09-05', 300]] as [$date, $rate]) {
+        $po = $orders->create(poInput([
+            'po_date' => $date,
+            'lines'   => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => $rate, 'estimated_tax_pc' => 18, 'warehouse_id' => 3]],
+        ]));
+        $orders->submit((int) $po['po_id']);
+    }
+
+    $price = dashboardFor('suppliers', $ctx, $auth, ['from' => '2026-07-01', 'to' => '2026-09-30'])['panels']['price_movement'];
+    assertTrue(count($price['rows']) > 0, 'the item qualifies');
+
+    $points = $price['rows'][0]['points'];
+    assertSame(3, count($points), 'one point per month it was bought in');
+
+    // 100, 125, 150 — exact, because the arithmetic is decimal on the server
+    // rather than floating point in the browser. Items priced per tonne and per
+    // coil can then share one axis instead of needing one each.
+    assertSame(['100', '125', '150'], array_map(static fn ($p) => $p['index'], $points), 'indexed to 100 at the first month');
+    assertSame(['2026-07', '2026-08', '2026-09'], array_map(static fn ($p) => $p['period'], $points), 'in month order');
+    assertTrue(str_contains($points[2]['formatted'], '300'), 'and each point keeps its real rate');
+});
+
 check('the composite score publishes its weights and what was missing', function () use ($ctx, $auth) {
     resetDatabase();
     (new PurchaseOrderService($ctx, $auth))->create(poInput());

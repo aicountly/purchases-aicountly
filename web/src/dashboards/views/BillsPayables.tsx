@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom'
 import { AlertOctagon, Ban, Check, X } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
 import { Badge, DashboardPanel, DataTable, EmptyState, PanelUnavailable } from '../shell'
-import { BarChart } from '../charts'
+import { BarChart, SegmentedBar } from '../charts'
 import { Drawer } from '../Drawer'
 import type { DashboardFilters } from '../filters'
 import type { AgeingBucket, DashboardResponse, MatchRow, Panel, PaymentRow } from '../types'
@@ -59,6 +59,40 @@ type IntakePanel = Panel<{
   basis: string
 }>
 
+/**
+ * The three outcomes behind the match bar.
+ *
+ * `matched` is not a category the API returns — it is everything the period
+ * produced minus what raised an exception, so it is computed here from the
+ * counts rather than invented. When the API has no total to subtract from, the
+ * bar simply shows the exception categories: a "matched" count guessed at would
+ * be the one number on this screen nobody could trace back to a record.
+ *
+ * @param counts every exception category and its count
+ * @param categories the categories the API defined, in its own order
+ */
+function matchOutcome(
+  counts: Record<string, number>,
+  categories: { id: string; label: string }[],
+): { id: string; label: string; count: number; tone: 'good' | 'warn' | 'bad' }[] {
+  const matched = counts.matched ?? 0
+  const exceptions = categories
+    .filter((category) => category.id !== 'matched')
+    .map((category) => ({
+      id: category.id,
+      label: category.label,
+      count: counts[category.id] ?? 0,
+      // Missing paperwork is a harder stop than a tolerance breach: one is a
+      // decision waiting to be made, the other is a document that does not
+      // exist yet.
+      tone: category.id.includes('missing') || category.id.includes('receipt') ? ('bad' as const) : ('warn' as const),
+    }))
+
+  return matched > 0
+    ? [{ id: 'matched', label: 'Matched', count: matched, tone: 'good' as const }, ...exceptions]
+    : exceptions
+}
+
 export function BillsPayablesDashboard({
   data,
   filters,
@@ -95,10 +129,10 @@ export function BillsPayablesDashboard({
           <PanelUnavailable reason={matching.reason} kind={matching.kind} />
         ) : (
           <>
-            <div className="purchase-segments" style={{ marginBottom: 16 }}>
+            <div className="purchase-chips" style={{ marginBottom: 16 }}>
               <button
                 type="button"
-                className={matching.category === null ? 'purchase-segment is-active' : 'purchase-segment'}
+                className={matching.category === null ? 'purchase-chip is-active' : 'purchase-chip'}
                 onClick={() => filters.set({ category: null })}
               >
                 All exceptions
@@ -107,7 +141,7 @@ export function BillsPayablesDashboard({
                 <button
                   key={category.id}
                   type="button"
-                  className={matching.category === category.id ? 'purchase-segment is-active' : 'purchase-segment'}
+                  className={matching.category === category.id ? 'purchase-chip is-active' : 'purchase-chip'}
                   aria-pressed={matching.category === category.id}
                   onClick={() => filters.set({ category: category.id })}
                 >
@@ -116,6 +150,15 @@ export function BillsPayablesDashboard({
                 </button>
               ))}
             </div>
+
+            {/* How the period came out, before the list of what went wrong.
+                These are OUTCOMES, not identities, so they take the status
+                palette and each carries its own label and count — the colour
+                never does the work on its own. */}
+            <SegmentedBar
+              segments={matchOutcome(matching.counts, matching.categories)}
+              onOpen={(id) => filters.set({ category: id === 'matched' ? null : id })}
+            />
 
             <DataTable
               caption={matching.basis}
@@ -194,18 +237,26 @@ export function BillsPayablesDashboard({
             <PanelUnavailable reason={ageing.reason} kind={ageing.kind} />
           ) : (
             <>
-              <BarChart
-                title="Open payables by age"
-                unitLabel="Amount"
-                data={ageing.buckets.map((bucket) => ({
-                  id: bucket.id,
-                  label: bucket.label,
-                  value: bucket.amount,
-                  formatted: bucket.formatted,
-                  tone: bucket.tone === 'danger' ? 'danger' : bucket.tone === 'warning' ? 'warning' : 'muted',
-                }))}
-              />
-              <p style={{ marginTop: 14, fontWeight: 650 }}>Total outstanding: {ageing.total_formatted}</p>
+              <div className="purchase-ageing">
+                <BarChart
+                  title="Open payables by age"
+                  unitLabel="Amount"
+                  data={ageing.buckets.map((bucket) => ({
+                    id: bucket.id,
+                    label: bucket.label,
+                    value: bucket.amount,
+                    formatted: bucket.formatted,
+                    tone: bucket.tone === 'danger' ? 'danger' : bucket.tone === 'warning' ? 'warning' : 'muted',
+                  }))}
+                />
+                {/* The total belongs beside the bars, not under them: it is
+                    what the buckets add up to, and the design is right that a
+                    reader looks for it there. */}
+                <p className="purchase-total-tile">
+                  <span>Total outstanding</span>
+                  <strong>{ageing.total_formatted}</strong>
+                </p>
+              </div>
               <div className="purchase-notice purchase-notice--info" style={{ marginTop: 12 }}>
                 <div>
                   <strong>What "Not due" includes</strong>

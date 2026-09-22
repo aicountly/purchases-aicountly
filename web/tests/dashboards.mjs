@@ -69,6 +69,56 @@ try {
 const today = new Date()
 const iso = (offsetDays) => new Date(today.getTime() + offsetDays * 86400000).toISOString().slice(0, 10)
 
+/**
+ * Four suppliers, four months, three deliveries each.
+ *
+ * Not decoration: the charts refuse to draw on thin data, correctly. A donut
+ * needs more than one supplier to divide anything up, a price path needs the
+ * same item ordered in several months, and the product will not rate a month
+ * with fewer than three deliveries — so a single seeded order proves nothing
+ * about any of them, and a check written against it would pass on an empty
+ * chart.
+ */
+const SUPPLIERS = [
+  [601, 'Shree Cement Ltd.'],
+  [602, 'Tata Steel'],
+  [603, 'Ujala Electricals'],
+  [604, 'Hindustan Petroleum'],
+]
+
+// Nothing needs approval while the history is built, so every order reaches
+// ISSUED and can be received.
+await apiPut('v1/settings', { po_approval_above_amount: 0 })
+
+let month = 0
+for (const mm of ['04', '05', '06', '07']) {
+  month += 1
+  let sIndex = 0
+  for (const [supplierId, supplierName] of SUPPLIERS) {
+    sIndex += 1
+    const body = {
+      supplier_account_id: supplierId,
+      supplier_name: supplierName,
+      po_date: `2026-${mm}-05`,
+      promised_date: `2026-${mm}-20`,
+      delivery_warehouse_id: 3,
+      lines: [
+        { item_id: 201, unit_id: 1, ordered_qty: 40 + sIndex * 10, agreed_rate: 250 + month * 12 + sIndex * 3, estimated_tax_pc: 18, warehouse_id: 3 },
+        { item_id: 202, unit_id: 1, ordered_qty: 20 + sIndex * 5, agreed_rate: 900 + month * 25 - sIndex * 7, estimated_tax_pc: 18, warehouse_id: 3 },
+      ],
+    }
+    for (let n = 1; n <= 3; n++) {
+      const po = await apiPost('v1/purchase-orders', body)
+      await apiPost(`v1/purchase-orders/${po.po_id}/submit`)
+      await apiPost(`v1/purchase-orders/${po.po_id}/issue`)
+      // The last supplier slips from month three on. A sparkline that only ever
+      // draws a flat line is not evidence that gaps and declines render.
+      const late = sIndex === SUPPLIERS.length && month > 2 && n !== 3
+      await apiPost(`v1/purchase-orders/${po.po_id}/receive`, { received_at: `2026-${mm}-${late ? 27 : 18}` })
+    }
+  }
+}
+
 // An approval threshold below the order below, or submitting it approves it on
 // the spot and there is no approval to open a drawer on. This is the product's
 // own rule, not a test switch: an order under the threshold does not need one.
@@ -138,7 +188,7 @@ await check('a filter is a query parameter and Back undoes exactly one', async (
 await check('a shared link reproduces the same filtered screen', async () => {
   await page.goto(`${BASE}/dashboard/procurement?view=delayed&preset=this_year`, { waitUntil: 'networkidle' })
   await settle()
-  const active = await page.locator('.purchase-segment.is-active').first().textContent()
+  const active = await page.locator('.purchase-chip.is-active').first().textContent()
   eq((active || '').trim(), 'Delayed', 'the saved view is applied from the URL')
   eq(await page.locator('select').first().inputValue(), 'this_year', 'the period is applied from the URL')
 })
@@ -475,6 +525,55 @@ await check('the launcher and the shell hold together on a phone', async () => {
   )
   eq(overflow, 0, 'the launcher does not scroll sideways at 390px')
   await phone.close()
+})
+
+await check('the supplier charts are drawn from the data, with the figures behind them', async () => {
+  await page.goto(`${BASE}/dashboard/suppliers?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  // The donut: one arc per named supplier plus, when there are more than four,
+  // one neutral slice for the tail. Never a generated fifth hue.
+  const arcs = page.locator('.purchase-donut svg path')
+  const arcCount = await arcs.count()
+  ok(arcCount >= 2 && arcCount <= 6, `donut has ${arcCount} slices — between 2 and 6`)
+
+  // Identity is never colour alone: every slice is named and shares are stated.
+  const legend = (await page.locator('.purchase-donut__legend').textContent()) || ''
+  ok(/%/.test(legend), 'the legend carries each share')
+
+  // And the same figures exist as a table, which is what a screen reader and a
+  // printout get.
+  const donutPanel = page.locator('section.purchase-panel').filter({ hasText: 'Concentration exposure' }).first()
+  await donutPanel.locator('.purchase-chart__toggle button').first().click()
+  await page.waitForTimeout(300)
+  ok((await donutPanel.locator('table').count()) > 0, 'the donut has a table view')
+
+  // The price path: one line per item on ONE axis, indexed so items priced per
+  // tonne and per coil can share it.
+  const pricePanel = page.locator('section.purchase-panel').filter({ hasText: 'Price movement' }).first()
+  await pricePanel.scrollIntoViewIfNeeded()
+  const lines = pricePanel.locator('.purchase-chart--line path[stroke]')
+  ok((await lines.count()) >= 1, 'at least one price path is drawn')
+  const axisLabels = await pricePanel.locator('.purchase-chart--line .purchase-chart__tick').count()
+  ok(axisLabels > 0, 'the index axis is labelled')
+  ok(
+    (await pricePanel.locator('text=/indexed to 100/i').count()) > 0,
+    'and the page says what the index is against',
+  )
+})
+
+await check('a sparkline breaks at months it cannot rate rather than drawing zero', async () => {
+  await page.goto(`${BASE}/dashboard/suppliers?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const sparks = page.locator('.purchase-spark')
+  ok((await sparks.count()) >= 1, 'the scorecard carries a trend column')
+
+  // Every sparkline states its own figures for a screen reader, and a month
+  // with too few deliveries is absent from that list rather than present as 0%.
+  const label = (await sparks.first().getAttribute('aria-label')) || ''
+  ok(/On-time delivery for/.test(label), `the sparkline names its supplier: ${label.slice(0, 60)}`)
+  ok(!/\b0%/.test(label) || /\d+%/.test(label), 'rated months carry a percentage')
 })
 
 await browser.close()

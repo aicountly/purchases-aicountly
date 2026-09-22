@@ -244,6 +244,12 @@ export interface ApprovalRow {
 
 export interface SupplierRow {
   supplier_account_id: number
+  /**
+   * On-time delivery per month for the last six, for the scorecard sparkline.
+   * `on_time_pc` is null in a month with too few deliveries to rate — that is a
+   * gap in the line, never a zero.
+   */
+  trend_points: { period: string; sample: number; on_time_pc: string | null }[]
   supplier_name: string | null
   qualification_status: string
   is_preferred: boolean
@@ -271,6 +277,8 @@ export interface SupplierRow {
 
 export interface PriceMovementRow {
   item_id: number
+  /** The monthly path, indexed to 100 at the first month of the period. */
+  points: { period: string; formatted: string; index: string | null; observations: number }[]
   item_label: string
   unit: string | null
   currency: string
