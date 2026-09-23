@@ -19,6 +19,17 @@ import Approvals from './pages/Approvals'
 import Settings from './pages/Settings'
 import { Notice } from './ui'
 import { initAnalytics, trackPageView } from './utils/analytics'
+
+/**
+ * The profile workspace is loaded when somebody opens it.
+ *
+ * It is the largest screen in the product and the least often visited — most
+ * people never change a numbering prefix — so shipping it inside the first
+ * bundle makes every buyer wait for a settings page they will not open. It is
+ * the only route split this way because it is the only one where the trade is
+ * that lopsided.
+ */
+const PurchaseProfilePage = lazy(() => import('./pages/settings/PurchaseProfilePage'))
 import './App.css'
 
 initAnalytics()
@@ -141,7 +152,22 @@ export default function App() {
             <Route path="claims" element={<RequireScope><Claims /></RequireScope>} />
             <Route path="suppliers" element={<RequireScope><Suppliers /></RequireScope>} />
             <Route path="approvals" element={<RequireScope><Approvals /></RequireScope>} />
-            <Route path="settings" element={<RequireScope><Settings /></RequireScope>} />
+            {/* Settings is a section now, not one page. `/settings` is the
+                screen it has always been; the profile workspace sits beneath
+                it, and the sidebar links into its sections by hash. */}
+            <Route path="settings">
+              <Route index element={<RequireScope><Settings /></RequireScope>} />
+              <Route
+                path="new-profile"
+                element={
+                  <RequireScope>
+                    <Suspense fallback={<p style={{ color: 'var(--muted)' }}>Opening…</p>}>
+                      <PurchaseProfilePage />
+                    </Suspense>
+                  </RequireScope>
+                }
+              />
+            </Route>
             <Route
               path="access"
               element={
