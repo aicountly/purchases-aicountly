@@ -81,6 +81,37 @@ they hold — enforced in the service, not in the UI.
 Accepting a match variance costs the company money, so it requires a written
 reason and is recorded against the bill.
 
+The **company owner is the one exception**: `ownsCompany()` short-circuits the
+self-approval rule, because a single-person company otherwise cannot approve
+anything at all. `/approvals` states the rule and states that exception, rather
+than greying a button and leaving the reader to guess.
+
+### The approvals inbox
+
+`/approvals` reads three endpoints — `v1/approvals/queue`, `.../summary` and
+`.../requesters` — and writes through the existing `v1/requisitions/{id}/…` and
+`v1/purchase-orders/{id}/…` decisions, so the domain services stay the only
+place a decision is authorised. `may_approve` on a queue row is what greys the
+button; it is computed from the same three conditions the service enforces and
+is never the control.
+
+Two judgements on that screen are derived rather than stored, and both state
+their rule in the payload beside the answer:
+
+- **Risk** is four facts this product already records — how far the value is
+  over the threshold that forced the approval, the requester's own exception
+  flags, the supplier's qualification status, and any risk flag against that
+  supplier. Size alone never reaches *High*: everything in the queue is there
+  because it broke the value rule, so a column that turns red on size is a
+  column nobody reads. With none of the four to judge on, the answer is **Not
+  assessed**, never *Low*.
+- **Waiting time** bands at 3 and 7 days. This product has no approval SLA and
+  the payload says so; the bands are a reading aid, not a compliance verdict.
+
+The period on that screen narrows **decided** documents only. A pending
+approval is pending whatever month it was raised in, and hiding an aged one
+behind a date filter would defeat the point of the screen.
+
 ## How a write to another product works
 
 ```

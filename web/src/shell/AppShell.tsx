@@ -29,6 +29,8 @@ import {
 import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
 import { usePurchases } from '../context/PurchasesContext'
+import { useApi } from '../hooks/useApi'
+import { api } from '../services/api'
 import { AccessNotice } from './AccessNotice'
 import { useScopeLabels } from './useScopeLabels'
 import './app-shell.css'
@@ -53,6 +55,8 @@ interface NavItem {
   label: string
   icon: LucideIcon
   permission?: string
+  /** Show the pending-approval count against this entry. */
+  counter?: 'approvals'
 }
 
 type NavEntry = NavItem | { rule: true }
@@ -69,7 +73,7 @@ const NAV: NavEntry[] = [
   { to: '/claims', label: 'Claims', icon: ScrollText, permission: 'claim.create' },
   { to: '/suppliers', label: 'Suppliers', icon: ShieldCheck, permission: 'supplier.view' },
   { to: '/reports', label: 'Reports', icon: BarChart3, permission: 'reports.view' },
-  { to: '/approvals', label: 'My approvals', icon: AlertTriangle },
+  { to: '/approvals', label: 'My approvals', icon: AlertTriangle, counter: 'approvals' },
   { rule: true },
   { to: '/access', label: 'Access', icon: KeyRound, permission: 'access.manage' },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
@@ -84,6 +88,25 @@ function initials(name: string): string {
   return (parts[0][0] ?? '') + (parts[parts.length - 1][0] ?? '')
 }
 
+/**
+ * How many approvals are open in this company.
+ *
+ * One cheap call — a page of one, read for its total — rather than the whole
+ * inbox, because the only thing the frame needs is the number. It refreshes
+ * when the company or the financial year changes; a decision refreshes the
+ * approvals screen itself, and the badge follows on the next visit rather than
+ * polling the API for the life of the session.
+ */
+function usePendingApprovals(enabled: boolean, cmpId: number | undefined, fyId: number | undefined): number | null {
+  const { data } = useApi(
+    (signal) => api.list<unknown>('v1/approvals', { status: 'PENDING', limit: 1 }, signal),
+    [cmpId, fyId],
+    enabled,
+  )
+
+  return data?.meta.total ?? null
+}
+
 export function AppShell() {
   const { signOut } = useAuth()
   const { session, can, scope } = usePurchases()
@@ -92,6 +115,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const [navOpen, setNavOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const pendingApprovals = usePendingApprovals(scope !== null, scope?.cmp_id, scope?.fy_id)
 
   // Following a link on a phone should leave the menu behind, not on top of
   // the page it just opened.
@@ -178,6 +202,14 @@ export function AppShell() {
               >
                 <Icon size={17} aria-hidden />
                 {entry.label}
+                {/* A count, not a dot. A dot that is always lit is decoration
+                    that teaches people to ignore the real thing; a number that
+                    is only drawn when there is something behind it is not. */}
+                {entry.counter === 'approvals' && pendingApprovals !== null && pendingApprovals > 0 && (
+                  <span className="app-shell__nav-count" aria-label={`${pendingApprovals} waiting`}>
+                    {pendingApprovals > 99 ? '99+' : pendingApprovals}
+                  </span>
+                )}
               </NavLink>
             )
           })}
@@ -271,12 +303,24 @@ export function AppShell() {
           </form>
 
           <div className="app-shell__header-tools">
-            {/* No unread dot. The designs show one, but a dot that is always
-                lit is not a notification — it is decoration that teaches people
-                to ignore the real thing. It goes back when there is a count
-                behind it. */}
-            <NavLink to="/approvals" className="app-shell__bell" aria-label="Approvals waiting for you">
+            {/* There is a count behind this now, so the badge is drawn — and
+                only when the count is more than nothing. A dot that is always
+                lit is decoration that teaches people to ignore the real thing. */}
+            <NavLink
+              to="/approvals"
+              className="app-shell__bell"
+              aria-label={
+                pendingApprovals === null || pendingApprovals === 0
+                  ? 'Approvals'
+                  : `Approvals: ${pendingApprovals} waiting`
+              }
+            >
               <Bell size={18} aria-hidden />
+              {pendingApprovals !== null && pendingApprovals > 0 && (
+                <span className="app-shell__bell-count" aria-hidden>
+                  {pendingApprovals > 9 ? '9+' : pendingApprovals}
+                </span>
+              )}
             </NavLink>
             <AppLauncher />
           </div>

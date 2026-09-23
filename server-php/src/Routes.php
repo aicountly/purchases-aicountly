@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aicountly\Api;
 
 use Aicountly\Api\Controllers\AccessController;
+use Aicountly\Api\Controllers\ApprovalsController;
 use Aicountly\Api\Controllers\BillsController;
 use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
@@ -140,7 +141,13 @@ final class Routes
 
         // The original summary endpoint, kept for anything already calling it.
         $router->get('v1/dashboard', [DashboardController::class, 'index']);
+        // The approvals inbox. `v1/approvals` is the original flat list and is
+        // left exactly as it was; the queue and the summary behind the screen
+        // are their own endpoints because they reload at different rates.
         $router->get('v1/approvals', [DashboardController::class, 'approvals']);
+        $router->get('v1/approvals/queue', [ApprovalsController::class, 'queue']);
+        $router->get('v1/approvals/summary', [ApprovalsController::class, 'summary']);
+        $router->get('v1/approvals/requesters', [ApprovalsController::class, 'requesters']);
         $router->get('v1/match-exceptions', [DashboardController::class, 'exceptions']);
         $router->get('v1/integration-commands', [DashboardController::class, 'commands']);
     }

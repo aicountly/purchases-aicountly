@@ -126,6 +126,22 @@
 
 .app-shell__nav-item svg { flex-shrink: 0; }
 
+/* How many are waiting, against the menu entry that opens them.
+   Drawn only when there is something behind it — see AppShell. */
+.app-shell__nav-count {
+  margin-left: auto;
+  min-width: 1.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  text-align: center;
+}
+
 /* A quiet rule between the everyday screens and the administrative ones.
    A heading there would be a seventh thing to read; a line is enough. */
 .app-shell__nav-rule {
@@ -336,6 +352,26 @@
 }
 
 .app-shell__bell:hover { background: #f5f7f5; color: var(--shell-ink); }
+
+/* The same count, on the bell. Small enough that two digits still fit inside
+   the control rather than spilling over the icon beside it. */
+.app-shell__bell-count {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  border: 1.5px solid var(--shell-surface);
+  background: #e5484d;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 13px;
+  text-align: center;
+}
 
 .app-shell__bell-dot {
   position: absolute;

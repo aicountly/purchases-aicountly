@@ -21,6 +21,7 @@ import {
   ChartNoAxesCombined,
   CheckCircle2,
   ChevronRight,
+  CircleX,
   ClipboardList,
   CreditCard,
   FileText,
@@ -131,6 +132,14 @@ const METRIC_FACE: Record<string, { icon: LucideIcon; tone: 'good' | 'warn' | 'b
   avg_po_value: { icon: ChartNoAxesCombined, tone: 'info' },
   price_anomalies: { icon: AlertTriangle, tone: 'bad' },
   purchase_risks_open: { icon: Boxes, tone: 'warn' },
+  // The approvals inbox. Same tiles, same rules: the icon says what the figure
+  // is, the tone says what kind of thing it is, and neither reacts to the data.
+  approvals_pending: { icon: ClipboardList, tone: 'warn' },
+  approvals_approved: { icon: CheckCircle2, tone: 'good' },
+  approvals_rejected: { icon: CircleX, tone: 'bad' },
+  approval_time: { icon: Timer, tone: 'info' },
+  approvals_pending_value: { icon: BadgeIndianRupee, tone: 'good' },
+  match_exceptions_open: { icon: FileWarning, tone: 'bad' },
 }
 
 export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen: (target: Drilldown) => void }) {
@@ -565,6 +574,7 @@ export function PurchaseDashboardShell({
   onViewChange,
   actions,
   filters,
+  tabs,
   monitorNoun = 'Data',
   feature,
   sources,
@@ -575,12 +585,21 @@ export function PurchaseDashboardShell({
   onRefresh,
   children,
 }: {
-  activeView: string
+  activeView?: string
   title: string
   subtitle: string
   /** The last crumb. The product name before it is the same on every screen. */
   breadcrumb: string
-  onViewChange: (view: PurchaseViewId) => void
+  onViewChange?: (view: PurchaseViewId) => void
+  /**
+   * A tab strip of this screen's own, in place of the five-dashboard switcher.
+   *
+   * The approvals inbox has six faces that are not dashboards, and giving it a
+   * second copy of this header to hang them off would be two headers to keep
+   * in step. It renders in exactly the same slot, so the strip sits where a
+   * reader who came from a dashboard already expects it.
+   */
+  tabs?: ReactNode
   /** Export and the overflow menu. Refresh is the shell's own. */
   actions?: ReactNode
   /** The labelled controls in the filter row. */
@@ -653,7 +672,11 @@ export function PurchaseDashboardShell({
         <MonitorPill noun={monitorNoun} sources={sources} fetchedAt={fetchedAt} />
       </div>
 
-      <DashboardSwitcher activeView={activeView} onChange={onViewChange} />
+      {tabs ?? (
+        activeView !== undefined && onViewChange !== undefined ? (
+          <DashboardSwitcher activeView={activeView} onChange={onViewChange} />
+        ) : null
+      )}
 
       <MetricsRow metrics={metrics} loading={loading} onOpen={openDrilldown} />
 

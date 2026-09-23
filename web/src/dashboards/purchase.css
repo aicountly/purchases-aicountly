@@ -1171,6 +1171,22 @@
   font-size: 0.88rem;
 }
 
+/* An empty state is a headline and a sentence. Inline, they ran together into
+   one unreadable line wherever a caller supplied both. */
+.purchase-empty > strong {
+  display: block;
+  margin-top: 0.5rem;
+  color: var(--purchase-ink);
+  font-size: 0.95rem;
+}
+
+.purchase-empty > span {
+  display: block;
+  max-width: 30rem;
+  margin: 0.3rem auto 0;
+  line-height: 1.5;
+}
+
 .purchase-muted { color: var(--purchase-muted); }
 .purchase-soft { color: var(--purchase-faint); }
 .purchase-brand { color: var(--purchase-brand-strong); }
@@ -1811,4 +1827,390 @@
   .purchase-metrics { grid-template-columns: 1fr; }
   .purchase-field { flex: 1 1 100%; }
   .purchase-intel-categories .purchase-donut { justify-content: center; }
+}
+
+/* ==================================================================== *
+ * APPROVALS
+ *
+ * The inbox is not a sixth dashboard, but it is the same screen: it reuses
+ * the header, the green card, the filter row, the KPI tiles, the panels and
+ * the table wholesale. What follows is only what an approval queue needs on
+ * top of that — a wider tab strip, the cells in the queue table, and the
+ * confirmation dialog a decision goes through. Every value below is taken
+ * from the variables at the top of this file; nothing here introduces a
+ * colour, a radius or a control height of its own.
+ * ==================================================================== */
+
+/* Six faces rather than five. Same strip, one more track. */
+.purchase-switcher--six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+
+/* The count beside a tab. Reads as part of the label, not as a badge shouting
+   over it — the sidebar already carries the alarm. */
+.purchase-switcher__count {
+  min-width: 1.35rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: var(--purchase-neutral-tint);
+  color: var(--purchase-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.purchase-switcher__button.is-active .purchase-switcher__count {
+  background: #fff;
+  color: var(--purchase-brand-strong);
+}
+
+/* ------------------------------------------------------------------ *
+ * Controls the queue adds
+ * ------------------------------------------------------------------ */
+
+/* A row action, not a page action. Same border, same radius, one step down in
+   height so nine of them do not out-shout the table they sit in. */
+.purchase-button--tiny {
+  min-height: 29px;
+  padding: 0 0.55rem;
+  font-size: 0.75rem;
+  border-radius: 8px;
+}
+
+/* Reject. A red word on a white button rather than a red button: destructive
+   and filled reads as the recommended action, which it is not. */
+.purchase-button--destructive {
+  border-color: #eec4c0;
+  background: var(--purchase-surface);
+  color: var(--purchase-bad);
+  font-weight: 600;
+}
+
+.purchase-button--destructive:hover:not(:disabled) {
+  background: var(--purchase-bad-tint);
+  border-color: #e2a7a1;
+}
+
+/* ------------------------------------------------------------------ *
+ * The queue table
+ * ------------------------------------------------------------------ */
+
+/* Two zones. The queue takes the width it needs to be a table somebody can
+   decide from; the two scan-lists sit beside it, and the analytics go under
+   both rather than stealing columns from either. */
+.purchase-approvals-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.5fr) minmax(18rem, 0.8fr);
+  gap: 0.75rem;
+  align-items: start;
+  margin-bottom: 0.75rem;
+}
+
+.purchase-approvals-analytics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: start;
+}
+
+/* Seven columns and two buttons in the width of a card. The padding is the
+   first thing cut, then the type size — never a column, because every one of
+   them is something somebody needs before they press Approve. Below the
+   min-width the table scrolls inside its own card rather than widening the
+   page. */
+.purchase-approvals-table { font-size: 0.79rem; min-width: 46rem; }
+.purchase-approvals-table th { padding: 0.55rem 0.55rem; }
+.purchase-approvals-table td { padding: 0.6rem 0.55rem; }
+.purchase-approvals-table th:first-child,
+.purchase-approvals-table td:first-child { padding-left: 1.1rem; }
+.purchase-approvals-table th:last-child,
+.purchase-approvals-table td:last-child { padding-right: 1.1rem; width: 1%; white-space: nowrap; }
+.purchase-approvals-table th:nth-child(5),
+.purchase-approvals-table td:nth-child(5),
+.purchase-approvals-table th:nth-child(6),
+.purchase-approvals-table td:nth-child(6) { white-space: nowrap; }
+
+.purchase-approvals-primary {
+  display: block;
+  font-weight: 600;
+  color: var(--purchase-ink);
+  line-height: 1.3;
+}
+
+.purchase-approvals-money { font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
+
+.purchase-approvals-doc { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+
+.purchase-approvals-doc__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: var(--purchase-brand-tint);
+  color: var(--purchase-brand-strong);
+}
+
+.purchase-approvals-doc__copy { min-width: 0; }
+
+/* Two lines of description, then an ellipsis. A requisition justification can
+   be a paragraph, and one long row sets the height of every row beside it. */
+.purchase-approvals-doc__copy .purchase-table__sub {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.purchase-approvals-person { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+
+.purchase-approvals-avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--purchase-neutral-tint);
+  color: var(--purchase-ink-soft);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.purchase-approvals-actions { display: flex; align-items: center; gap: 0.3rem; }
+.purchase-approvals-more { padding-inline: 0.35rem; }
+
+/* Why the buttons beside it are off. Two lines, then an ellipsis; the whole
+   sentence is on the control and in the review drawer. */
+.purchase-approvals-blocked {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 13rem;
+  margin-top: 0.25rem;
+  color: var(--purchase-faint);
+}
+
+.purchase-approvals-empty { padding: 1.5rem 1.25rem 0.5rem; }
+
+/* ------------------------------------------------------------------ *
+ * Paging
+ * ------------------------------------------------------------------ */
+
+.purchase-approvals-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  padding: 0.7rem 1.25rem 0.9rem;
+  border-top: 1px solid var(--purchase-border);
+}
+
+.purchase-approvals-foot > p {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--purchase-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-approvals-size { margin-left: auto; }
+
+.purchase-approvals-pager {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.78rem;
+  color: var(--purchase-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ *
+ * Notices this screen carries
+ * ------------------------------------------------------------------ */
+
+.purchase-approvals-outcome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.purchase-approvals-outcome button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0.2rem;
+}
+
+.purchase-approvals-scope-note {
+  margin: -0.5rem 0 0.75rem;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--purchase-faint);
+}
+
+.purchase-approvals-rule {
+  margin: 0.85rem 0 0;
+  font-size: 0.76rem;
+  color: var(--purchase-muted);
+}
+
+.purchase-approvals-error { text-align: center; }
+.purchase-approvals-error .purchase-panel__body { padding: 2.5rem 1.5rem; }
+.purchase-approvals-error h2 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+.purchase-approvals-error p { margin: 0 0 1rem; font-size: 0.88rem; }
+
+/* ------------------------------------------------------------------ *
+ * Panels beside the queue
+ * ------------------------------------------------------------------ */
+
+/* Rejections ride on the same track as approvals, in the semantic red this
+   file already uses for them, so the two read as one month's decisions. */
+.purchase-bar-row__fill--rejected { background: var(--purchase-bad); }
+.purchase-bar-row__track { display: flex; }
+
+.purchase-approvals-mix .purchase-donut { justify-content: center; gap: 0.9rem; }
+.purchase-approvals-mix .purchase-donut svg { width: 140px; height: 140px; }
+.purchase-approvals-mix .purchase-donut__legend { display: none; }
+.purchase-approvals-mix__list { margin-top: 0.9rem; }
+.purchase-approvals-mix__list dt { display: grid; }
+
+.purchase-approvals-trend__times { margin-top: 0.9rem; font-size: 0.8rem; }
+
+/* The documents behind the grouped counts, under the counts. */
+.purchase-approvals-exception-rows { margin: 0.9rem -1.25rem -0.4rem; }
+.purchase-approvals-exception-rows .purchase-table { font-size: 0.8rem; }
+
+.purchase-approvals-checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.45rem; }
+
+.purchase-approvals-checks li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  font-size: 0.83rem;
+  line-height: 1.45;
+}
+
+.purchase-approvals-checks svg { flex-shrink: 0; margin-top: 0.15rem; color: var(--purchase-warn); }
+
+/* ------------------------------------------------------------------ *
+ * The decision dialog
+ *
+ * Centred rather than a side drawer: approving is a commitment, and a panel
+ * that slides in beside the row still lets the eye keep reading the row.
+ * ------------------------------------------------------------------ */
+
+.purchase-modal {
+  position: fixed;
+  z-index: 61;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  width: min(520px, calc(100vw - 2rem));
+  max-height: min(88vh, 46rem);
+  border: 1px solid var(--purchase-border);
+  border-radius: var(--purchase-radius);
+  background: var(--purchase-surface);
+  box-shadow: 0 24px 60px rgba(16, 24, 20, 0.22);
+}
+
+.purchase-modal__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.1rem 1.25rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.purchase-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 0.9rem 1.25rem;
+  border-top: 1px solid var(--purchase-border);
+}
+
+.purchase-modal__why { margin: 0; font-size: 0.85rem; line-height: 1.5; color: var(--purchase-ink-soft); }
+
+.purchase-modal__risk { display: flex; align-items: flex-start; gap: 0.6rem; }
+.purchase-modal__risk svg { flex-shrink: 0; margin-top: 0.15rem; }
+.purchase-modal__risk strong { display: block; font-size: 0.85rem; }
+.purchase-modal__risk ul { margin: 0.35rem 0 0; padding-left: 1.1rem; font-size: 0.8rem; line-height: 1.5; }
+
+.purchase-modal__note { flex: 1 1 auto; }
+
+.purchase-modal__note textarea {
+  width: 100%;
+  min-height: 5rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--purchase-border-strong);
+  border-radius: 8px;
+  background: var(--purchase-surface);
+  font: inherit;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.purchase-modal__note textarea:focus-visible { border-color: var(--purchase-brand); }
+.purchase-modal__note textarea[aria-invalid='true'] { border-color: var(--purchase-bad); }
+
+/* ------------------------------------------------------------------ *
+ * Loading
+ *
+ * Sized to the row it replaces, so nothing moves under the pointer when the
+ * answer lands — a layout shift as somebody reaches for Approve is how the
+ * wrong document gets approved.
+ * ------------------------------------------------------------------ */
+
+.purchase-approvals-skeleton { padding: 0.5rem 1.25rem 1rem; }
+
+.purchase-approvals-skeleton__row {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 7rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--purchase-border);
+}
+
+.purchase-approvals-skeleton__row:last-child { border-bottom: 0; }
+.purchase-approvals-skeleton__icon { width: 30px; height: 30px; border-radius: 9px; }
+.purchase-approvals-skeleton__bar { height: 12px; border-radius: 6px; }
+.purchase-approvals-skeleton__bar.is-short { width: 70%; }
+.purchase-approvals-skeleton__pill { height: 30px; border-radius: 8px; }
+.purchase-approvals-skeleton__panel { min-height: 15rem; border: 0; }
+
+/* ------------------------------------------------------------------ *
+ * Narrow screens
+ *
+ * The three zones fold the same way the intelligence screen's do, so a reader
+ * who has seen one has seen both.
+ * ------------------------------------------------------------------ */
+
+@media (max-width: 1150px) {
+  .purchase-approvals-grid,
+  .purchase-approvals-analytics { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 1024px) {
+  .purchase-switcher--six { grid-template-columns: repeat(6, minmax(6.5rem, 1fr)); }
+  .purchase-approvals-foot { gap: 0.6rem; }
+  .purchase-approvals-size { margin-left: 0; }
+}
+
+@media (max-width: 720px) {
+  .purchase-approvals-foot { padding-inline: 1rem; }
+  .purchase-approvals-skeleton { padding-inline: 1rem; }
+  .purchase-approvals-pager { width: 100%; justify-content: space-between; }
 }

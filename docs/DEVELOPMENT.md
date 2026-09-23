@@ -86,7 +86,11 @@ npm --prefix web run build
 
 # Browser checks — needs the stack above running.
 PURCHASE_APP_URL=http://127.0.0.1:5173 npm --prefix web run test:ui
+PURCHASE_APP_URL=http://127.0.0.1:5173 npm --prefix web run test:approvals
 ```
+
+Both browser suites reset the database before they seed, so run them one at a
+time and re-seed anything you were looking at by hand afterwards.
 
 `test:ui` uses Playwright's Chromium. Where one is already installed, point at
 it with `PURCHASE_CHROMIUM_PATH`; otherwise `npx playwright install chromium`.

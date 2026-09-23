@@ -2528,6 +2528,433 @@ check('the export endpoint answers with a real PDF when asked for one', function
     }
 });
 
+
+echo "\nThe approvals inbox\n";
+
+/**
+ * Call an ApprovalsController action the way the router would.
+ *
+ * Through the controller rather than against a service method, because the
+ * whole point of these endpoints is the SQL: a filter that produces the wrong
+ * WHERE clause is invisible to a test that reads the same rows a different way.
+ *
+ * @param array<string, string> $query
+ * @return array{status:int, data:mixed, meta:mixed}
+ */
+function callApprovals(string $action, Context $ctx, Auth $auth, array $query = []): array
+{
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => (string) $ctx->boId] + $query;
+
+    Auth::adopt($auth);
+    Permissions::forget();
+
+    try {
+        \Aicountly\Api\Controllers\ApprovalsController::$action();
+    } catch (ResponseSent $sent) {
+        return [
+            'status' => $sent->status,
+            'data'   => $sent->payload['data'] ?? null,
+            'meta'   => $sent->payload['meta'] ?? null,
+        ];
+    } finally {
+        Auth::adopt(null);
+        $_GET = [];
+    }
+
+    throw new \RuntimeException("ApprovalsController::{$action} returned without responding");
+}
+
+/** A buyer who may raise and approve orders, and an order of theirs waiting. */
+function pendingOrderRaisedBy(Context $ctx, string $uuid, array $overrides = []): array
+{
+    grantProfile($ctx, $uuid, 'Buyer ' . $uuid, ['po.view', 'po.create', 'po.approve']);
+    Db::run(
+        'INSERT INTO purchase_settings (cmp_id, po_approval_above_amount) VALUES (:cmp, 1)
+         ON CONFLICT (cmp_id) DO UPDATE SET po_approval_above_amount = 1',
+        ['cmp' => $ctx->cmpId],
+    );
+
+    $raiser = authFor($uuid, 2);
+    $orders = new PurchaseOrderService($ctx, $raiser);
+    $po = $orders->create(poInput($overrides));
+    $orders->submit((int) $po['po_id']);
+
+    return [$raiser, $po];
+}
+
+function metricById(array $metrics, string $id): array
+{
+    foreach ($metrics as $metric) {
+        if ($metric['id'] === $id) {
+            return $metric;
+        }
+    }
+
+    throw new \RuntimeException("no metric {$id}");
+}
+
+check('the queue shapes a row out of the document behind the approval', function () use ($ctx) {
+    resetDatabase();
+    [, $po] = pendingOrderRaisedBy($ctx, 'user-raiser');
+
+    $answer = callApprovals('queue', $ctx, authFor('user-owner', 1), ['scope' => 'all_pending']);
+    assertSame(1, count($answer['data']), 'one approval is waiting');
+
+    $row = $answer['data'][0];
+    assertSame((string) $po['po_no'], $row['document_label'], 'the document number comes from the order');
+    assertSame('Purchase order', $row['type_label'], 'and so does what to call it');
+    assertSame('Deccan Steel Traders', $row['supplier_name'], 'and the supplier');
+    assertTrue(str_contains((string) $row['amount_formatted'], '₹'), 'the amount is formatted on the server');
+    assertSame('user-raiser', $row['raised_by'], 'the raiser is read off the order, not the request');
+    assertTrue($row['age_days'] >= 0, 'the wait is a number of days');
+});
+
+check('pending for me excludes what you raised, and raised by me is where it went', function () use ($ctx) {
+    resetDatabase();
+    [$raiser] = pendingOrderRaisedBy($ctx, 'user-raiser');
+
+    $mine = callApprovals('queue', $ctx, $raiser, ['scope' => 'mine']);
+    assertSame(0, $mine['meta']['total'], 'the raiser is not offered their own document');
+
+    $ours = callApprovals('queue', $ctx, $raiser, ['scope' => 'raised_by_me']);
+    assertSame(1, $ours['meta']['total'], 'it is listed under what they raised');
+    assertSame(false, $ours['data'][0]['may_approve'], 'and the buttons are off');
+    assertTrue(
+        str_contains((string) $ours['data'][0]['block_reason'], 'somebody else'),
+        'with the rule said in words rather than only greyed',
+    );
+
+    // A second approver, who may decide it.
+    grantProfile($ctx, 'user-approver', 'Approver', ['po.view', 'po.approve']);
+    $theirs = callApprovals('queue', $ctx, authFor('user-approver', 2), ['scope' => 'mine']);
+    assertSame(1, $theirs['meta']['total'], 'somebody else sees it waiting on them');
+    assertSame(true, $theirs['data'][0]['may_approve'], 'and may decide it');
+});
+
+check('a reader who cannot approve that kind of document is offered none of them', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    grantProfile($ctx, 'user-viewer', 'Viewer', ['po.view']);
+
+    $answer = callApprovals('queue', $ctx, authFor('user-viewer', 2), ['scope' => 'mine']);
+    assertSame(0, $answer['meta']['total'], 'nothing is waiting on somebody who cannot decide it');
+    assertSame(false, $answer['meta']['can_approve'], 'and the page says so');
+
+    // The total and the rows agree: the permission filter runs in SQL, so the
+    // count under the table is the count of the rows in it.
+    $all = callApprovals('queue', $ctx, authFor('user-viewer', 2), ['scope' => 'all_pending']);
+    assertSame(count($all['data']), $all['meta']['total'], 'the paging total matches the rows');
+    assertSame(false, $all['data'][0]['may_approve'], 'but they still may not decide it');
+});
+
+check('the search narrows on the document, the supplier and the reason', function () use ($ctx) {
+    resetDatabase();
+    [, $po] = pendingOrderRaisedBy($ctx, 'user-raiser');
+    $owner = authFor('user-owner', 1);
+
+    assertSame(1, callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending', 'q' => 'Deccan'])['meta']['total'], 'by supplier');
+    assertSame(1, callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending', 'q' => substr((string) $po['po_no'], -4)])['meta']['total'], 'by document number');
+    assertSame(0, callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending', 'q' => 'no-such-thing'])['meta']['total'], 'and refuses to match nothing');
+});
+
+check('the period narrows decided documents and never what is still pending', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    $owner = authFor('user-owner', 1);
+
+    // Raised long ago. A date filter over the pending list would hide it, which
+    // is the exact failure this screen exists to prevent.
+    Db::run("UPDATE purchase_approval_requests SET created_at = NOW() - INTERVAL '400 days'");
+
+    $pending = callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending', 'preset' => 'this_month']);
+    assertSame(1, $pending['meta']['total'], 'an aged approval is still shown');
+    assertSame('nothing', $pending['meta']['period_applies_to'], 'and the page says the period does not apply');
+    assertTrue($pending['data'][0]['age_days'] > 300, 'with how long it has waited');
+
+    $actioned = callApprovals('queue', $ctx, $owner, ['scope' => 'actioned', 'preset' => 'this_month']);
+    assertSame(0, $actioned['meta']['total'], 'nothing has been decided this month');
+    assertSame('decision_date', $actioned['meta']['period_applies_to'], 'and there the period does apply');
+});
+
+check('a decision moves the row from pending to actioned', function () use ($ctx) {
+    resetDatabase();
+    [, $po] = pendingOrderRaisedBy($ctx, 'user-raiser');
+    grantProfile($ctx, 'user-approver', 'Approver', ['po.view', 'po.approve']);
+    $approver = authFor('user-approver', 2);
+
+    (new PurchaseOrderService($ctx, $approver))->decide((int) $po['po_id'], 'approve', []);
+
+    assertSame(0, callApprovals('queue', $ctx, $approver, ['scope' => 'all_pending'])['meta']['total'], 'nothing is waiting');
+
+    $actioned = callApprovals('queue', $ctx, $approver, ['scope' => 'actioned', 'preset' => 'this_year']);
+    assertSame(1, $actioned['meta']['total'], 'it is in what was decided');
+    assertSame('APPROVED', $actioned['data'][0]['status'], 'with the outcome recorded');
+    assertTrue($actioned['data'][0]['decided_at'] !== null, 'and when');
+});
+
+check('size alone never reaches high, because everything here is over the line', function () use ($ctx) {
+    resetDatabase();
+    // Far over the threshold: the order is worth ₹41,300 against a threshold of
+    // ₹1, so the ratio rule fires on its own — and on its own it stops at
+    // medium. Every document in this queue is here BECAUSE it broke the value
+    // rule, so a queue where size alone paints the column red is a column
+    // nobody reads.
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    $owner = authFor('user-owner', 1);
+
+    $row = callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending'])['data'][0];
+    assertSame('medium', $row['risk'], 'a document far over its threshold is medium, not high');
+    assertTrue($row['risk_reasons'] !== [], 'and the facts behind it travel with it');
+    assertTrue(
+        str_contains(implode(' ', $row['risk_reasons']), 'threshold'),
+        'one of which is how far over the threshold it is',
+    );
+});
+
+check('high is kept for a judgement somebody actually recorded', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    $owner = authFor('user-owner', 1);
+
+    Db::run(
+        "INSERT INTO purchase_supplier_profiles (cmp_id, supplier_account_id, qualification_status, risk_flag)
+         VALUES (:cmp, 601, 'approved', 'late deliveries')",
+        ['cmp' => $ctx->cmpId],
+    );
+
+    $row = callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending'])['data'][0];
+    assertSame('high', $row['risk'], 'a flagged supplier is high');
+    assertTrue(str_contains(implode(' ', $row['risk_reasons']), 'late deliveries'), 'and the flag is quoted');
+
+    // And so is the company's own setting that it will not order from a
+    // supplier it has not approved.
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    Db::run('UPDATE purchase_settings SET enforce_approved_vendors = TRUE WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
+
+    $enforced = callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending'])['data'][0];
+    assertSame('high', $enforced['risk'], 'an unapproved supplier is high where the company says so');
+    assertTrue(
+        str_contains(implode(' ', $enforced['risk_reasons']), 'only orders from approved suppliers'),
+        'and the setting is named as the reason',
+    );
+});
+
+check('with nothing to judge on, risk says so rather than saying low', function () use ($ctx, $auth) {
+    resetDatabase();
+    // A requisition has no supplier to qualify, so once its threshold and its
+    // exception flags are gone there is genuinely nothing to judge. "Low" there
+    // would be a reassurance nobody checked.
+    Db::run(
+        'INSERT INTO purchase_settings (cmp_id, requisition_approval_above_amount) VALUES (:cmp, 1)
+         ON CONFLICT (cmp_id) DO UPDATE SET requisition_approval_above_amount = 1',
+        ['cmp' => $ctx->cmpId],
+    );
+    $requisitions = new RequisitionService($ctx, $auth);
+    $requisition = $requisitions->create([
+        'department' => 'Production',
+        'lines' => [['item_id' => 201, 'required_qty' => 10, 'estimated_rate' => 100]],
+    ]);
+    $requisitions->submit((int) $requisition['requisition_id']);
+
+    Db::run('UPDATE purchase_approval_requests SET threshold_value = NULL, actual_value = NULL');
+    Db::run("UPDATE purchase_requisitions SET exception_flags = '[]'::jsonb");
+
+    $row = callApprovals('queue', $ctx, authFor('user-owner', 1), ['scope' => 'all_pending'])['data'][0];
+    assertSame('not_assessed', $row['risk'], 'with nothing to judge on it says so');
+    assertSame([], $row['risk_reasons'], 'rather than inventing a reason');
+    assertSame('Not assessed', $row['risk_label'], 'and the chip says it in words, not by being grey');
+});
+
+check('an unapproved supplier is a stated reason, not a silent one', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    Db::run(
+        "INSERT INTO purchase_supplier_profiles (cmp_id, supplier_account_id, qualification_status, risk_flag)
+         VALUES (:cmp, 601, 'pending_approval', 'late deliveries')",
+        ['cmp' => $ctx->cmpId],
+    );
+
+    $row = callApprovals('queue', $ctx, authFor('user-owner', 1), ['scope' => 'all_pending'])['data'][0];
+    $reasons = implode(' ', $row['risk_reasons']);
+    assertTrue(str_contains($reasons, 'late deliveries'), 'the supplier flag is quoted');
+    assertTrue(str_contains($reasons, 'not approved'), 'and so is the qualification');
+    assertTrue(str_contains((string) $row['supplier_note'], 'Pending approval'), 'the cell states the profile too');
+});
+
+check('the summary counts the position now and the decisions in the period', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    $owner = authFor('user-owner', 1);
+
+    $summary = callApprovals('summary', $ctx, $owner, ['preset' => 'this_year'])['data'];
+
+    assertSame(1, $summary['counts']['pending'], 'one approval is open');
+    assertSame(6, count($summary['metrics']), 'six figures, as the design has six tiles');
+
+    $pending = metricById($summary['metrics'], 'approvals_pending');
+    assertSame('1', $pending['raw_value'], 'the pending card counts it');
+    assertSame(false, $pending['comparison']['available'], 'a position is not compared to a period');
+    assertTrue(
+        str_contains((string) $pending['comparison']['reason'], 'position as at now'),
+        'and the card says why there is no comparison',
+    );
+
+    $approved = metricById($summary['metrics'], 'approvals_approved');
+    assertSame('0', $approved['raw_value'], 'nothing has been approved yet');
+    assertSame('ready', $approved['status'], 'which is a zero, not an unavailable');
+
+    $time = metricById($summary['metrics'], 'approval_time');
+    assertSame('unavailable', $time['status'], 'with no decisions there is no time to average');
+    assertTrue(
+        str_contains((string) $time['unavailable_reason'], 'no time to average'),
+        'and it says so rather than showing 0 days',
+    );
+
+    $value = metricById($summary['metrics'], 'approvals_pending_value');
+    assertSame('ready', $value['status'], 'the value waiting is known');
+    assertTrue(str_contains((string) $value['exact_value'], '₹'), 'and formatted on the server');
+});
+
+check('the value waiting is not added up across currencies', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    pendingOrderRaisedBy($ctx, 'user-raiser-two', ['supplier_account_id' => 602, 'supplier_name' => 'Gulf Metals']);
+    Db::run("UPDATE purchase_orders SET currency_code = 'USD' WHERE supplier_account_id = 602");
+
+    $summary = callApprovals('summary', $ctx, authFor('user-owner', 1), ['preset' => 'this_year'])['data'];
+
+    $value = metricById($summary['metrics'], 'approvals_pending_value');
+    assertSame('unavailable', $value['status'], 'rupees are not added to dollars');
+    assertTrue(str_contains((string) $value['unavailable_reason'], 'more than one currency'), 'and it says why');
+    assertSame(false, $summary['by_type']['available'], 'the split refuses for the same reason');
+});
+
+check('the summary states what is wrong with the queue, from rules that matched', function () use ($ctx) {
+    resetDatabase();
+    [$raiser] = pendingOrderRaisedBy($ctx, 'user-raiser');
+    Db::run("UPDATE purchase_approval_requests SET created_at = NOW() - INTERVAL '30 days'");
+
+    $summary = callApprovals('summary', $ctx, $raiser, ['preset' => 'this_year'])['data'];
+    $ids = array_column($summary['risks']['rows'], 'id');
+
+    assertTrue(in_array('waiting_long', $ids, true), 'an approval waiting a month is raised');
+    assertTrue(in_array('raised_by_me', $ids, true), 'and so is one the reader cannot decide themselves');
+    assertTrue(in_array('supplier_unqualified', $ids, true), 'and a supplier with no procurement profile');
+
+    foreach ($summary['risks']['rows'] as $risk) {
+        assertTrue($risk['basis'] !== '', 'every row states the rule behind it: ' . $risk['id']);
+    }
+
+    // And nothing is listed when nothing matches.
+    resetDatabase();
+    $quiet = callApprovals('summary', $ctx, authFor('user-owner', 1), ['preset' => 'this_year'])['data'];
+    assertSame([], $quiet['risks']['rows'], 'an empty queue raises nothing');
+    assertSame([], $quiet['insights']['rows'], 'and says nothing about it');
+});
+
+check('insights are observations with their rule attached, written by no model', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    pendingOrderRaisedBy($ctx, 'user-raiser-two');
+
+    $summary = callApprovals('summary', $ctx, authFor('user-owner', 1), ['preset' => 'this_year'])['data'];
+    $ids = array_column($summary['insights']['rows'], 'id');
+
+    assertTrue(in_array('largest_pending', $ids, true), 'the biggest thing waiting is named');
+    assertTrue(in_array('possible_duplicate', $ids, true), 'two orders at the same value are worth a second look');
+
+    foreach ($summary['insights']['rows'] as $insight) {
+        assertSame('observation', $insight['kind'], 'each is an observation, not an extrapolation');
+        assertTrue($insight['basis'] !== '', 'and states what it was derived from');
+    }
+    assertTrue(
+        str_contains($summary['insights']['method_label'], 'No model writes these'),
+        'and the panel says where they come from',
+    );
+});
+
+check('match exceptions are withheld from a reader who may not see them', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+    grantProfile($ctx, 'user-viewer', 'Viewer', ['po.view']);
+
+    $summary = callApprovals('summary', $ctx, authFor('user-viewer', 2), ['preset' => 'this_year'])['data'];
+
+    assertSame(false, $summary['exceptions']['available'], 'the panel is withheld');
+    assertSame('permission', $summary['exceptions']['kind'], 'as a permission, not a failure');
+    assertSame(null, $summary['counts']['exceptions'], 'and the count is absent rather than zero');
+    assertSame('unavailable', metricById($summary['metrics'], 'match_exceptions_open')['status'], 'as is the card');
+});
+
+check('the requester list is people who have raised something, not a directory', function () use ($ctx) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+
+    $people = callApprovals('requesters', $ctx, authFor('user-owner', 1))['data'];
+    assertSame(1, count($people), 'one person has raised something');
+    assertSame('user-raiser', $people[0]['user_uuid'], 'and it is them');
+    assertSame(1, $people[0]['pending'], 'with what they have waiting');
+
+    // The label is what an administrator typed against a grant — never a name
+    // fetched from the portal, which is not this product's to hold.
+    Db::run("UPDATE purchase_permission_assignments SET member_label = 'Sneha Chawla' WHERE user_uuid = 'user-raiser'");
+    $named = callApprovals('requesters', $ctx, authFor('user-owner', 1))['data'];
+    assertSame('Sneha Chawla', $named[0]['label'], 'the typed label is used where there is one');
+
+    $you = callApprovals('requesters', $ctx, authFor('user-raiser', 2))['data'];
+    assertSame('You', $you[0]['label'], 'and you are called you');
+});
+
+check('paging is done in SQL and the total is the total', function () use ($ctx) {
+    resetDatabase();
+    for ($i = 0; $i < 4; $i++) {
+        pendingOrderRaisedBy($ctx, 'user-raiser-' . $i);
+    }
+    $owner = authFor('user-owner', 1);
+
+    $first = callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending', 'limit' => '2', 'offset' => '0']);
+    $second = callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending', 'limit' => '2', 'offset' => '2']);
+
+    assertSame(4, $first['meta']['total'], 'the total counts every match');
+    assertSame(2, count($first['data']), 'the page holds the page size');
+    assertSame(2, count($second['data']), 'and so does the next one');
+    assertTrue(
+        $first['data'][0]['approval_id'] !== $second['data'][0]['approval_id'],
+        'the second page is different rows, not the same ones again',
+    );
+});
+
+check('the document type filter uses the kinds that actually exist', function () use ($ctx, $auth) {
+    resetDatabase();
+    pendingOrderRaisedBy($ctx, 'user-raiser');
+
+    Db::run(
+        'INSERT INTO purchase_settings (cmp_id, requisition_approval_above_amount) VALUES (:cmp, 1)
+         ON CONFLICT (cmp_id) DO UPDATE SET requisition_approval_above_amount = 1',
+        ['cmp' => $ctx->cmpId],
+    );
+    $requisitions = new RequisitionService($ctx, $auth);
+    $requisition = $requisitions->create([
+        'department' => 'Production',
+        'lines' => [['item_id' => 201, 'required_qty' => 100, 'estimated_rate' => 240]],
+    ]);
+    $requisitions->submit((int) $requisition['requisition_id']);
+
+    $owner = authFor('user-owner', 1);
+    $orders = callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending', 'type' => 'purchase_order']);
+    $reqs = callApprovals('queue', $ctx, $owner, ['scope' => 'all_pending', 'type' => 'requisition']);
+
+    assertSame(1, $orders['meta']['total'], 'orders on their own');
+    assertSame(1, $reqs['meta']['total'], 'requisitions on their own');
+    assertSame('Requisition', $reqs['data'][0]['type_label'], 'and each says which it is');
+
+    $split = callApprovals('summary', $ctx, $owner, ['preset' => 'this_year'])['data']['by_type'];
+    assertSame(true, $split['available'], 'the split is drawn');
+    assertSame(2, count($split['rows']), 'with one row per kind actually waiting');
+});
+
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);
