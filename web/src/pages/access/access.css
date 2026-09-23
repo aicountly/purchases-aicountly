@@ -1,0 +1,1267 @@
+/*
+ * Administration → Access.
+ *
+ * Scoped to .access-workspace, exactly as the dashboards are scoped to
+ * .purchase-workspace and for the same reason: the fleet shares the tokens in
+ * index.css, and a product that redefines --accent globally changes every other
+ * product's buttons the next time the shell is shared. Everything here is a
+ * local token layered over those, so this screen can be indigo without Books
+ * becoming indigo.
+ *
+ * Light only, like the dashboards. This screen is read next to them.
+ *
+ * The visual language is security, not alarm: white surfaces, thin borders, one
+ * ambient lavender wash behind the header. The old page led with a full-width
+ * amber warning, which is the loudest thing this product can say and it said it
+ * on a brand new company that had simply not been set up yet.
+ */
+
+/* The tokens, shared with anything this screen renders through a portal. A
+   portaled popover lands in <body>, outside .access-workspace, so it would
+   otherwise resolve every --ap-* to nothing and render unstyled. */
+.access-workspace,
+.access-portal {
+  --ap-bg: #f8faff;
+  --ap-surface: #ffffff;
+  --ap-surface-soft: #f9faff;
+  --ap-border: #e7eaf3;
+  --ap-border-strong: #d8deec;
+
+  --ap-text: #101534;
+  --ap-text-secondary: #53607d;
+  /* #7c879f on white is 3.6:1 — fine for the 10-11px supporting lines it is
+     used on only because those are never the sole carrier of meaning. Anything
+     a decision depends on uses --ap-text-secondary (5.9:1) or darker. */
+  --ap-text-muted: #6b768f;
+
+  --ap-primary: #4c3fe4;
+  --ap-primary-hover: #3f32d6;
+  --ap-primary-soft: #f0efff;
+
+  --ap-blue: #2f5fd8;
+  --ap-blue-soft: #eef4ff;
+
+  --ap-green: #0f7d5b;
+  --ap-green-soft: #eafaf4;
+
+  --ap-purple: #6d3fd1;
+  --ap-purple-soft: #f5efff;
+
+  --ap-warning: #8a5300;
+  --ap-warning-soft: #fff7e8;
+
+  --ap-danger: #b42318;
+  --ap-danger-soft: #fff0f3;
+
+  --ap-radius-sm: 10px;
+  --ap-radius-md: 14px;
+  --ap-radius-lg: 18px;
+
+  --ap-shadow-xs: 0 1px 2px rgb(25 32 56 / 4%);
+  --ap-shadow-sm: 0 6px 18px rgb(25 32 56 / 6%);
+  --ap-shadow-md: 0 16px 40px rgb(47 55 94 / 9%);
+
+  color: var(--ap-text);
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.access-workspace {
+  min-width: 0;
+  min-height: 100%;
+  padding: clamp(16px, 1.6vw, 26px) clamp(16px, 2vw, 28px) 40px;
+  background:
+    radial-gradient(circle at 72% 2%, rgb(91 91 255 / 9%), transparent 26%),
+    radial-gradient(circle at 93% 15%, rgb(76 188 255 / 8%), transparent 24%),
+    var(--ap-bg);
+}
+
+.access-workspace,
+.access-portal,
+.access-workspace *,
+.access-portal *,
+.access-workspace *::before,
+.access-workspace *::after { box-sizing: border-box; }
+
+.access-workspace button,
+.access-workspace input,
+.access-workspace select,
+.access-workspace textarea,
+.access-portal button { font: inherit; }
+
+.access-workspace button,
+.access-portal button { cursor: pointer; }
+
+.access-workspace :focus-visible,
+.access-portal :focus-visible {
+  outline: 3px solid var(--ap-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.access-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- Header -------------------------------------------------------------- */
+
+.access-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--ap-text-secondary);
+}
+
+.access-breadcrumb strong { color: var(--ap-text); font-weight: 650; }
+
+.access-hero__title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(340px, 0.9fr);
+  gap: 28px;
+  align-items: center;
+}
+
+.access-hero h1 {
+  margin: 0;
+  font-size: clamp(26px, 2vw, 36px);
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+}
+
+.access-hero__lede {
+  margin: 8px 0 0;
+  max-width: 620px;
+  color: var(--ap-text-secondary);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.access-hero__security {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  min-height: 140px;
+}
+
+.access-hero__copy h2 {
+  margin: 0;
+  color: #2637c8;
+  font-size: clamp(20px, 1.5vw, 25px);
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+}
+
+.access-hero__copy p {
+  max-width: 270px;
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ap-text-secondary);
+}
+
+.access-hero__assurances {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ap-text-secondary);
+}
+
+.access-hero__assurances li { display: flex; align-items: center; gap: 6px; }
+.access-hero__assurances svg { color: var(--ap-green); flex-shrink: 0; }
+
+/* --- The security orbit --------------------------------------------------
+   Drawn here rather than fetched: a remote illustration is a request that can
+   fail, and a security page that half-loads is not reassuring. */
+
+.access-orbit {
+  position: relative;
+  width: 178px;
+  height: 148px;
+  flex-shrink: 0;
+}
+
+.access-orbit__ring {
+  position: absolute;
+  border: 1px dashed rgb(86 73 245 / 32%);
+  border-radius: 50%;
+}
+
+.access-orbit__ring--outer { inset: 0 6px; }
+.access-orbit__ring--inner { inset: 16px 24px; }
+
+.access-orbit__shield {
+  position: absolute;
+  left: 50%;
+  top: 51%;
+  z-index: 2;
+  display: grid;
+  width: 74px;
+  height: 82px;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgb(255 255 255 / 95%);
+  border-radius: 32% 32% 45% 45%;
+  background: linear-gradient(145deg, #805cff, #526cf8 55%, #62b8ff);
+  box-shadow: 0 18px 38px rgb(75 67 230 / 24%), inset 0 0 0 7px rgb(255 255 255 / 22%);
+  color: #fff;
+}
+
+.access-orbit__node {
+  position: absolute;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid #e0e6ff;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 94%);
+  box-shadow: var(--ap-shadow-xs);
+  color: #37406d;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.access-orbit__node svg { color: var(--ap-primary); }
+/* Kept inside the orbit box on the right: the hero column ends at the page
+   gutter, and a chip hanging past it is a chip clipped by the viewport. */
+.access-orbit__node--buyer { left: -10px; top: 44px; }
+.access-orbit__node--approver { right: 2px; top: -4px; }
+.access-orbit__node--viewer { right: 0; bottom: 2px; }
+
+/* --- KPI cards ------------------------------------------------------------ */
+
+.access-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.access-metric {
+  position: relative;
+  display: flex;
+  min-height: 108px;
+  flex-direction: column;
+  /* Top-aligned, not centred: a two-line supporting sentence on one card
+     otherwise shifts its number out of line with the other three. */
+  justify-content: flex-start;
+  overflow: hidden;
+  padding: 14px 16px;
+  border: 1px solid rgb(222 227 241 / 88%);
+  border-radius: 15px;
+  background: rgb(255 255 255 / 78%);
+  box-shadow: 0 5px 16px rgb(31 42 82 / 3.5%);
+}
+
+.access-metric--blue { background: linear-gradient(135deg, rgb(239 244 255 / 95%), rgb(255 255 255 / 95%)); }
+.access-metric--green { background: linear-gradient(135deg, rgb(234 250 244 / 95%), rgb(255 255 255 / 95%)); }
+.access-metric--purple { background: linear-gradient(135deg, rgb(246 240 255 / 96%), rgb(255 255 255 / 96%)); }
+
+.access-metric__icon {
+  display: grid;
+  width: 33px;
+  height: 33px;
+  margin-bottom: 8px;
+  place-items: center;
+  border-radius: 10px;
+  background: rgb(83 79 246 / 10%);
+  color: var(--ap-primary);
+}
+
+.access-metric--green .access-metric__icon { background: rgb(15 125 91 / 10%); color: var(--ap-green); }
+.access-metric--purple .access-metric__icon { background: rgb(109 63 209 / 10%); color: var(--ap-purple); }
+
+.access-metric__value {
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.access-metric__value--quiet { font-size: 17px; color: var(--ap-text-muted); font-weight: 650; }
+
+.access-metric__label { margin-top: 6px; font-size: 12px; font-weight: 700; }
+.access-metric__hint { margin-top: 4px; color: var(--ap-text-muted); font-size: 10.5px; line-height: 1.4; }
+
+.access-metric__you {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--ap-green-soft);
+  color: var(--ap-green);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+/* --- Toolbar and tabs ----------------------------------------------------- */
+
+.access-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 18px;
+  padding: 8px;
+  border: 1px solid var(--ap-border);
+  border-radius: 15px;
+  background: rgb(255 255 255 / 84%);
+  box-shadow: var(--ap-shadow-xs);
+}
+
+.access-tabs {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.access-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ap-text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.access-tab:hover { background: #f5f6fc; }
+
+.access-tab.is-active {
+  background: var(--ap-primary-soft);
+  color: var(--ap-primary);
+  box-shadow: inset 0 0 0 1px rgb(85 71 245 / 12%);
+}
+
+.access-tab__count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgb(16 21 52 / 6%);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.access-tab.is-active .access-tab__count { background: rgb(76 63 228 / 12%); }
+
+.access-toolbar__actions { display: flex; gap: 9px; flex: 0 0 auto; flex-wrap: wrap; }
+
+/* --- Buttons -------------------------------------------------------------- */
+
+.access-btn {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 15px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: transform 0.17s ease, box-shadow 0.17s ease, border-color 0.17s ease, background 0.17s ease;
+}
+
+.access-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.access-btn:disabled { cursor: not-allowed; opacity: 0.55; transform: none; }
+
+.access-btn--primary {
+  border-color: var(--ap-primary);
+  background: linear-gradient(135deg, #5a4dfa, #4234e4);
+  box-shadow: 0 7px 18px rgb(75 58 227 / 20%);
+  color: #fff;
+}
+
+.access-btn--primary:hover:not(:disabled) { box-shadow: 0 9px 24px rgb(75 58 227 / 27%); }
+
+.access-btn--secondary {
+  border-color: #cfd5e7;
+  background: #fff;
+  color: #3d35c4;
+}
+
+.access-btn--secondary:hover:not(:disabled) { border-color: #9b98f5; background: #fafaff; }
+
+.access-btn--quiet {
+  min-height: 34px;
+  padding: 0 11px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ap-text-secondary);
+  font-size: 12px;
+}
+
+.access-btn--quiet:hover:not(:disabled) { background: #f2f3fa; color: var(--ap-text); }
+
+.access-btn--danger {
+  border-color: rgb(180 35 24 / 30%);
+  background: var(--ap-danger-soft);
+  color: var(--ap-danger);
+}
+
+.access-btn--danger:hover:not(:disabled) { border-color: var(--ap-danger); }
+
+.access-btn--ai {
+  border-color: rgb(101 78 240 / 25%);
+  background: rgb(255 255 255 / 92%);
+  color: #4437d6;
+  box-shadow: 0 8px 20px rgb(83 65 213 / 10%);
+}
+
+.access-btn--sm { min-height: 32px; padding: 0 10px; font-size: 11.5px; border-radius: 8px; }
+
+.access-textbtn {
+  border: 0;
+  background: transparent;
+  color: var(--ap-primary);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.access-textbtn:hover { background: var(--ap-primary-soft); }
+
+/* --- Layout --------------------------------------------------------------- */
+
+.access-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 318px;
+  gap: 14px;
+  margin-top: 14px;
+  align-items: start;
+}
+
+.access-main,
+.access-aside {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* A flex item is `min-width: auto` by default, so a wide table inside one sets
+   the flex line's cross size to the table's max-content width — and the whole
+   PAGE grows sideways, even though the panel around it clips. This is the fix
+   for the horizontal scrollbar that only appeared once a company had rows. */
+.access-main > *,
+.access-aside > * { min-width: 0; }
+
+/* --- Panels --------------------------------------------------------------- */
+
+.access-panel {
+  overflow: hidden;
+  border: 1px solid var(--ap-border);
+  border-radius: var(--ap-radius-md);
+  background: rgb(255 255 255 / 93%);
+  box-shadow: var(--ap-shadow-xs);
+}
+
+.access-panel__header {
+  display: flex;
+  min-height: 66px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--ap-border);
+}
+
+.access-panel__header h2 { margin: 0; font-size: 14.5px; font-weight: 700; letter-spacing: -0.012em; }
+.access-panel__header p { margin: 4px 0 0; color: var(--ap-text-muted); font-size: 11.5px; }
+
+.access-panel__tools { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.access-search { position: relative; display: inline-flex; align-items: center; }
+
+.access-search svg {
+  position: absolute;
+  left: 10px;
+  color: var(--ap-text-muted);
+  pointer-events: none;
+}
+
+/* Specific enough to beat `.access-workspace input[type='search']` below,
+   which sets the horizontal padding for every control on the page — without
+   this the placeholder starts underneath the magnifier. */
+.access-workspace .access-search input[type='search'] { padding-left: 31px; width: 200px; }
+
+.access-workspace input[type='search'],
+.access-workspace input[type='text'],
+.access-workspace select,
+.access-workspace textarea {
+  min-height: 36px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ap-text);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.17s ease, box-shadow 0.17s ease;
+}
+
+.access-workspace input[type='search'],
+.access-workspace input[type='text'],
+.access-workspace select { padding: 0 11px; }
+
+.access-workspace textarea { padding: 9px 11px; min-height: 76px; resize: vertical; line-height: 1.5; }
+
+.access-workspace input:focus,
+.access-workspace select:focus,
+.access-workspace textarea:focus {
+  border-color: rgb(76 63 228 / 58%);
+  box-shadow: 0 0 0 3px rgb(76 63 228 / 10%);
+}
+
+.access-workspace input[aria-invalid='true'],
+.access-workspace select[aria-invalid='true'] { border-color: var(--ap-danger); }
+
+.access-panel__body { padding: 16px; }
+.access-panel__body--flush { padding: 0; }
+
+/* --- Tables --------------------------------------------------------------- */
+
+/*
+ * `contain: layout` is load-bearing, not decoration.
+ *
+ * A table wider than its container propagates its intrinsic width up the tree
+ * and widens the PAGE — `overflow-x: auto` clips the painting but not that, so
+ * on a phone the whole layout could be swiped 280px sideways into empty white.
+ * Layout containment stops the propagation at this box. It also makes this a
+ * containing block for fixed-position descendants, which is why the row menu
+ * renders through a portal instead of inside the row.
+ */
+.access-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  contain: layout;
+}
+
+.access-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+.access-table th,
+.access-table td {
+  padding: 11px 14px;
+  border-bottom: 1px solid #eef0f7;
+  text-align: left;
+  vertical-align: middle;
+}
+
+/* Column headers only. A row header (`<th scope="row">`, which is what the
+   first cell of every row here is) must keep body styling — uppercasing
+   somebody's name at 10px because it sits in a th is not a header treatment,
+   it is a bug. */
+.access-table thead th {
+  color: var(--ap-text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: #fbfcff;
+}
+
+.access-table tbody th { font-weight: 400; }
+
+.access-table tbody tr:last-child td { border-bottom: 0; }
+.access-table tbody tr:hover { background: #fbfbff; }
+.access-table td.is-numeric,
+.access-table th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.access-table td.is-actions { text-align: right; white-space: nowrap; }
+
+/* Block, not inline: these are used as <span> inside a person cell as well as
+   as <div> in a profile row, and as inline spans the name and the uuid under
+   it ran together into one unreadable string. */
+.access-cell-title { display: block; font-weight: 650; }
+.access-cell-sub { display: block; color: var(--ap-text-muted); font-size: 11.5px; margin-top: 2px; }
+
+.access-nowrap { white-space: nowrap; }
+
+.access-uuid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--ap-text-secondary);
+}
+
+/* --- Badges and chips ----------------------------------------------------- */
+
+.access-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.access-badge--active { background: var(--ap-green-soft); color: var(--ap-green); }
+.access-badge--inactive { background: #f1f2f7; color: #5b6479; }
+.access-badge--starter { background: var(--ap-purple-soft); color: var(--ap-purple); }
+.access-badge--custom { background: var(--ap-blue-soft); color: var(--ap-blue); }
+.access-badge--you { background: var(--ap-primary-soft); color: var(--ap-primary); }
+
+.access-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.access-chip.is-inactive { opacity: 0.6; }
+
+.access-chip__remove {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ap-text-muted);
+}
+
+.access-chip__remove:hover:not(:disabled) { background: var(--ap-danger-soft); color: var(--ap-danger); }
+.access-chip__remove:disabled { cursor: not-allowed; opacity: 0.4; }
+
+.access-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* --- Avatar --------------------------------------------------------------- */
+
+.access-person { display: flex; align-items: center; gap: 10px; min-width: 0; }
+
+.access-avatar {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 50%;
+  background: linear-gradient(140deg, #ece9ff, #e2ecff);
+  color: #4034c9;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+/* --- Empty, loading, error states ---------------------------------------- */
+
+.access-state {
+  display: flex;
+  min-height: 250px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 34px 28px;
+  text-align: center;
+}
+
+.access-state__visual {
+  display: grid;
+  width: 74px;
+  height: 60px;
+  margin-bottom: 14px;
+  place-items: center;
+  border-radius: 19px;
+  background: linear-gradient(135deg, #eff2ff, #faf7ff);
+  color: var(--ap-primary);
+}
+
+.access-state__visual--warn { background: linear-gradient(135deg, #fff4e5, #fff9f0); color: var(--ap-warning); }
+.access-state__visual--danger { background: linear-gradient(135deg, #ffeeee, #fff5f5); color: var(--ap-danger); }
+
+.access-state h3 { margin: 0; font-size: 15.5px; }
+
+.access-state p {
+  max-width: 560px;
+  margin: 8px auto 16px;
+  color: var(--ap-text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.access-state__actions { display: flex; gap: 9px; flex-wrap: wrap; justify-content: center; }
+
+.access-state__note {
+  margin-top: 18px;
+  padding: 10px 14px;
+  border: 1px solid var(--ap-border);
+  border-radius: var(--ap-radius-sm);
+  background: var(--ap-surface-soft);
+  color: var(--ap-text-secondary);
+  font-size: 11.5px;
+  max-width: 560px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  text-align: left;
+}
+
+.access-state__note svg { flex-shrink: 0; margin-top: 1px; color: var(--ap-blue); }
+
+/* Skeletons match the row they stand in for, so nothing jumps when data lands. */
+.access-skeleton {
+  border-radius: 6px;
+  background: linear-gradient(90deg, #eef0f7 25%, #f7f8fc 37%, #eef0f7 63%);
+  background-size: 400% 100%;
+  animation: access-shimmer 1.4s ease infinite;
+}
+
+@keyframes access-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+.access-skeleton-rows { display: grid; gap: 1px; background: #eef0f7; }
+.access-skeleton-row { display: flex; align-items: center; gap: 14px; padding: 14px; background: #fff; }
+
+/* --- Inline notice -------------------------------------------------------- */
+
+.access-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: var(--ap-radius-sm);
+  border: 1px solid;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.access-notice svg { flex-shrink: 0; margin-top: 2px; }
+.access-notice strong { display: block; margin-bottom: 2px; }
+.access-notice--info { border-color: rgb(47 95 216 / 22%); background: var(--ap-blue-soft); color: #1f3f8f; }
+.access-notice--warning { border-color: rgb(138 83 0 / 22%); background: var(--ap-warning-soft); color: #6d4300; }
+.access-notice--danger { border-color: rgb(180 35 24 / 26%); background: var(--ap-danger-soft); color: #8c1d14; }
+.access-notice--success { border-color: rgb(15 125 91 / 22%); background: var(--ap-green-soft); color: #0b5c43; }
+
+.access-notice__dismiss {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+/* --- Grant form ----------------------------------------------------------- */
+
+.access-form { padding: 16px; display: grid; gap: 4px; }
+
+.access-form__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.access-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; min-width: 0; }
+.access-field > label { font-size: 11.5px; font-weight: 700; color: #34405f; }
+.access-field__hint { color: var(--ap-text-muted); font-size: 10.5px; line-height: 1.45; }
+.access-field__error { color: var(--ap-danger); font-size: 10.5px; font-weight: 600; }
+
+.access-form__footer { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+
+.access-suggestions { margin-bottom: 12px; }
+.access-suggestions__label { font-size: 11px; color: var(--ap-text-muted); margin-bottom: 7px; line-height: 1.45; }
+
+.access-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 11.5px;
+}
+
+.access-suggestion:hover:not(:disabled) { border-color: #a9a4f7; background: #fafaff; }
+
+/* --- Aside: guide, owner status, AI -------------------------------------- */
+
+.access-guide { padding: 16px; }
+
+.access-guide__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.access-guide__header h2 { margin: 0; font-size: 14.5px; font-weight: 700; }
+
+.access-guide__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.access-guide__title svg { color: var(--ap-primary); }
+
+.access-guide__toggle {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: 8px;
+  background: #fff;
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--ap-text-secondary);
+}
+
+.access-guide__item { display: grid; grid-template-columns: 38px 1fr; gap: 11px; padding: 9px 0; }
+
+.access-guide__icon {
+  display: grid;
+  width: 37px;
+  height: 37px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ap-green-soft);
+  color: var(--ap-green);
+}
+
+/* One tint per item, in the order they are written. */
+.access-guide__item:nth-of-type(2) .access-guide__icon { background: var(--ap-primary-soft); color: var(--ap-primary); }
+.access-guide__item:nth-of-type(3) .access-guide__icon { background: var(--ap-blue-soft); color: var(--ap-blue); }
+.access-guide__item:nth-of-type(4) .access-guide__icon { background: var(--ap-purple-soft); color: var(--ap-purple); }
+
+.access-guide__item strong { display: block; margin-bottom: 3px; font-size: 11.5px; }
+.access-guide__item p { margin: 0; color: var(--ap-text-secondary); font-size: 10.5px; line-height: 1.5; }
+
+.access-owner {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 13px;
+  border: 1px solid rgb(15 125 91 / 16%);
+  border-radius: 11px;
+  background: linear-gradient(135deg, rgb(228 249 241 / 95%), rgb(241 252 248 / 95%));
+}
+
+.access-owner svg { flex-shrink: 0; color: var(--ap-green); margin-top: 1px; }
+.access-owner strong { font-size: 11.5px; }
+.access-owner p { margin: 4px 0 0; color: #3f6157; font-size: 10.5px; line-height: 1.45; }
+.access-owner--delegate { border-color: rgb(47 95 216 / 16%); background: linear-gradient(135deg, rgb(235 243 255 / 95%), rgb(246 250 255 / 95%)); }
+.access-owner--delegate svg { color: var(--ap-blue); }
+.access-owner--delegate p { color: #3f5480; }
+
+.access-ai {
+  position: relative;
+  overflow: hidden;
+  min-height: 150px;
+  padding: 18px;
+  border: 1px solid rgb(117 93 255 / 14%);
+  border-radius: 15px;
+  background:
+    radial-gradient(circle at 90% 80%, rgb(79 105 255 / 22%), transparent 38%),
+    linear-gradient(135deg, #f4ebff, #e8e7ff);
+}
+
+.access-ai h2 { margin: 8px 0 0; font-size: 14.5px; font-weight: 700; }
+.access-ai p { max-width: 215px; margin: 7px 0 13px; color: #4b4a73; font-size: 11.5px; line-height: 1.5; }
+.access-ai__sparkle { color: #6b47ef; }
+
+.access-ai__visual {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  color: rgb(107 71 239 / 28%);
+  pointer-events: none;
+}
+
+/* --- Activity timeline ---------------------------------------------------- */
+
+.access-timeline { display: grid; gap: 0; padding: 4px 0; }
+
+.access-event {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 12px;
+  padding: 12px 16px;
+  position: relative;
+}
+
+.access-event + .access-event::before {
+  content: '';
+  position: absolute;
+  left: 32px;
+  top: -12px;
+  height: 12px;
+  width: 1px;
+  background: var(--ap-border);
+}
+
+.access-event__icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--ap-primary-soft);
+  color: var(--ap-primary);
+}
+
+.access-event__icon--grant { background: var(--ap-green-soft); color: var(--ap-green); }
+.access-event__icon--revoke { background: var(--ap-danger-soft); color: var(--ap-danger); }
+.access-event__icon--edit { background: var(--ap-blue-soft); color: var(--ap-blue); }
+
+.access-event__title { font-size: 12.5px; font-weight: 650; }
+.access-event__meta { margin-top: 3px; color: var(--ap-text-muted); font-size: 11px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+
+.access-event__reason {
+  margin-top: 7px;
+  padding: 7px 10px;
+  border-left: 2px solid var(--ap-border-strong);
+  background: var(--ap-surface-soft);
+  border-radius: 0 6px 6px 0;
+  color: var(--ap-text-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* --- Row action menu ------------------------------------------------------ */
+
+.access-menu { position: relative; display: inline-block; }
+
+.access-menu__trigger {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ap-text-secondary);
+}
+
+.access-menu__trigger:hover { border-color: #b3b7ca; background: #fafbff; }
+
+/* Positioned as a fixed popover from JS, not absolutely inside the row: the
+   panel clips its own overflow (for the rounded corners) and the table scrolls
+   horizontally, so an absolutely positioned menu on the last row is a menu cut
+   in half. */
+.access-menu__list {
+  position: fixed;
+  z-index: 60;
+  min-width: 194px;
+  padding: 5px;
+  border: 1px solid var(--ap-border);
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: var(--ap-shadow-md);
+}
+
+.access-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ap-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.access-menu__item:hover:not(:disabled) { background: var(--ap-primary-soft); color: var(--ap-primary); }
+.access-menu__item:disabled { cursor: not-allowed; opacity: 0.45; }
+.access-menu__item--danger { color: var(--ap-danger); }
+.access-menu__item--danger:hover:not(:disabled) { background: var(--ap-danger-soft); color: var(--ap-danger); }
+.access-menu__sep { height: 1px; margin: 4px 6px; background: var(--ap-border); }
+
+/* --- Dialog --------------------------------------------------------------- */
+
+.access-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgb(16 21 52 / 38%);
+  animation: access-fade 0.16s ease;
+  overflow-y: auto;
+}
+
+.access-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: min(88vh, 900px);
+  border-radius: var(--ap-radius-lg);
+  background: #fff;
+  box-shadow: 0 30px 70px rgb(15 20 45 / 28%);
+  animation: access-pop 0.18s ease;
+  margin: auto;
+}
+
+.access-dialog--wide { width: min(880px, 100%); }
+
+.access-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--ap-border);
+}
+
+.access-dialog__header h2 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.015em; }
+.access-dialog__header p { margin: 5px 0 0; color: var(--ap-text-secondary); font-size: 12.5px; line-height: 1.55; }
+
+.access-dialog__close {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  place-items: center;
+  border: 1px solid var(--ap-border-strong);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--ap-text-muted);
+}
+
+.access-dialog__close:hover { background: #f6f7fb; color: var(--ap-text); }
+
+.access-dialog__body { flex: 1; overflow-y: auto; padding: 18px 20px; }
+
+.access-dialog__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--ap-border);
+  background: var(--ap-surface-soft);
+  border-radius: 0 0 var(--ap-radius-lg) var(--ap-radius-lg);
+  flex-wrap: wrap;
+}
+
+.access-dialog__footer-note { margin-right: auto; color: var(--ap-text-muted); font-size: 11.5px; }
+
+@keyframes access-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes access-pop { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+/* --- Starter preview ------------------------------------------------------ */
+
+.access-starters { display: grid; gap: 10px; }
+
+.access-starter {
+  display: grid;
+  grid-template-columns: 36px 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 13px;
+  border: 1px solid var(--ap-border);
+  border-radius: 12px;
+  background: var(--ap-surface-soft);
+}
+
+.access-starter.is-existing { opacity: 0.68; }
+
+.access-starter__icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--ap-primary-soft);
+  color: var(--ap-primary);
+}
+
+.access-starter strong { font-size: 12.5px; }
+.access-starter p { margin: 4px 0 0; color: var(--ap-text-secondary); font-size: 11.5px; line-height: 1.5; }
+
+/* --- Permission catalogue (profile editor / viewer) ---------------------- */
+
+.access-permgroup {
+  border: 1px solid var(--ap-border);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.access-permgroup__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 13px;
+  background: var(--ap-surface-soft);
+  border-bottom: 1px solid var(--ap-border);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.access-permgroup__count { color: var(--ap-text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.access-permlist {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 2px;
+  padding: 8px;
+}
+
+.access-perm {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.access-perm:hover { background: var(--ap-surface-soft); }
+.access-perm.is-locked { opacity: 0.55; cursor: not-allowed; }
+.access-perm input { margin-top: 2px; accent-color: var(--ap-primary); width: 15px; height: 15px; flex-shrink: 0; }
+.access-perm code { display: block; margin-top: 2px; color: var(--ap-text-muted); font-size: 10.5px; }
+.access-perm__held { margin-left: auto; flex-shrink: 0; color: var(--ap-green); }
+
+/* --- Toasts --------------------------------------------------------------- */
+
+.access-toasts {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(400px, calc(100vw - 36px));
+}
+
+.access-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--ap-border);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: var(--ap-shadow-md);
+  font-size: 12.5px;
+  line-height: 1.5;
+  animation: access-toast-in 0.2s ease;
+}
+
+.access-toast svg { flex-shrink: 0; margin-top: 1px; }
+.access-toast--success { border-color: rgb(15 125 91 / 30%); }
+.access-toast--success svg { color: var(--ap-green); }
+.access-toast--danger { border-color: rgb(180 35 24 / 30%); }
+.access-toast--danger svg { color: var(--ap-danger); }
+.access-toast strong { display: block; margin-bottom: 2px; }
+.access-toast p { margin: 0; color: var(--ap-text-secondary); }
+
+@keyframes access-toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* --- Responsive ----------------------------------------------------------- */
+
+@media (max-width: 1250px) {
+  .access-layout { grid-template-columns: minmax(0, 1fr); }
+  .access-aside { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+}
+
+@media (max-width: 1050px) {
+  .access-hero__title-row { grid-template-columns: 1fr; }
+  .access-hero__security { display: none; }
+  .access-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .access-toolbar { align-items: stretch; flex-direction: column; }
+  .access-toolbar__actions { justify-content: flex-end; }
+  .access-form__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 860px) {
+  .access-guide__toggle { display: inline-flex; }
+  .access-guide__body[hidden] { display: none; }
+}
+
+@media (max-width: 720px) {
+  .access-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .access-form__grid { grid-template-columns: 1fr; }
+  .access-aside { grid-template-columns: 1fr; }
+  .access-panel__header { align-items: stretch; flex-direction: column; }
+  .access-panel__tools { width: 100%; }
+  .access-panel__tools > * { flex: 1 1 100%; }
+  .access-search input { width: 100%; }
+  .access-dialog__footer { justify-content: stretch; }
+  .access-dialog__footer .access-btn { flex: 1 1 auto; }
+  .access-dialog__footer-note { width: 100%; margin: 0 0 4px; }
+}
+
+@media (max-width: 480px) {
+  .access-metrics { grid-template-columns: 1fr; }
+  .access-toolbar__actions,
+  .access-state__actions { flex-direction: column; }
+  .access-toolbar__actions .access-btn,
+  .access-state__actions .access-btn { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .access-workspace *,
+  .access-workspace *::before,
+  .access-workspace *::after,
+  .access-dialog-backdrop,
+  .access-dialog,
+  .access-toast,
+  .access-skeleton {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .access-btn:hover:not(:disabled) { transform: none; }
+}

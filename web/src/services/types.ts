@@ -407,8 +407,21 @@ export interface CatalogSupplier {
   procurement_profile: SupplierProfile | null
 }
 
+/**
+ * The company's purchase profile.
+ *
+ * One row per company, which is the contract NumberSeries, RequisitionService,
+ * BillService, PurchaseOrderService and the insight rules all read. The
+ * identity fields name it; the rest are the rules every purchase document in
+ * this product is written against.
+ */
 export interface PurchaseSettings {
   cmp_id: number
+  profile_code: string
+  profile_name: string
+  profile_type: string
+  description: string
+  is_active: boolean
   requisition_prefix: string
   rfq_prefix: string
   po_prefix: string
@@ -419,6 +432,56 @@ export interface PurchaseSettings {
   enforce_approved_vendors: boolean
   block_bill_on_match_failure: boolean
   default_warehouse_id: number | null
+  updated_at?: string | null
+}
+
+/**
+ * What a save sends.
+ *
+ * Separate from `PurchaseSettings` because the two are not the same shape:
+ * PostgreSQL hands NUMERIC back as a string, and writing the amounts back as
+ * strings would mean the one place a typo could become `NaN` is also the one
+ * place nothing would notice.
+ */
+export interface ProfileSavePayload {
+  profile_code: string
+  profile_name: string
+  profile_type: string
+  description: string
+  is_active: boolean
+  requisition_prefix: string
+  rfq_prefix: string
+  po_prefix: string
+  return_prefix: string
+  claim_prefix: string
+  requisition_approval_above_amount: number
+  po_approval_above_amount: number
+  enforce_approved_vendors: boolean
+  block_bill_on_match_failure: boolean
+}
+
+export interface ProfileTypeOption {
+  value: string
+  label: string
+}
+
+/**
+ * How a document number is actually built, as the server describes it.
+ *
+ * Read rather than assumed: NumberSeries composes `{prefix}/{fy_id}/0001`, and
+ * a screen that previewed `PR0001` would be teaching people a format this
+ * product has never issued.
+ */
+export interface NumberFormat {
+  pattern: string
+  fy_id: number
+  example: string
+}
+
+export interface PurchaseSettingsMeta {
+  profile_types: ProfileTypeOption[]
+  number_format: NumberFormat
+  can_manage: boolean
 }
 
 export interface MatchPolicy {

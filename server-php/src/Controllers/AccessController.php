@@ -238,6 +238,138 @@ final class AccessController extends Controller
         ));
     }
 
+
+    /**
+     * The starter profiles on offer, and whether this company already has them.
+     *
+     * The names, the descriptions and the permissions behind them are defined
+     * once — in STARTER_PROFILES above, which is what bootstrap() actually
+     * writes. A preview dialog listing a different set from the one that gets
+     * created is a dialog that lies, so the frontend renders this rather than
+     * keeping its own copy.
+     *
+     * `exists` is what stops a second bootstrap being offered as though it were
+     * the first: bootstrap() already skips what is there, and this lets the UI
+     * say so before the user presses the button.
+     */
+    public static function starters(): void
+    {
+        [$auth, $ctx] = self::enter();
+        Permissions::assert($ctx, $auth, 'access.manage');
+
+        $grantable = Permissions::grantable($ctx, $auth);
+        $starters = [];
+
+        foreach (self::STARTER_PROFILES as $key => $starter) {
+            $existing = Db::first(
+                'SELECT profile_id FROM ' . Permissions::TABLE_PROFILES . '
+                 WHERE cmp_id = :cmp AND (system_key = :key OR lower(profile_name) = lower(:name))',
+                ['cmp' => $ctx->cmpId, 'key' => $key, 'name' => $starter['name']],
+            );
+
+            // What a non-owner would actually get. bootstrap() trims each
+            // starter to what the caller may grant rather than refusing the lot,
+            // so the preview shows the trimmed set and the UI can say what is
+            // missing from it before anything is written.
+            $grantablePermissions = array_values(array_intersect($starter['permissions'], $grantable));
+
+            $starters[] = [
+                'key'              => $key,
+                'name'             => $starter['name'],
+                'description'      => $starter['description'],
+                'permissions'      => $starter['permissions'],
+                'permission_count' => count($starter['permissions']),
+                'grantable'        => $grantablePermissions,
+                'grantable_count'  => count($grantablePermissions),
+                'exists'           => $existing !== null,
+                'profile_id'       => $existing === null ? null : (int) $existing['profile_id'],
+            ];
+        }
+
+        Http::data([
+            'starters'  => $starters,
+            'available' => count(array_filter(
+                $starters,
+                static fn (array $starter): bool => $starter['exists'] === false && $starter['grantable_count'] > 0,
+            )),
+        ]);
+    }
+
+    /**
+     * The access trail: who granted, revoked or rewrote what, and when.
+     *
+     * Read from this product's own append-only audit log, which has recorded
+     * every one of these actions since access administration existed. NOTHING
+     * NEW IS STORED to serve this screen — the rows were always there, and the
+     * only way to read them until now was psql.
+     *
+     * Only `access.*` actions, because this is the access log rather than the
+     * product's whole audit: a reader looking for who revoked Priya should not
+     * have to page past three hundred bill postings.
+     */
+    public static function activity(): void
+    {
+        [$auth, $ctx] = self::enter();
+        Permissions::assert($ctx, $auth, 'access.manage');
+
+        // Clamped, then interpolated. LIMIT is not bindable on every driver and
+        // this is an integer this code controls, not user text.
+        $limit = max(1, min(200, Http::intParam('limit', 60) ?? 60));
+
+        $rows = Db::all(
+            "SELECT audit_id, action, actor_uuid, actor_kind, source_app,
+                    entity_type, entity_id, before_state, after_state, reason, created_at
+             FROM " . Audit::TABLE . "
+             WHERE cmp_id = :cmp AND action LIKE 'access.%'
+             ORDER BY audit_id DESC
+             LIMIT " . $limit,
+            ['cmp' => $ctx->cmpId],
+        );
+
+        Http::data(array_map(
+            static function (array $row) use ($auth): array {
+                $before = Db::jsonColumn($row['before_state']);
+                $after  = Db::jsonColumn($row['after_state']);
+
+                return [
+                    'audit_id'    => (int) $row['audit_id'],
+                    'action'      => (string) $row['action'],
+                    'actor_uuid'  => (string) $row['actor_uuid'],
+                    'actor_kind'  => (string) $row['actor_kind'],
+                    'is_you'      => $row['actor_uuid'] === $auth->uuid,
+                    'source_app'  => $row['source_app'],
+                    'entity_type' => (string) $row['entity_type'],
+                    'entity_id'   => $row['entity_id'],
+                    // Read out of the state that was recorded at the time, never
+                    // looked up now: a profile deleted last week still has to
+                    // name itself in the row that deleted it.
+                    'profile_name' => self::auditField($before, $after, 'profile_name'),
+                    'user_uuid'    => self::auditField($before, $after, 'user_uuid'),
+                    'reason'       => $row['reason'],
+                    'created_at'   => $row['created_at'],
+                ];
+            },
+            $rows,
+        ));
+    }
+
+    /**
+     * @param array<string, mixed> $before
+     * @param array<string, mixed> $after
+     */
+    private static function auditField(array $before, array $after, string $key): ?string
+    {
+        // After first: a rename should read as the name it now has.
+        foreach ([$after, $before] as $state) {
+            $value = $state[$key] ?? null;
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
     // -----------------------------------------------------------------------
     // Profiles
     // -----------------------------------------------------------------------
