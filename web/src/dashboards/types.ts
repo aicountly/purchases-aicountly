@@ -494,3 +494,142 @@ export type OpportunityPanel = Panel<{
   ranking: string
   basis: string
 }>
+
+// ---------------------------------------------------------------------------
+// Procurement workspace
+// ---------------------------------------------------------------------------
+
+export type ProcurementFlowTone = 'success' | 'info' | 'warning' | 'danger' | 'neutral'
+
+export interface ProcurementFlowStage {
+  id: string
+  label: string
+  count: number
+  count_label: string
+  /** An exact decimal string, or null when the value is withheld or not one currency. */
+  value: string | null
+  value_formatted: string | null
+  value_compact: string | null
+  /** What kind of money this is: "estimated", "ordered", "still to arrive"… */
+  value_label: string
+  tone: ProcurementFlowTone
+  status_label: string
+  detail: string
+  route: string
+  filters: Record<string, string>
+}
+
+export type ProcurementFlowPanel = Panel<{
+  stages: ProcurementFlowStage[]
+  currency: string
+  values_visible: boolean
+  values_hidden_reason: string | null
+  basis: string
+}>
+
+export interface ProcurementSpendPoint {
+  date: string
+  label: string
+  amount: string
+  formatted: string
+  orders: number
+}
+
+export type ProcurementSpendTrendPanel = Panel<{
+  granularity: string
+  currency: string
+  points: ProcurementSpendPoint[]
+  total: string
+  total_formatted: string
+  total_compact: string
+  basis: string
+  comparison:
+    | { available: false; reason: string }
+    | { available: true; label: string; previous: string; previous_formatted: string; change_pc: string | null }
+}>
+
+export interface ProcurementOnTimeRow {
+  supplier_account_id: number
+  supplier_name: string
+  on_time_pc: string
+  on_time_label: string
+  on_time_count: number
+  sample: number
+  sample_label: string
+  tone: 'success' | 'brand' | 'warning' | 'danger'
+  route: string
+  filters: Record<string, string>
+}
+
+export type ProcurementOnTimePanel = Panel<{ rows: ProcurementOnTimeRow[]; basis: string }>
+
+export interface ProcurementCentreRow {
+  centre_id: number | null
+  label: string
+  named: boolean
+  amount: string
+  formatted: string
+  share_pc: string | null
+  orders: number
+  route: string
+  filters: Record<string, string>
+}
+
+export type ProcurementCentrePanel = Panel<{
+  centres: ProcurementCentreRow[]
+  others: { count: number; amount: string; formatted: string; share_pc: string | null }
+  total: string
+  total_formatted: string
+  total_compact: string
+  currency: string
+  names_available: boolean
+  basis: string
+}>
+
+/** A deterministic finding on the Procurement workspace. The category chooses the icon. */
+export interface ProcurementInsightRow {
+  id: string
+  severity: 'danger' | 'warning' | 'info' | 'success'
+  severity_label: string
+  category: string
+  title: string
+  explanation: string
+  amount: string | null
+  impact_label: string
+  count: number | null
+  action_label: string
+  route: string
+  filters: Record<string, string>
+}
+
+export type ProcurementInsightsPanel = Panel<{
+  items: ProcurementInsightRow[]
+  method: string
+  method_label: string
+  ai: { available: boolean; reason: string | null }
+  basis: string
+}>
+
+export interface ProcurementActivityRow {
+  id: string
+  date: string
+  date_label: string
+  type: string
+  reference: string
+  supplier_account_id: number | null
+  supplier_name: string | null
+  description: string
+  value: string | null
+  value_formatted: string | null
+  status: string
+  tone: ProcurementFlowTone
+  route: string
+  rank: number
+  actions: { label: string; route: string }[]
+}
+
+export type ProcurementActivityPanel = Panel<{
+  rows: ProcurementActivityRow[]
+  values_visible: boolean
+  basis: string
+}>

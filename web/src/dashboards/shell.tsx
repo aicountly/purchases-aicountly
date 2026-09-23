@@ -27,6 +27,8 @@ import {
   FileWarning,
   Info,
   LayoutGrid,
+  Mail,
+  PackageCheck,
   PauseCircle,
   PiggyBank,
   RefreshCw,
@@ -131,6 +133,14 @@ const METRIC_FACE: Record<string, { icon: LucideIcon; tone: 'good' | 'warn' | 'b
   avg_po_value: { icon: ChartNoAxesCombined, tone: 'info' },
   price_anomalies: { icon: AlertTriangle, tone: 'bad' },
   purchase_risks_open: { icon: Boxes, tone: 'warn' },
+
+  // The Procurement workspace's own six.
+  open_requisitions: { icon: ClipboardList, tone: 'warn' },
+  rfqs_awaiting_quotes: { icon: Mail, tone: 'warn' },
+  purchase_orders_released: { icon: ShoppingCart, tone: 'good' },
+  in_transit_deliveries: { icon: Truck, tone: 'info' },
+  grn_pending: { icon: PackageCheck, tone: 'warn' },
+  spend_under_approval: { icon: BadgeIndianRupee, tone: 'warn' },
 }
 
 export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen: (target: Drilldown) => void }) {

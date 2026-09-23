@@ -82,12 +82,21 @@ export function BarChart({
   title,
   unitLabel,
   data,
+  /**
+   * A fixed top of the scale, for bars that are already a percentage.
+   *
+   * Without it the widest bar fills the track whatever it is worth, which is
+   * right for spend and wrong for a rate: 61% on-time would be drawn as a full
+   * bar simply because nobody did better that month.
+   */
+  scaleMax,
 }: {
   title: string
   unitLabel: string
   data: BarDatum[]
+  scaleMax?: number
 }) {
-  const max = data.reduce((highest, row) => Math.max(highest, px(row.value)), 0)
+  const max = scaleMax ?? data.reduce((highest, row) => Math.max(highest, px(row.value)), 0)
 
   return (
     <ChartFrame

@@ -30,6 +30,18 @@ abstract class Dashboard
 
     protected string $scopeSql;
 
+    /**
+     * Material-centre names, when a dashboard has already read them.
+     *
+     * The names belong to Inventory. A dashboard that has asked for them anyway
+     * — the procurement screen does, for its centre breakdown — leaves them
+     * here so a caller can label a centre from the same answer instead of
+     * asking a second time.
+     *
+     * @var array<int, string>
+     */
+    protected array $centreNames = [];
+
     public function __construct(
         protected readonly Context $ctx,
         protected readonly Auth $auth,
