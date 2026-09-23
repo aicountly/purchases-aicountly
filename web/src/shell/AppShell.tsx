@@ -57,6 +57,15 @@ interface NavItem {
   label: string
   icon: LucideIcon
   permission?: string
+  /**
+   * Shown only while this section is the one you are in.
+   *
+   * Claims is the first entry here with screens beneath it, and a sidebar that
+   * showed four extra links on every page would be paying for that everywhere
+   * to help on one screen. They appear when you are in the section and fold
+   * away when you leave it — no drawer to open, nothing to remember.
+   */
+  children?: Array<{ to: string; label: string; end?: boolean }>
 }
 
 type NavEntry = NavItem | { group: string }
@@ -75,7 +84,18 @@ const NAV: NavEntry[] = [
   { to: '/dashboard/procurement', label: 'Goods receipts', icon: PackageCheck, permission: 'po.view' },
   { to: '/bills', label: 'Purchase bills', icon: Receipt, permission: 'bill.enter' },
   { to: '/returns', label: 'Returns', icon: RotateCcw, permission: 'return.create' },
-  { to: '/claims', label: 'Claims', icon: ScrollText, permission: 'claim.create' },
+  {
+    to: '/claims',
+    label: 'Supplier claims',
+    icon: ScrollText,
+    permission: 'claim.create',
+    children: [
+      { to: '/claims', label: 'All claims', end: true },
+      { to: '/claims/new', label: 'New claim' },
+      { to: '/claims?mine=1', label: 'My claims' },
+      { to: '/approvals', label: 'Approvals' },
+    ],
+  },
 
   { group: 'Relationships & finance' },
   { to: '/suppliers', label: 'Suppliers', icon: ShieldCheck, permission: 'supplier.view' },
@@ -195,18 +215,41 @@ export function AppShell() {
               )
             }
             const Icon = entry.icon
+            const isActive = activeTo === entry.to
             return (
-              <NavLink
-                key={entry.to}
-                to={entry.to}
-                className={
-                  activeTo === entry.to ? 'app-shell__nav-item is-active' : 'app-shell__nav-item'
-                }
-                aria-current={activeTo === entry.to ? 'page' : undefined}
-              >
-                <Icon size={17} aria-hidden />
-                {entry.label}
-              </NavLink>
+              <div key={entry.to}>
+                <NavLink
+                  to={entry.to}
+                  className={isActive ? 'app-shell__nav-item is-active' : 'app-shell__nav-item'}
+                  aria-current={isActive ? 'page' : undefined}
+                >
+                  <Icon size={17} aria-hidden />
+                  {entry.label}
+                </NavLink>
+
+                {isActive && entry.children && (
+                  <div className="app-shell__subnav">
+                    {entry.children.map((child) => {
+                      const [childPath, childQuery = ''] = child.to.split('?')
+                      const onPath = child.end
+                        ? location.pathname === childPath && location.search === ''
+                        : childQuery !== ''
+                          ? location.pathname === childPath && location.search === `?${childQuery}`
+                          : location.pathname === childPath
+                      return (
+                        <NavLink
+                          key={child.to}
+                          to={child.to}
+                          className={onPath ? 'app-shell__subnav-item is-active' : 'app-shell__subnav-item'}
+                          aria-current={onPath ? 'page' : undefined}
+                        >
+                          {child.label}
+                        </NavLink>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             )
           })}
         </nav>

@@ -324,6 +324,117 @@ final class ReturnClaimService
     // Claims
     // -----------------------------------------------------------------------
 
+    /**
+     * The kinds of claim this product recognises, and what to call them.
+     *
+     * ONE LIST, HERE, AND THE SCREEN READS IT. The kinds used to be written
+     * twice — once in this validator and once in a dropdown in the React
+     * bundle — which is how a build ships with an option the API refuses. The
+     * UI now asks `/v1/claims/meta` what the options are, so adding a kind is
+     * one edit in one file.
+     *
+     * The first eight are the original list and their stored values have not
+     * changed. The last three are commercial events that were previously all
+     * being recorded as `other`, which made them invisible to every report.
+     *
+     * @var array<string, string>
+     */
+    public const CLAIM_KINDS = [
+        'shortage'       => 'Shortage',
+        'damage'         => 'Damaged in transit',
+        'rate_difference' => 'Rate difference',
+        'scheme'         => 'Scheme or discount not passed',
+        'rebate'         => 'Rebate due',
+        'quality'        => 'Quality issue',
+        'late_delivery'  => 'Late delivery',
+        'wrong_item'     => 'Wrong item supplied',
+        'excess_billed'  => 'Excess billed',
+        'service_issue'  => 'Service issue',
+        'other'          => 'Other',
+    ];
+
+    /** What the buyer is asking the supplier for. @var array<string, string> */
+    public const CLAIM_RESOLUTIONS = [
+        'credit_note'       => 'Credit note',
+        'refund'            => 'Refund',
+        'replacement'       => 'Replacement',
+        'rate_adjustment'   => 'Rate adjustment',
+        'future_adjustment' => 'Adjust against a future invoice',
+        'other'             => 'Other',
+    ];
+
+    /** @var array<string, string> */
+    public const CLAIM_PRIORITIES = [
+        'low'    => 'Low',
+        'normal' => 'Normal',
+        'high'   => 'High',
+        'urgent' => 'Urgent',
+    ];
+
+    /** How a claim line says which document it argues from. */
+    private const REFERENCE_KINDS = ['po', 'bill', 'grn', 'return', 'none'];
+
+    public const SUBJECT_MAX = 160;
+    public const DESCRIPTION_MAX = 1000;
+    private const MAX_LINES = 200;
+    private const MAX_TAGS = 10;
+
+    /**
+     * Everything the New Claim screen needs to render itself.
+     *
+     * The screen has no hard-coded option list and no hard-coded limit: it asks
+     * for them, which is what keeps the two halves from disagreeing after a
+     * deploy. `capabilities` is the honest part — it says what this deployment
+     * can actually do, so the UI can explain rather than offer a button that
+     * fails.
+     *
+     * @return array<string, mixed>
+     */
+    public function claimMeta(): array
+    {
+        return [
+            'kinds'       => self::options(self::CLAIM_KINDS),
+            'resolutions' => self::options(self::CLAIM_RESOLUTIONS),
+            'priorities'  => self::options(self::CLAIM_PRIORITIES),
+            'limits'      => [
+                'subject_max'     => self::SUBJECT_MAX,
+                'description_max' => self::DESCRIPTION_MAX,
+                'lines_max'       => self::MAX_LINES,
+                'tags_max'        => self::MAX_TAGS,
+            ],
+            'permissions' => [
+                'create' => Permissions::allows($this->ctx, $this->auth, 'claim.create'),
+                'settle' => Permissions::allows($this->ctx, $this->auth, 'claim.settle'),
+            ],
+            'capabilities' => [
+                // Purchases stores no files. ImportController reads an upload
+                // and deletes it in the same request, deliberately, and there is
+                // no document store behind this product to put a claim's
+                // evidence in. The screen is told so rather than being given an
+                // upload button that quietly loses what is dropped on it.
+                'attachments' => [
+                    'available' => false,
+                    'reason'    => 'Supporting documents cannot be stored yet — this deployment has no document store for Purchases.',
+                ],
+                'autosave' => [
+                    'available' => false,
+                    'reason'    => 'There is no draft autosave endpoint. Save as draft writes the claim.',
+                ],
+            ],
+        ];
+    }
+
+    /** @param array<string, string> $map @return list<array{value:string, label:string}> */
+    private static function options(array $map): array
+    {
+        $out = [];
+        foreach ($map as $value => $label) {
+            $out[] = ['value' => $value, 'label' => $label];
+        }
+
+        return $out;
+    }
+
     /** @param array<string, mixed> $input */
     public function createClaim(array $input): array
     {
@@ -335,17 +446,56 @@ final class ReturnClaimService
         }
 
         $kind = self::text($input['claim_kind'] ?? null) ?? 'other';
-        $validKinds = ['shortage', 'damage', 'rate_difference', 'scheme', 'rebate', 'quality', 'late_delivery', 'other'];
-        if (!in_array($kind, $validKinds, true)) {
-            Http::validationFailed('Claim kind must be one of: ' . implode(', ', $validKinds) . '.', ['field' => 'claim_kind']);
+        if (!array_key_exists($kind, self::CLAIM_KINDS)) {
+            Http::validationFailed(
+                'Claim kind must be one of: ' . implode(', ', array_keys(self::CLAIM_KINDS)) . '.',
+                ['field' => 'claim_kind'],
+            );
         }
 
-        $amount = round((float) ($input['claimed_amount'] ?? 0), 4);
+        $subject = self::text($input['subject'] ?? null);
+        if ($subject !== null && mb_strlen($subject) > self::SUBJECT_MAX) {
+            Http::validationFailed('The subject is longer than ' . self::SUBJECT_MAX . ' characters.', ['field' => 'subject']);
+        }
+
+        $description = self::text($input['description'] ?? null);
+        if ($description !== null && mb_strlen($description) > self::DESCRIPTION_MAX) {
+            Http::validationFailed('The description is longer than ' . self::DESCRIPTION_MAX . ' characters.', ['field' => 'description']);
+        }
+
+        $resolution = self::text($input['requested_resolution'] ?? null);
+        if ($resolution !== null && !array_key_exists($resolution, self::CLAIM_RESOLUTIONS)) {
+            Http::validationFailed('That is not a resolution this product offers.', ['field' => 'requested_resolution']);
+        }
+
+        $priority = self::text($input['priority'] ?? null) ?? 'normal';
+        if (!array_key_exists($priority, self::CLAIM_PRIORITIES)) {
+            Http::validationFailed('That is not a priority this product offers.', ['field' => 'priority']);
+        }
+
+        // The references are checked against THIS company and THIS supplier
+        // before anything is written. A po_id from the request is a number a
+        // browser sent: unchecked, it is a way to attach a claim to another
+        // company's order and read its number back out on the claim.
+        $references = $this->resolveClaimReferences($input, $supplierId);
+
+        $lines = $this->normaliseClaimLines($input['lines'] ?? []);
+
+        // The total is computed here, from the lines, and the amount the
+        // browser sent is ignored when there are lines to add up. A claim whose
+        // header says one thing and whose lines say another is a claim the
+        // supplier will reject on sight.
+        $amount = $lines === []
+            ? round((float) ($input['claimed_amount'] ?? 0), 4)
+            : round(array_sum(array_map(static fn (array $l): float => (float) $l['claim_amount'], $lines)), 4);
+
         if ($amount <= 0) {
             Http::validationFailed('A claim needs an amount.', ['field' => 'claimed_amount']);
         }
 
-        return Db::transaction(function () use ($input, $supplierId, $kind, $amount) {
+        $submitNow = ($input['submit'] ?? false) === true || ($input['submit'] ?? '') === '1';
+
+        return Db::transaction(function () use ($input, $supplierId, $kind, $amount, $subject, $description, $resolution, $priority, $references, $lines, $submitNow) {
             $no = NumberSeries::next($this->ctx, 'claim');
 
             $claimId = (int) Db::insert('purchase_claims', [
@@ -354,20 +504,234 @@ final class ReturnClaimService
                 'claim_no'            => $no,
                 'claim_date'          => self::date($input['claim_date'] ?? null),
                 'supplier_account_id' => $supplierId,
-                'po_id'               => self::id($input['po_id'] ?? null),
+                'po_id'               => $references['po_id'],
+                'bill_request_id'     => $references['bill_request_id'],
+                'receipt_request_id'  => $references['receipt_request_id'],
+                'return_id'           => $references['return_id'],
                 'claim_kind'          => $kind,
-                'status'              => 'DRAFT',
+                'status'              => $submitNow ? 'SUBMITTED' : 'DRAFT',
                 'claimed_amount'      => $amount,
-                'description'         => self::text($input['description'] ?? null),
+                'subject'             => $subject ?? '',
+                'description'         => $description,
+                'requested_resolution' => $resolution,
+                'expected_resolution_date' => self::optionalDate($input['expected_resolution_date'] ?? null),
+                'supplier_contact'    => self::text($input['supplier_contact'] ?? null),
+                'internal_owner'      => self::text($input['internal_owner'] ?? null),
+                'priority'            => $priority,
+                'internal_notes'      => self::text($input['internal_notes'] ?? null),
+                'supplier_notes'      => self::text($input['supplier_notes'] ?? null),
+                'tags'                => self::normaliseTags($input['tags'] ?? []),
+                'notify_supplier'     => ($input['notify_supplier'] ?? false) === true,
                 'created_by'          => $this->auth->uuid,
             ], 'claim_id');
 
+            foreach ($lines as $line) {
+                Db::insert('purchase_claim_lines', [
+                    'cmp_id'   => $this->ctx->cmpId,
+                    'claim_id' => $claimId,
+                ] + $line, 'line_id');
+            }
+
             Audit::record($this->ctx, $this->auth, 'claim.created', 'claim', $claimId, null, [
-                'claim_no' => $no, 'claim_kind' => $kind, 'claimed_amount' => $amount,
+                'claim_no' => $no, 'claim_kind' => $kind, 'claimed_amount' => $amount, 'lines' => count($lines),
             ]);
+
+            // Raising and submitting in one action is one audit entry per
+            // event, not one for both: the trail has to show that this claim
+            // was submitted, whether that happened a second or a week after it
+            // was raised.
+            if ($submitNow) {
+                Audit::record($this->ctx, $this->auth, 'claim.submit', 'claim', $claimId, ['status' => 'DRAFT'], ['status' => 'SUBMITTED']);
+            }
 
             return $this->findClaim($claimId);
         });
+    }
+
+    /**
+     * Check every reference against this company and this supplier.
+     *
+     * A reference that belongs to somebody else, or to a different supplier, is
+     * refused rather than quietly dropped: dropping it means the buyer submits
+     * a claim believing the invoice is attached to it.
+     *
+     * @param array<string, mixed> $input
+     * @return array{po_id: ?int, bill_request_id: ?int, receipt_request_id: ?int, return_id: ?int}
+     */
+    private function resolveClaimReferences(array $input, int $supplierId): array
+    {
+        $cmp = $this->ctx->cmpId;
+
+        $poId = self::id($input['po_id'] ?? null);
+        if ($poId !== null) {
+            $owner = Db::first(
+                'SELECT supplier_account_id FROM purchase_orders WHERE po_id = :id AND cmp_id = :cmp',
+                ['id' => $poId, 'cmp' => $cmp],
+            );
+            if ($owner === null) {
+                Http::validationFailed('That purchase order does not exist.', ['field' => 'po_id']);
+            }
+            if ((int) $owner['supplier_account_id'] !== $supplierId) {
+                Http::validationFailed('That purchase order is against a different supplier.', ['field' => 'po_id']);
+            }
+        }
+
+        $billId = self::id($input['bill_request_id'] ?? null);
+        if ($billId !== null) {
+            $owner = Db::first(
+                'SELECT supplier_account_id FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp',
+                ['id' => $billId, 'cmp' => $cmp],
+            );
+            if ($owner === null) {
+                Http::validationFailed('That purchase bill does not exist.', ['field' => 'bill_request_id']);
+            }
+            if ((int) $owner['supplier_account_id'] !== $supplierId) {
+                Http::validationFailed('That bill is against a different supplier.', ['field' => 'bill_request_id']);
+            }
+        }
+
+        // A receipt has no supplier of its own — it belongs to an order, and the
+        // order has the supplier. So the check goes through the join.
+        $receiptId = self::id($input['receipt_request_id'] ?? null);
+        if ($receiptId !== null) {
+            $owner = Db::first(
+                'SELECT o.supplier_account_id
+                   FROM purchase_receipt_requests r
+                   JOIN purchase_orders o ON o.po_id = r.po_id
+                  WHERE r.request_id = :id AND r.cmp_id = :cmp',
+                ['id' => $receiptId, 'cmp' => $cmp],
+            );
+            if ($owner === null) {
+                Http::validationFailed('That delivery does not exist.', ['field' => 'receipt_request_id']);
+            }
+            if ((int) $owner['supplier_account_id'] !== $supplierId) {
+                Http::validationFailed('That delivery is against a different supplier.', ['field' => 'receipt_request_id']);
+            }
+        }
+
+        $returnId = self::id($input['return_id'] ?? null);
+        if ($returnId !== null) {
+            $owner = Db::first(
+                'SELECT supplier_account_id FROM purchase_returns WHERE return_id = :id AND cmp_id = :cmp',
+                ['id' => $returnId, 'cmp' => $cmp],
+            );
+            if ($owner === null) {
+                Http::validationFailed('That return does not exist.', ['field' => 'return_id']);
+            }
+            if ((int) $owner['supplier_account_id'] !== $supplierId) {
+                Http::validationFailed('That return is against a different supplier.', ['field' => 'return_id']);
+            }
+        }
+
+        return [
+            'po_id'              => $poId,
+            'bill_request_id'    => $billId,
+            'receipt_request_id' => $receiptId,
+            'return_id'          => $returnId,
+        ];
+    }
+
+    /**
+     * Claim lines, cleaned.
+     *
+     * THE AMOUNT IS NOT ALWAYS QUANTITY x RATE, and this is the one place that
+     * matters. A shortage is: ten pieces short at the agreed rate. A scheme
+     * that was not passed on is an amount with no quantity behind it at all.
+     * Forcing the multiplication would mean inventing a quantity for the second
+     * case, so an amount that is sent explicitly is kept, and the product is
+     * used only when there is none.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function normaliseClaimLines(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+        if (count($raw) > self::MAX_LINES) {
+            Http::validationFailed('A claim cannot carry more than ' . self::MAX_LINES . ' lines.', ['field' => 'lines']);
+        }
+
+        $lines = [];
+        $lineNo = 0;
+
+        foreach ($raw as $line) {
+            if (!is_array($line)) {
+                continue;
+            }
+
+            $claimQty = round((float) ($line['claim_qty'] ?? 0), 4);
+            $rate = round((float) ($line['rate'] ?? 0), 4);
+            $amount = array_key_exists('claim_amount', $line) && $line['claim_amount'] !== '' && $line['claim_amount'] !== null
+                ? round((float) $line['claim_amount'], 4)
+                : round($claimQty * $rate, 4);
+
+            if ($claimQty < 0 || $rate < 0 || $amount < 0) {
+                Http::validationFailed('A claim line cannot carry a negative quantity, rate or amount.', ['field' => 'lines']);
+            }
+
+            // An empty row is the row the table always has at the bottom, not a
+            // line somebody meant to claim.
+            if ($amount <= 0 && $claimQty <= 0) {
+                continue;
+            }
+
+            $referenceKind = self::text($line['reference_kind'] ?? null) ?? 'none';
+            if (!in_array($referenceKind, self::REFERENCE_KINDS, true)) {
+                $referenceKind = 'none';
+            }
+
+            $lines[] = [
+                'line_no'        => ++$lineNo,
+                'item_id'        => self::id($line['item_id'] ?? null),
+                'description'    => self::clip(self::text($line['description'] ?? null), 500),
+                'reference_kind' => $referenceKind,
+                'reference_no'   => self::clip(self::text($line['reference_no'] ?? null), 64),
+                'ordered_qty'    => max(0.0, round((float) ($line['ordered_qty'] ?? 0), 4)),
+                'received_qty'   => max(0.0, round((float) ($line['received_qty'] ?? 0), 4)),
+                'claim_qty'      => $claimQty,
+                'rate'           => $rate,
+                'claim_amount'   => $amount,
+                'reason'         => self::clip(self::text($line['reason'] ?? null), 500),
+            ];
+        }
+
+        return $lines;
+    }
+
+    /** @return list<string> */
+    private static function normaliseTags(mixed $raw): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+
+        $tags = [];
+        foreach ($raw as $tag) {
+            $text = self::text(is_string($tag) ? $tag : null);
+            if ($text === null) {
+                continue;
+            }
+            $text = mb_substr($text, 0, 32);
+            if (!in_array($text, $tags, true)) {
+                $tags[] = $text;
+            }
+            if (count($tags) >= self::MAX_TAGS) {
+                break;
+            }
+        }
+
+        return $tags;
+    }
+
+    private static function clip(?string $value, int $max): ?string
+    {
+        return $value === null ? null : mb_substr($value, 0, $max);
+    }
+
+    private static function optionalDate(mixed $value): ?string
+    {
+        return is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim($value)) === 1 ? trim($value) : null;
     }
 
     /** @param array<string, mixed> $input */
@@ -378,15 +742,19 @@ final class ReturnClaimService
             Http::notFound('That claim does not exist.');
         }
 
-        [$permission, $from, $to] = match ($action) {
+        $transitions = [
             'submit'   => ['claim.create', ['DRAFT'], 'SUBMITTED'],
             'respond'  => ['claim.create', ['SUBMITTED'], 'SUPPLIER_RESPONDED'],
             'approve'  => ['claim.settle', ['SUBMITTED', 'SUPPLIER_RESPONDED'], 'APPROVED'],
             'reject'   => ['claim.settle', ['SUBMITTED', 'SUPPLIER_RESPONDED'], 'REJECTED'],
             'settle'   => ['claim.settle', ['APPROVED'], 'SETTLED'],
-            default    => Http::validationFailed('Unknown action "' . $action . '".'),
-        };
+        ];
 
+        if (!isset($transitions[$action])) {
+            Http::notFound('There is no such action on a claim.');
+        }
+
+        [$permission, $from, $to] = $transitions[$action];
         Permissions::assert($this->ctx, $this->auth, $permission);
 
         if (!in_array($claim['status'], $from, true)) {
@@ -420,7 +788,85 @@ final class ReturnClaimService
     /** @return array<string, mixed> */
     public function findClaim(int $claimId): array
     {
-        return Db::first('SELECT * FROM purchase_claims WHERE claim_id = :id AND cmp_id = :cmp', ['id' => $claimId, 'cmp' => $this->ctx->cmpId]) ?? [];
+        $claim = Db::first('SELECT * FROM purchase_claims WHERE claim_id = :id AND cmp_id = :cmp', ['id' => $claimId, 'cmp' => $this->ctx->cmpId]);
+        if ($claim === null) {
+            return [];
+        }
+
+        $claim['tags'] = Db::jsonColumn($claim['tags'] ?? null);
+        $claim['lines'] = Db::all(
+            'SELECT * FROM purchase_claim_lines WHERE claim_id = :id AND cmp_id = :cmp ORDER BY line_no',
+            ['id' => $claimId, 'cmp' => $this->ctx->cmpId],
+        );
+
+        return $claim;
+    }
+
+    /**
+     * Open claims that look like the one being raised.
+     *
+     * READ-ONLY AND ADVISORY. It answers "has somebody already claimed this",
+     * which on a shortage against a delivery three people saw is a real
+     * question. It does not refuse anything: two genuine claims against one
+     * order happen, and a screen that blocked the second would be teaching
+     * people to raise it against the wrong order instead.
+     *
+     * @param array<string, mixed> $filters
+     * @return list<array<string, mixed>>
+     */
+    public function similarClaims(array $filters, int $limit = 5): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'claim.create');
+
+        $supplierId = (int) ($filters['supplier_account_id'] ?? 0);
+        if ($supplierId <= 0) {
+            return [];
+        }
+
+        $where = [
+            'c.cmp_id = :cmp',
+            'c.supplier_account_id = :supplier',
+            "c.status NOT IN ('SETTLED', 'CLOSED', 'REJECTED')",
+        ];
+        $params = ['cmp' => $this->ctx->cmpId, 'supplier' => $supplierId];
+
+        // A claim is "similar" when it is against the same document, or — with
+        // no document to go on — the same kind of problem with the same
+        // supplier in the last ninety days.
+        $poId = self::id($filters['po_id'] ?? null);
+        $billId = self::id($filters['bill_request_id'] ?? null);
+
+        if ($poId !== null || $billId !== null) {
+            $documentClauses = [];
+            if ($poId !== null) {
+                $documentClauses[] = 'c.po_id = :po';
+                $params['po'] = $poId;
+            }
+            if ($billId !== null) {
+                $documentClauses[] = 'c.bill_request_id = :bill';
+                $params['bill'] = $billId;
+            }
+            $where[] = '(' . implode(' OR ', $documentClauses) . ')';
+        } else {
+            $kind = self::text($filters['claim_kind'] ?? null);
+            if ($kind === null || !array_key_exists($kind, self::CLAIM_KINDS)) {
+                return [];
+            }
+            $where[] = 'c.claim_kind = :kind';
+            $where[] = "c.claim_date >= (CURRENT_DATE - INTERVAL '90 days')";
+            $params['kind'] = $kind;
+        }
+
+        $limit = max(1, min(20, $limit));
+
+        return Db::all(
+            'SELECT c.claim_id, c.claim_no, c.claim_date, c.claim_kind, c.subject, c.status, c.claimed_amount, c.po_id, c.bill_request_id
+               FROM purchase_claims c
+              WHERE ' . implode(' AND ', $where) . "
+              ORDER BY c.claim_date DESC, c.claim_id DESC
+              LIMIT {$limit}",
+            $params,
+        );
     }
 
     /** @return array{rows:list<array<string, mixed>>, total:int} */
@@ -445,6 +891,17 @@ final class ReturnClaimService
         }
         if (!empty($filters['open_only'])) {
             $where[] = "c.status NOT IN ('SETTLED', 'CLOSED', 'REJECTED')";
+        }
+        // "My claims" is the ones this session raised. Resolved from the signed-in
+        // session, never from a uuid the caller sends — otherwise "mine" is a
+        // way to read somebody else's.
+        if (!empty($filters['mine'])) {
+            $where[] = 'c.created_by = :me';
+            $params['me'] = $this->auth->uuid;
+        }
+        if (!empty($filters['q'])) {
+            $where[] = '(c.claim_no ILIKE :q OR c.subject ILIKE :q OR c.description ILIKE :q)';
+            $params['q'] = '%' . str_replace(['%', '_'], ['\%', '\_'], (string) $filters['q']) . '%';
         }
 
         $clause = implode(' AND ', $where);

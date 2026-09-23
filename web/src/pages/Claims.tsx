@@ -1,12 +1,10 @@
 import { useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../services/api'
-import type { CatalogSupplier, Claim } from '../services/types'
+import type { Claim } from '../services/types'
 import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
-import { SupplierPicker } from '../components/LivePicker'
-import { Button, Card, DataTable, date, Field, Input, money, Notice, Select, StatusBadge, Textarea } from '../ui'
-
-const KINDS = ['shortage', 'damage', 'rate_difference', 'scheme', 'rebate', 'quality', 'late_delivery', 'other']
+import { Button, Card, DataTable, date, Field, Input, money, Notice, StatusBadge } from '../ui'
 
 const CLAIM_BADGE: Record<string, string> = {
   DRAFT: 'DRAFT',
@@ -20,16 +18,20 @@ const CLAIM_BADGE: Record<string, string> = {
 
 export default function Claims() {
   const { scope, can } = usePurchases()
+  const navigate = useNavigate()
+  // "My claims" is the same list, filtered by the server to the signed-in
+  // session. It is a query parameter rather than a route so the filter is part
+  // of the link somebody shares.
+  const [params] = useSearchParams()
+  const mine = params.get('mine') === '1'
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [form, setForm] = useState({ supplier: null as { id: number; name: string } | null, kind: 'shortage', amount: '', description: '' })
   const [settleFor, setSettleFor] = useState<Claim | null>(null)
   const [settleAmount, setSettleAmount] = useState('')
 
   const { data, loading, reload } = useApi(
-    (signal) => api.list<Claim>('v1/claims', { limit: 100 }, signal),
-    [scope?.cmp_id, scope?.fy_id],
+    (signal) => api.list<Claim>('v1/claims', { limit: 100, mine: mine ? 1 : undefined }, signal),
+    [scope?.cmp_id, scope?.fy_id, mine],
     Boolean(scope),
   )
 
@@ -49,8 +51,18 @@ export default function Claims() {
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Supplier claims</h1>
-        {can('claim.create') && <Button tone="primary" onClick={() => setCreating(!creating)}>New claim</Button>}
+        <h1 style={{ margin: 0, fontSize: '1.3rem' }}>{mine ? 'My supplier claims' : 'Supplier claims'}</h1>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          {mine ? (
+            <Link to="/claims" style={{ fontSize: '0.85rem' }}>All claims</Link>
+          ) : (
+            <Link to="/claims?mine=1" style={{ fontSize: '0.85rem' }}>My claims</Link>
+          )}
+          {/* Raising a claim is its own screen now. It asks for the references,
+              the lines and the resolution a supplier will want to see, none of
+              which fitted in the three fields that used to sit here. */}
+          {can('claim.create') && <Button tone="primary" onClick={() => navigate('/claims/new')}>New claim</Button>}
+        </div>
       </header>
 
       <Notice tone="info">
@@ -60,55 +72,25 @@ export default function Claims() {
 
       {error && <Notice tone="danger" title="That did not work">{error}</Notice>}
 
-      {creating && (
-        <Card title="Raise a claim">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.85rem' }}>
-            <SupplierPicker
-              selectedLabel={form.supplier?.name}
-              onPick={(s: CatalogSupplier) => setForm({ ...form, supplier: { id: s.acc_id, name: s.acc_name } })}
-            />
-            <Field label="Kind">
-              <Select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
-                {KINDS.map((kind) => <option key={kind} value={kind}>{kind.replace(/_/g, ' ')}</option>)}
-              </Select>
-            </Field>
-            <Field label="Amount claimed"><Input value={form.amount} inputMode="decimal" onChange={(e) => setForm({ ...form, amount: e.target.value })} /></Field>
-          </div>
-          <div style={{ marginTop: '0.85rem' }}>
-            <Field label="What happened"><Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
-          </div>
-          <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.85rem' }}>
-            <Button onClick={() => setCreating(false)}>Cancel</Button>
-            <Button
-              tone="primary"
-              disabled={busy || !form.supplier || Number(form.amount) <= 0}
-              onClick={() =>
-                run(async () => {
-                  await api.post('v1/claims', {
-                    supplier_account_id: form.supplier!.id,
-                    claim_kind: form.kind,
-                    claimed_amount: Number(form.amount),
-                    description: form.description || undefined,
-                  })
-                  setCreating(false)
-                  setForm({ supplier: null, kind: 'shortage', amount: '', description: '' })
-                })
-              }
-            >
-              Raise claim
-            </Button>
-          </div>
-        </Card>
-      )}
-
       <Card title={`${data?.meta.total ?? 0} claim${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}>
         <DataTable
           loading={loading}
           rows={data?.data ?? []}
           rowKey={(row) => row.claim_id}
-          empty="No claims raised."
+          empty={mine ? 'You have not raised a claim yet.' : 'No claims raised.'}
           columns={[
-            { key: 'no', header: 'Number', render: (row) => row.claim_no },
+            {
+              key: 'no',
+              header: 'Number',
+              render: (row) => (
+                <div>
+                  <div>{row.claim_no}</div>
+                  {row.subject && (
+                    <div style={{ color: 'var(--muted)', fontSize: '0.78rem' }}>{row.subject}</div>
+                  )}
+                </div>
+              ),
+            },
             { key: 'date', header: 'Raised', render: (row) => date(row.claim_date) },
             { key: 'supplier', header: 'Supplier', render: (row) => `Account ${row.supplier_account_id}` },
             { key: 'kind', header: 'Kind', render: (row) => row.claim_kind.replace(/_/g, ' ') },

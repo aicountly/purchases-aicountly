@@ -50,6 +50,16 @@ initAnalytics()
  */
 const Access = lazy(() => import('./pages/access'))
 
+/**
+ * The claim workspace is loaded when somebody opens it.
+ *
+ * It is a five-step form with its own stylesheet, its own comboboxes and its
+ * own assistant — none of which the claims list, the dashboard or anything else
+ * in the first bundle has a use for. Raising a claim is a deliberate act, and
+ * the wait belongs at the moment of it.
+ */
+const NewSupplierClaim = lazy(() => import('./pages/claims/NewClaim'))
+
 function PageViews() {
   const location = useLocation()
   useEffect(() => {
@@ -164,7 +174,22 @@ export default function App() {
 
             <Route path="reports" element={<RequireScope><Reports /></RequireScope>} />
             <Route path="statements" element={<RequireScope><Statements /></RequireScope>} />
-            <Route path="claims" element={<RequireScope><Claims /></RequireScope>} />
+            {/* Claims is a section now, not one page: the list is the screen
+                it has always been, and raising one has its own route so it can
+                be linked to, bookmarked and returned to. */}
+            <Route path="claims">
+              <Route index element={<RequireScope><Claims /></RequireScope>} />
+              <Route
+                path="new"
+                element={
+                  <RequireScope>
+                    <Suspense fallback={<p style={{ color: 'var(--muted)' }}>Opening…</p>}>
+                      <NewSupplierClaim />
+                    </Suspense>
+                  </RequireScope>
+                }
+              />
+            </Route>
             <Route path="suppliers" element={<RequireScope><Suppliers /></RequireScope>} />
             <Route path="approvals" element={<RequireScope><Approvals /></RequireScope>} />
             {/* Settings is a section now, not one page. `/settings` is the

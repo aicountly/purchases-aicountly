@@ -159,6 +159,38 @@
 
 .app-shell__nav-item svg { flex-shrink: 0; }
 
+/* The screens beneath the section you are in.
+ *
+ * Indented under their parent and hung off one hairline, so they read as part
+ * of it rather than as four more top-level links. They exist only while that
+ * section is open, which is why there is no disclosure control: nothing here
+ * can be in a state the user did not put it in by navigating.
+ */
+.app-shell__subnav {
+  position: relative;
+  margin: 0.1rem 0 0.35rem 1.45rem;
+  padding-left: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--shell-border);
+}
+
+.app-shell__subnav-item {
+  padding: 0.38rem 0.6rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  color: var(--shell-muted);
+  text-decoration: none;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.app-shell__subnav-item:hover { background: #f5f7f5; color: var(--shell-ink); }
+
+.app-shell__subnav-item.is-active {
+  color: var(--shell-brand-strong);
+  font-weight: 650;
+}
+
 /* A quiet rule between the everyday screens and the administrative ones.
    A heading there would be a seventh thing to read; a line is enough. */
 .app-shell__nav-rule {
@@ -404,12 +436,13 @@
 /*
  * Page padding, except for the screens that paint their own.
  *
- * `.purchase-workspace`, `.access-workspace` and `.purchase-profile-page`
- * paint their own background to the edges and bring their own padding, so
+ * `.purchase-workspace`, `.access-workspace`, `.purchase-profile-page` and
+ * `.supplier-claim-page` paint their own background to the edges and bring
+ * their own padding, so
  * padding here would leave a border of the wrong colour around them. Every
  * other page gets the spacing this redesign gives it.
  */
-.app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page) {
+.app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page):not(.supplier-claim-page) {
   padding: 1.5rem 1.25rem 3rem;
 }
 
@@ -465,7 +498,7 @@
   .app-shell__header { flex-wrap: wrap; padding: 0.55rem 0.85rem; }
   .app-shell__scope { order: 3; width: 100%; }
   .app-shell__pill { max-width: 100%; padding-inline: 0.4rem; }
-  .app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page) { padding: 1.1rem 0.85rem 3rem; }
+  .app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page):not(.supplier-claim-page) { padding: 1.1rem 0.85rem 3rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

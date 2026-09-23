@@ -369,6 +369,69 @@ final class ReceiptService
         return ($value === null || $value === '' || (int) $value === 0) ? null : (int) $value;
     }
 
+    /**
+     * The deliveries recorded against this company's orders.
+     *
+     * Added for the claim screen, which has to let a buyer say WHICH delivery
+     * was short. Until now a receipt could only be reached through the order it
+     * belongs to, which is fine when you are looking at the order and useless
+     * when you are looking at a shortage.
+     *
+     * The supplier lives on the order, not on the receipt, so filtering by
+     * supplier goes through the join — and the GRN number comes back from the
+     * uuid Inventory gave us, because Inventory owns the receipt itself.
+     *
+     * @param array<string, mixed> $filters
+     * @return array{rows:list<array<string, mixed>>, total:int}
+     */
+    public function search(array $filters, int $limit, int $offset, string $sort, string $order): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'po.view');
+
+        $where = ['r.cmp_id = :ctx_cmp_id'];
+        $params = ['ctx_cmp_id' => $this->ctx->cmpId];
+
+        if (!empty($filters['supplier_account_id'])) {
+            $where[] = 'o.supplier_account_id = :supplier';
+            $params['supplier'] = (int) $filters['supplier_account_id'];
+        }
+        if (!empty($filters['po_id'])) {
+            $where[] = 'r.po_id = :po';
+            $params['po'] = (int) $filters['po_id'];
+        }
+        if (!empty($filters['status'])) {
+            $where[] = 'r.status = :status';
+            $params['status'] = (string) $filters['status'];
+        }
+        if (!empty($filters['q'])) {
+            $where[] = '(r.inventory_document_no ILIKE :q OR r.supplier_dc_no ILIKE :q OR o.po_no ILIKE :q)';
+            $params['q'] = '%' . str_replace(['%', '_'], ['\\%', '\\_'], (string) $filters['q']) . '%';
+        }
+
+        $clause = implode(' AND ', $where);
+        $sortColumn = in_array($sort, ['received_at', 'created_at', 'status'], true) ? $sort : 'created_at';
+
+        $rows = Db::all(
+            "SELECT r.request_id, r.po_id, r.status, r.received_at, r.supplier_dc_no, r.supplier_dc_date,
+                    r.vehicle_no, r.warehouse_id, r.inventory_document_uuid, r.inventory_document_no,
+                    r.created_at, o.po_no, o.supplier_account_id, o.supplier_name_snapshot
+               FROM purchase_receipt_requests r
+               JOIN purchase_orders o ON o.po_id = r.po_id
+              WHERE {$clause}
+              ORDER BY r.{$sortColumn} {$order} NULLS LAST, r.request_id {$order}
+              LIMIT {$limit} OFFSET {$offset}",
+            $params,
+        );
+
+        return [
+            'rows'  => $rows,
+            'total' => (int) Db::scalar(
+                "SELECT COUNT(*) FROM purchase_receipt_requests r JOIN purchase_orders o ON o.po_id = r.po_id WHERE {$clause}",
+                $params,
+            ),
+        ];
+    }
+
     private static function text(mixed $value): ?string
     {
         if (!is_string($value)) {

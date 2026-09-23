@@ -315,20 +315,52 @@ export interface PurchaseReturn {
   commands: IntegrationCommand[]
 }
 
+export interface ClaimLine {
+  line_id: number
+  line_no: number
+  item_id: number | null
+  description: string | null
+  reference_kind: string
+  reference_no: string | null
+  ordered_qty: string
+  received_qty: string
+  claim_qty: string
+  rate: string
+  claim_amount: string
+  reason: string | null
+}
+
 export interface Claim {
   claim_id: number
   claim_no: string
   claim_date: string
   supplier_account_id: number
   po_id: number | null
+  /** The other three references a claim can argue from. */
+  bill_request_id: number | null
+  receipt_request_id: number | null
+  return_id: number | null
   claim_kind: string
   status: string
   claimed_amount: string
   settled_amount: string
+  subject: string | null
   description: string | null
+  requested_resolution: string | null
+  expected_resolution_date: string | null
+  supplier_contact: string | null
+  internal_owner: string | null
+  priority: string
+  /** Never shown to a supplier, and never sent in anything addressed to one. */
+  internal_notes: string | null
+  supplier_notes: string | null
+  tags: string[]
+  notify_supplier: boolean
   supplier_response: string | null
   settled_at: string | null
   created_at: string
+  /** Present on one claim read back, absent from a list row. */
+  lines?: ClaimLine[]
 }
 
 export interface SupplierProfile {

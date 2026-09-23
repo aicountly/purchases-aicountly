@@ -264,6 +264,35 @@ if (str_contains($path, '/masters/accounts/')) {
     echo json_encode(['data' => ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30]]);
     exit;
 }
+
+/**
+ * The party ledgers, searched.
+ *
+ * Every type-ahead for a supplier in this product ends up here — the claim
+ * screen, the return, the order, the bill. Without it the stub answered "no
+ * route" and every one of those fields could only be tested in its failure
+ * state, which is the state nobody needed to check.
+ *
+ * `q` filters the way Books does: a case-insensitive match on the name or the
+ * GSTIN, and an empty `q` returns the lot.
+ */
+if (str_contains($path, '/masters/accounts')) {
+    $accounts = [
+        ['acc_id' => 601, 'acc_name' => 'Northern Distributors', 'gstin' => '09AAACN1234F1Z5'],
+        ['acc_id' => 602, 'acc_name' => 'Metro Electricals', 'gstin' => '27AABCM5678L1ZP'],
+        ['acc_id' => 603, 'acc_name' => 'Sunrise Packaging', 'gstin' => '24AACCS9012K1Z3'],
+        ['acc_id' => 604, 'acc_name' => 'Deccan Steel Traders', 'gstin' => '36AADCD3456M1ZQ'],
+    ];
+
+    $term = trim((string) ($_GET['q'] ?? ''));
+    if ($term !== '') {
+        $accounts = array_values(array_filter($accounts, static fn (array $row): bool =>
+            stripos($row['acc_name'], $term) !== false || stripos($row['gstin'], $term) !== false));
+    }
+
+    echo json_encode(['data' => $accounts, 'meta' => ['total' => count($accounts), 'limit' => 50, 'offset' => 0]]);
+    exit;
+}
 /**
  * bill-by-bill, exactly as Books behaves: acc_id is REQUIRED and the endpoint
  * answers 400 without one. Purchases once called it without an acc_id, so the

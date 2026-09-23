@@ -100,6 +100,9 @@ final class Routes
         $router->post('v1/purchase-orders/{id}/acknowledge', [PurchaseOrdersController::class, 'acknowledge']);
         $router->post('v1/purchase-orders/{id}/receive', [PurchaseOrdersController::class, 'receive']);
         $router->post('v1/purchase-orders/{id}/cancel', [PurchaseOrdersController::class, 'cancel']);
+        // Deliveries across orders, rather than through one. A claim starts
+        // from the delivery that was short, not from the order behind it.
+        $router->get('v1/receipts', [PurchaseOrdersController::class, 'receipts']);
         $router->post('v1/receipt-requests/{id}/retry', [PurchaseOrdersController::class, 'retryReceipt']);
 
         // Vendor bills and the three-way match.
@@ -121,6 +124,11 @@ final class Routes
 
         $router->get('v1/claims', [ClaimsController::class, 'index']);
         $router->post('v1/claims', [ClaimsController::class, 'create']);
+        // BEFORE the {id} routes. The router matches in registration order, so
+        // `meta` registered after `{id}` would be read as a claim called "meta".
+        $router->get('v1/claims/meta', [ClaimsController::class, 'meta']);
+        $router->get('v1/claims/similar', [ClaimsController::class, 'similar']);
+        $router->post('v1/claims/assist', [ClaimsController::class, 'assist']);
         $router->get('v1/claims/{id}', [ClaimsController::class, 'show']);
         $router->post('v1/claims/{id}/{action}', [ClaimsController::class, 'transition']);
 

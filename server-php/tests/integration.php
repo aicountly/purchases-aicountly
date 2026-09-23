@@ -819,6 +819,170 @@ check('an unknown claim kind is refused', function () use ($ctx, $auth) {
     );
 });
 
+check('a claim totals its own lines, whatever amount was posted with them', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $claim = (new ReturnClaimService($ctx, $auth))->createClaim([
+        'supplier_account_id' => 601,
+        'claim_kind'          => 'shortage',
+        'subject'             => 'Four bundles short',
+        // Deliberately wrong. The lines say 3,200 and the lines are what count.
+        'claimed_amount'      => 999999,
+        'lines' => [
+            ['description' => 'MS angle 40mm', 'ordered_qty' => 100, 'received_qty' => 90, 'claim_qty' => 10, 'rate' => 250],
+            // No quantity behind it, so the amount stands on its own -- this is
+            // the scheme case, and it must not be multiplied away to zero.
+            ['description' => 'Q2 scheme not passed', 'claim_amount' => 700],
+        ],
+    ]);
+
+    assertSame('3200.0000', (string) $claim['claimed_amount'], 'total taken from the lines');
+    assertSame(2, count($claim['lines']), 'both lines stored');
+    assertSame('2500.0000', (string) $claim['lines'][0]['claim_amount'], 'quantity times rate');
+    assertSame('700.0000', (string) $claim['lines'][1]['claim_amount'], 'an amount with no quantity behind it');
+});
+
+check('an empty claim line is dropped rather than stored as a zero', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $claim = (new ReturnClaimService($ctx, $auth))->createClaim([
+        'supplier_account_id' => 601,
+        'claim_kind'          => 'quality',
+        'lines' => [
+            ['description' => 'Cement bags torn', 'claim_qty' => 4, 'rate' => 380],
+            // The row the table always keeps at the bottom.
+            ['description' => '', 'claim_qty' => '', 'rate' => '', 'claim_amount' => ''],
+        ],
+    ]);
+
+    assertSame(1, count($claim['lines']), 'only the line somebody typed');
+    assertSame('1520.0000', (string) $claim['claimed_amount'], 'total');
+});
+
+check('a negative claim line is refused', function () use ($ctx, $auth) {
+    resetDatabase();
+    assertThrows(
+        static fn () => (new ReturnClaimService($ctx, $auth))->createClaim([
+            'supplier_account_id' => 601,
+            'claim_kind'          => 'shortage',
+            'lines' => [['description' => 'Credit, not a claim', 'claim_qty' => 5, 'rate' => 10, 'claim_amount' => -500]],
+        ]),
+        'cannot carry a negative',
+        'negative claim line',
+    );
+});
+
+check('a reference belonging to another supplier is refused', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+
+    assertThrows(
+        // The order is real and belongs to this company -- it is simply against
+        // supplier 601, and this claim says 602. Trusting the id the browser
+        // sent would attach another supplier's order number to this claim.
+        static fn () => (new ReturnClaimService($ctx, $auth))->createClaim([
+            'supplier_account_id' => 602,
+            'claim_kind'          => 'shortage',
+            'po_id'               => (int) $po['po_id'],
+            'claimed_amount'      => 100,
+        ]),
+        'different supplier',
+        'cross-supplier reference',
+    );
+});
+
+check('a claim can be raised and submitted in one action', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $claim = (new ReturnClaimService($ctx, $auth))->createClaim([
+        'supplier_account_id' => 601,
+        'claim_kind'          => 'rate_difference',
+        'subject'             => 'Billed at 110 against an agreed 100',
+        'claimed_amount'      => 1000,
+        'submit'              => true,
+    ]);
+
+    assertSame('SUBMITTED', $claim['status'], 'status');
+    assertSame(
+        1,
+        (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'claim.submit'"),
+        'the submission is in the audit trail, not only the creation',
+    );
+});
+
+check('the claim meta offers exactly the kinds the validator accepts', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new ReturnClaimService($ctx, $auth);
+    $meta = $service->claimMeta();
+
+    $offered = array_column($meta['kinds'], 'value');
+    assertSame(array_keys(ReturnClaimService::CLAIM_KINDS), $offered, 'the screen is offered one list, from here');
+    assertTrue($meta['permissions']['create'], 'the owner may raise a claim');
+    // Said plainly rather than discovered by a 404 when somebody drops a file.
+    assertSame(false, $meta['capabilities']['attachments']['available'], 'attachments are honestly unavailable');
+
+    foreach ($offered as $kind) {
+        $claim = $service->createClaim([
+            'supplier_account_id' => 601, 'claim_kind' => $kind, 'claimed_amount' => 10,
+        ]);
+        assertSame($kind, $claim['claim_kind'], "kind {$kind} is accepted");
+    }
+});
+
+check('"my claims" is resolved from the session, never from what was asked for', function () use ($ctx, $auth) {
+    resetDatabase();
+    $mine = new ReturnClaimService($ctx, $auth);
+    $theirs = new ReturnClaimService($ctx, authFor('user-somebody-else'));
+
+    $mine->createClaim(['supplier_account_id' => 601, 'claim_kind' => 'shortage', 'claimed_amount' => 100]);
+    $theirs->createClaim(['supplier_account_id' => 601, 'claim_kind' => 'shortage', 'claimed_amount' => 200]);
+
+    $all = $mine->searchClaims([], 50, 0, 'claim_date', 'desc');
+    assertSame(2, $all['total'], 'both claims are in the company list');
+
+    $onlyMine = $mine->searchClaims(['mine' => true], 50, 0, 'claim_date', 'desc');
+    assertSame(1, $onlyMine['total'], 'only the one this session raised');
+    assertSame('100.0000', (string) $onlyMine['rows'][0]['claimed_amount'], 'and it is the right one');
+});
+
+check('similar open claims are reported, and never block a new one', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new ReturnClaimService($ctx, $auth);
+
+    $service->createClaim([
+        'supplier_account_id' => 601, 'claim_kind' => 'shortage', 'claimed_amount' => 500, 'subject' => 'Short by four',
+    ]);
+
+    $similar = $service->similarClaims(['supplier_account_id' => 601, 'claim_kind' => 'shortage']);
+    assertSame(1, count($similar), 'the open one is reported');
+
+    // A settled claim is history, not a duplicate warning.
+    $settledId = (int) $similar[0]['claim_id'];
+    $service->updateClaim($settledId, 'submit', []);
+    $service->updateClaim($settledId, 'approve', []);
+    $service->updateClaim($settledId, 'settle', ['settled_amount' => 500]);
+
+    assertSame(0, count($service->similarClaims(['supplier_account_id' => 601, 'claim_kind' => 'shortage'])), 'settled claims are not warned about');
+
+    // And the second claim is still raised, because this warns and nothing else.
+    $second = $service->createClaim([
+        'supplier_account_id' => 601, 'claim_kind' => 'shortage', 'claimed_amount' => 600,
+    ]);
+    assertTrue((int) $second['claim_id'] > 0, 'a second claim is not refused');
+});
+
+check('deliveries can be found across orders, and only this company\'s', function () use ($ctx, $auth) {
+    resetDatabase();
+    receivedOrder($ctx, $auth);
+
+    $receipts = (new ReceiptService($ctx, $auth))->search(['supplier_account_id' => 601], 20, 0, 'created_at', 'desc');
+    assertTrue($receipts['total'] >= 1, 'the delivery is listed');
+    assertSame(601, (int) $receipts['rows'][0]['supplier_account_id'], 'the supplier comes from the order it belongs to');
+
+    $other = (new ReceiptService($ctx, $auth))->search(['supplier_account_id' => 602], 20, 0, 'created_at', 'desc');
+    assertSame(0, $other['total'], 'another supplier sees none of it');
+});
+
 echo "\nData ownership (release-blocking)\n";
 
 check('no table mirrors an item, supplier, GRN, stock or invoice', function () {

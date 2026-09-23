@@ -1,0 +1,1400 @@
+/*
+ * Purchase processing → Supplier claims → New claim.
+ *
+ * Scoped to .supplier-claim-page, exactly as .purchase-workspace,
+ * .access-workspace and .purchase-profile-page are scoped, and for the same
+ * reason: the fleet shares the tokens in index.css, and a product that
+ * redefines --accent globally changes every other product's buttons the next
+ * time the shell is shared. Everything below is a local token layered over
+ * those, so this screen can be Aicountly blue without Books becoming blue.
+ *
+ * Light only, like the dashboards and the profile workspace. A claim is
+ * printed, attached to an email and read back in a supplier meeting.
+ *
+ * THE RESTRAINT IS THE DESIGN. This is an operational form somebody fills in
+ * under time pressure with a supplier on the phone — white surfaces, one blue,
+ * thin borders, and no gradient large enough to notice. Everything that moves
+ * moves because something changed, not to announce itself.
+ */
+
+.supplier-claim-page {
+  --sc-primary: #155eef;
+  --sc-primary-hover: #004eeb;
+  --sc-primary-soft: #eef4ff;
+  --sc-primary-line: #b2ccff;
+
+  --sc-bg: #f8fafc;
+  --sc-surface: #ffffff;
+  --sc-surface-soft: #f9fafb;
+
+  --sc-text: #101828;
+  --sc-text-secondary: #475467;
+  /* #667085 is 5.1:1 on white — used for supporting lines, never for anything
+     that is the only carrier of meaning. */
+  --sc-text-muted: #667085;
+
+  --sc-border: #eaecf0;
+  --sc-border-strong: #d0d5dd;
+
+  --sc-success: #067647;
+  --sc-success-soft: #ecfdf3;
+  --sc-warning: #b54708;
+  --sc-warning-soft: #fffaeb;
+  --sc-danger: #b42318;
+  --sc-danger-soft: #fef3f2;
+
+  --sc-radius-sm: 8px;
+  --sc-radius-md: 12px;
+  --sc-radius-lg: 14px;
+
+  --sc-shadow-sm: 0 1px 2px rgb(16 24 40 / 5%);
+  --sc-shadow-md: 0 4px 12px rgb(16 24 40 / 6%);
+  --sc-shadow-pop: 0 12px 28px rgb(16 24 40 / 12%);
+
+  min-width: 0;
+  min-height: 100%;
+  padding: clamp(14px, 1.6vw, 22px) clamp(14px, 1.8vw, 26px) 36px;
+  background: var(--sc-bg);
+  color: var(--sc-text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.supplier-claim-page *,
+.supplier-claim-page *::before,
+.supplier-claim-page *::after { box-sizing: border-box; }
+
+.supplier-claim-page__inner {
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+/* ------------------------------------------------------------------ *
+ * Breadcrumb
+ * ------------------------------------------------------------------ */
+
+.claim-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--sc-text-muted);
+}
+
+.claim-breadcrumb a {
+  color: var(--sc-text-muted);
+  text-decoration: none;
+  border-radius: 4px;
+}
+
+.claim-breadcrumb a:hover { color: var(--sc-primary); text-decoration: none; }
+.claim-breadcrumb [aria-current='page'] { color: var(--sc-text-secondary); font-weight: 600; }
+
+/* ------------------------------------------------------------------ *
+ * Page header
+ * ------------------------------------------------------------------ */
+
+.claim-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  margin-bottom: 16px;
+}
+
+.claim-page-title-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+}
+
+.claim-page-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--sc-radius-md);
+  color: var(--sc-primary);
+  background: var(--sc-primary-soft);
+}
+
+.claim-page-header h1 {
+  margin: 0;
+  font-size: clamp(20px, 2vw, 27px);
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.claim-page-header p {
+  max-width: 860px;
+  margin: 5px 0 0;
+  color: var(--sc-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.claim-header-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * Buttons
+ * ------------------------------------------------------------------ */
+
+.sc-btn {
+  min-height: 40px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
+}
+
+.sc-btn:active:not(:disabled) { transform: translateY(1px); }
+
+.sc-btn:focus-visible {
+  outline: 3px solid rgb(21 94 239 / 18%);
+  outline-offset: 2px;
+}
+
+.sc-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+
+.sc-btn--primary {
+  color: #fff;
+  background: var(--sc-primary);
+  border-color: var(--sc-primary);
+  box-shadow: 0 1px 2px rgb(16 24 40 / 8%);
+}
+
+.sc-btn--primary:hover:not(:disabled) { background: var(--sc-primary-hover); }
+
+.sc-btn--secondary {
+  color: var(--sc-text);
+  background: #fff;
+  border-color: var(--sc-border-strong);
+}
+
+.sc-btn--secondary:hover:not(:disabled) { border-color: #98a2b3; background: var(--sc-surface-soft); }
+
+.sc-btn--ghost { background: transparent; color: var(--sc-text-secondary); }
+.sc-btn--ghost:hover:not(:disabled) { background: #eef2f6; color: var(--sc-text); }
+
+.sc-btn--danger {
+  color: var(--sc-danger);
+  background: #fff;
+  border-color: #fda29b;
+}
+
+.sc-btn--danger:hover:not(:disabled) { background: var(--sc-danger-soft); }
+
+.sc-btn--sm { min-height: 32px; padding: 0 11px; font-size: 12px; border-radius: 7px; }
+
+/* ------------------------------------------------------------------ *
+ * Hero
+ * ------------------------------------------------------------------ */
+
+.claim-hero {
+  display: grid;
+  grid-template-columns: minmax(300px, 1.9fr) repeat(3, minmax(145px, 0.8fr)) minmax(190px, 0.95fr);
+  align-items: stretch;
+  margin-bottom: 14px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-lg);
+  overflow: hidden;
+  background: linear-gradient(100deg, #fff 0%, #fff 62%, #f7faff 100%);
+  box-shadow: var(--sc-shadow-sm);
+}
+
+.claim-hero-intro {
+  min-height: 104px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.claim-hero-art {
+  width: 74px;
+  height: 66px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: var(--sc-radius-lg);
+  color: var(--sc-primary);
+  background: linear-gradient(145deg, #eaf2ff, #f5f8ff);
+}
+
+.claim-hero h2 { margin: 0 0 5px; font-size: 16px; font-weight: 650; }
+
+.claim-hero p {
+  margin: 0;
+  max-width: 470px;
+  color: var(--sc-text-secondary);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.claim-benefit {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px;
+}
+
+.claim-benefit::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20px;
+  bottom: 20px;
+  width: 1px;
+  background: var(--sc-border);
+}
+
+.claim-benefit-mark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--sc-primary);
+  background: var(--sc-primary-soft);
+}
+
+.claim-benefit strong { font-size: 12px; font-weight: 650; }
+.claim-benefit span { color: var(--sc-text-muted); font-size: 11px; }
+
+.claim-hero-pledge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  background: linear-gradient(140deg, #ecfdf3, #f6fefa);
+  border-left: 1px solid var(--sc-border);
+}
+
+.claim-hero-pledge-mark {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #fff;
+  background: #12b76a;
+}
+
+.claim-hero-pledge strong { display: block; font-size: 12.5px; color: #05603a; }
+.claim-hero-pledge span { display: block; font-size: 12.5px; color: #067647; }
+
+/* ------------------------------------------------------------------ *
+ * Stepper
+ * ------------------------------------------------------------------ */
+
+.claim-stepper {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--sc-border);
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: var(--sc-shadow-sm);
+}
+
+.claim-step {
+  position: relative;
+  min-width: 0;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+
+.claim-step:hover:not(:disabled) { background: var(--sc-surface-soft); }
+.claim-step:disabled { cursor: not-allowed; }
+.claim-step:focus-visible { outline: 3px solid rgb(21 94 239 / 18%); outline-offset: 1px; }
+
+.claim-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: -2px;
+  width: 16%;
+  height: 1px;
+  background: var(--sc-border-strong);
+}
+
+.claim-step__number {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--sc-border-strong);
+  border-radius: 50%;
+  color: var(--sc-text-secondary);
+  background: var(--sc-surface-soft);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+}
+
+.claim-step.is-active .claim-step__number {
+  color: #fff;
+  border-color: var(--sc-primary);
+  background: var(--sc-primary);
+}
+
+.claim-step.is-complete .claim-step__number {
+  color: #fff;
+  border-color: #12b76a;
+  background: #12b76a;
+  animation: sc-step-done 280ms ease;
+}
+
+@keyframes sc-step-done {
+  0% { transform: scale(0.82); }
+  60% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+.claim-step__label { min-width: 0; }
+.claim-step__label strong,
+.claim-step__label small { display: block; }
+
+.claim-step__label strong {
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claim-step.is-active .claim-step__label strong { color: var(--sc-primary); }
+
+.claim-step__label small {
+  margin-top: 2px;
+  color: var(--sc-text-muted);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The phone version: one line that says where you are, not five that do not fit. */
+.claim-stepper-compact {
+  display: none;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--sc-border);
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: var(--sc-shadow-sm);
+}
+
+.claim-stepper-compact__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.claim-stepper-compact__head strong { font-size: 13px; }
+.claim-stepper-compact__head span { color: var(--sc-text-muted); font-size: 11px; }
+
+.claim-stepper-compact__track {
+  margin-top: 9px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--sc-surface-soft);
+  overflow: hidden;
+}
+
+.claim-stepper-compact__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sc-primary);
+  transition: width 260ms ease;
+}
+
+/* ------------------------------------------------------------------ *
+ * Layout
+ * ------------------------------------------------------------------ */
+
+.claim-content-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+
+.claim-main { min-width: 0; }
+
+.claim-intelligence-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  position: sticky;
+  top: 16px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Cards
+ * ------------------------------------------------------------------ */
+
+.claim-card {
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px solid var(--sc-border);
+  border-radius: 13px;
+  background: var(--sc-surface);
+  box-shadow: var(--sc-shadow-sm);
+}
+
+.claim-card:last-child { margin-bottom: 0; }
+
+.claim-card-header {
+  min-height: 28px;
+  margin-bottom: 15px;
+  padding-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--sc-border);
+}
+
+.claim-card-header h2 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.claim-card-header h2 svg { color: var(--sc-primary); }
+.claim-card-header h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.claim-card-hint { color: var(--sc-text-muted); font-size: 11.5px; }
+
+/* A step appears rather than snapping in. 8px and 200ms — enough to show that
+   the panel changed, not enough to wait for. */
+.claim-step-panel { animation: sc-panel-in 200ms ease both; }
+
+@keyframes sc-panel-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ------------------------------------------------------------------ *
+ * Fields
+ * ------------------------------------------------------------------ */
+
+.claim-form-grid { display: grid; gap: 14px; }
+.claim-form-grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.claim-form-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.claim-form-grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.sc-field { min-width: 0; margin-bottom: 14px; }
+.sc-field:last-child { margin-bottom: 0; }
+.claim-form-grid .sc-field { margin-bottom: 0; }
+
+.sc-field__label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.sc-field__required { color: var(--sc-danger); margin-left: 2px; }
+
+.sc-field__label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.sc-field__label-row .sc-field__label { margin-bottom: 0; }
+
+.sc-input,
+.sc-textarea,
+.sc-select {
+  width: 100%;
+  border: 1px solid var(--sc-border-strong);
+  border-radius: var(--sc-radius-sm);
+  background: #fff;
+  color: var(--sc-text);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.sc-input,
+.sc-select { height: 40px; padding: 0 12px; }
+
+.sc-textarea {
+  min-height: 118px;
+  padding: 11px 12px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.sc-input:focus,
+.sc-textarea:focus,
+.sc-select:focus {
+  outline: 0;
+  border-color: var(--sc-primary);
+  box-shadow: 0 0 0 3px rgb(21 94 239 / 10%);
+}
+
+.sc-input:disabled,
+.sc-select:disabled,
+.sc-textarea:disabled { background: var(--sc-surface-soft); color: var(--sc-text-muted); cursor: not-allowed; }
+
+.sc-input[aria-invalid='true'],
+.sc-textarea[aria-invalid='true'],
+.sc-select[aria-invalid='true'] { border-color: #fda29b; }
+
+.sc-input[aria-invalid='true']:focus,
+.sc-textarea[aria-invalid='true']:focus,
+.sc-select[aria-invalid='true']:focus { box-shadow: 0 0 0 3px rgb(240 68 56 / 12%); }
+
+.sc-field__hint { display: block; margin-top: 5px; color: var(--sc-text-muted); font-size: 11px; }
+
+.sc-field__error {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 5px;
+  color: var(--sc-danger);
+  font-size: 11px;
+}
+
+.sc-textarea-meta {
+  margin-top: 5px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--sc-text-muted);
+  font-size: 10.5px;
+}
+
+.sc-textarea-meta .is-over { color: var(--sc-danger); font-weight: 600; }
+
+.sc-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--sc-text-secondary);
+  cursor: pointer;
+}
+
+.sc-checkbox input { margin: 2px 0 0; accent-color: var(--sc-primary); }
+.sc-checkbox span strong { display: block; color: var(--sc-text); font-size: 12.5px; }
+
+/* ------------------------------------------------------------------ *
+ * Inline AI action and suggestion
+ * ------------------------------------------------------------------ */
+
+.sc-ai-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--sc-primary-line);
+  border-radius: 999px;
+  background: #f5f8ff;
+  color: var(--sc-primary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.sc-ai-inline:hover:not(:disabled) { background: var(--sc-primary-soft); }
+.sc-ai-inline:disabled { opacity: 0.6; cursor: progress; }
+
+/* The suggestion is shown, never applied. Nothing the model writes reaches the
+   field until somebody presses Use this. */
+.sc-ai-suggestion {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--sc-primary-line);
+  border-radius: var(--sc-radius-md);
+  background: #f9fbff;
+}
+
+.sc-ai-suggestion__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+  color: var(--sc-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.sc-ai-suggestion__body {
+  margin: 0 0 10px;
+  color: var(--sc-text);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.sc-ai-suggestion__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ------------------------------------------------------------------ *
+ * Chips
+ * ------------------------------------------------------------------ */
+
+.claim-type-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+
+.claim-type-chips button {
+  min-height: 29px;
+  padding: 0 11px;
+  border: 1px solid #d8e1ee;
+  border-radius: 7px;
+  background: #f8fafd;
+  color: #344054;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.claim-type-chips button:hover { color: var(--sc-primary); border-color: var(--sc-primary-line); background: var(--sc-primary-soft); }
+
+.claim-type-chips button.is-selected {
+  color: var(--sc-primary);
+  border-color: var(--sc-primary);
+  background: var(--sc-primary-soft);
+  font-weight: 600;
+}
+
+.sc-tag-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+
+.sc-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 5px 3px 10px;
+  border: 1px solid var(--sc-border-strong);
+  border-radius: 999px;
+  background: var(--sc-surface-soft);
+  font-size: 11px;
+}
+
+.sc-tag button {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sc-text-muted);
+  cursor: pointer;
+}
+
+.sc-tag button:hover { background: #fff; color: var(--sc-danger); }
+
+/* ------------------------------------------------------------------ *
+ * Combobox (supplier and reference documents)
+ * ------------------------------------------------------------------ */
+
+.sc-combo { position: relative; min-width: 0; }
+
+.sc-combo__control { position: relative; }
+
+.sc-combo__icon {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--sc-text-muted);
+  pointer-events: none;
+}
+
+.sc-combo__input { padding-left: 33px; padding-right: 34px; }
+
+.sc-combo__clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sc-text-muted);
+  cursor: pointer;
+}
+
+.sc-combo__clear:hover { background: var(--sc-surface-soft); color: var(--sc-text); }
+
+.sc-combo__menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 17rem;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--sc-border-strong);
+  border-radius: var(--sc-radius-md);
+  background: #fff;
+  box-shadow: var(--sc-shadow-pop);
+}
+
+.sc-combo__option {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sc-combo__option:hover,
+.sc-combo__option.is-active { background: var(--sc-primary-soft); }
+
+.sc-combo__option strong { display: block; font-size: 12.5px; font-weight: 600; }
+.sc-combo__option span { display: block; margin-top: 2px; color: var(--sc-text-muted); font-size: 11px; }
+
+.sc-combo__state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  color: var(--sc-text-muted);
+  font-size: 12px;
+}
+
+.sc-combo__state.is-error { color: var(--sc-danger); }
+.sc-combo__state .sc-btn { margin-left: auto; }
+
+/* The chosen record, shown back with the few facts that confirm it is the
+   right one. Read live from the product that owns it, never stored here. */
+.sc-picked {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-md);
+  background: var(--sc-surface-soft);
+}
+
+.sc-picked__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sc-picked__row strong { font-size: 12.5px; }
+
+.sc-picked__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  color: var(--sc-text-muted);
+  font-size: 11px;
+}
+
+.sc-picked__meta b { color: var(--sc-text-secondary); font-weight: 600; }
+
+/* ------------------------------------------------------------------ *
+ * Attachments
+ * ------------------------------------------------------------------ */
+
+.claim-attachments { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--sc-border); }
+
+.sc-dropzone {
+  min-height: 92px;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border: 1px dashed var(--sc-primary-line);
+  border-radius: 10px;
+  background: #fcfdff;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.sc-dropzone.is-over { border-color: var(--sc-primary); background: var(--sc-primary-soft); }
+
+.sc-dropzone.is-disabled {
+  border-color: var(--sc-border-strong);
+  border-style: dashed;
+  background: var(--sc-surface-soft);
+}
+
+.sc-dropzone__art {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  color: var(--sc-primary);
+  background: var(--sc-primary-soft);
+}
+
+.sc-dropzone.is-disabled .sc-dropzone__art { color: var(--sc-text-muted); background: #eef0f3; }
+
+.sc-dropzone__copy { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.sc-dropzone__copy strong { display: block; font-size: 12.5px; }
+.sc-dropzone__copy span { display: block; margin-top: 4px; color: var(--sc-text-muted); font-size: 11px; }
+
+.sc-file-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+
+.sc-file {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border: 1px solid var(--sc-border);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.sc-file__mark {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--sc-primary);
+  background: var(--sc-primary-soft);
+}
+
+.sc-file__body { min-width: 0; flex: 1; }
+.sc-file__body strong { display: block; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-file__body span { display: block; margin-top: 2px; color: var(--sc-text-muted); font-size: 11px; }
+.sc-file__body .is-error { color: var(--sc-danger); }
+
+/* ------------------------------------------------------------------ *
+ * Claim lines
+ * ------------------------------------------------------------------ */
+
+.claim-lines-scroll { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+
+.claim-lines {
+  width: 100%;
+  min-width: 1040px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.claim-lines th {
+  padding: 0 8px 9px;
+  border-bottom: 1px solid var(--sc-border-strong);
+  color: var(--sc-text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.claim-lines th.is-numeric,
+.claim-lines td.is-numeric {
+  text-align: right;
+  /* Wide enough for a five-figure rate. A quantity column that clips its own
+     number is worse than a table that scrolls. */
+  min-width: 96px;
+}
+
+.claim-lines td { padding: 8px; border-bottom: 1px solid var(--sc-border); vertical-align: top; }
+.claim-lines tbody tr:hover { background: #fcfdff; }
+
+.claim-lines .sc-input,
+.claim-lines .sc-select { height: 34px; font-size: 12.5px; }
+.claim-lines .sc-input.is-numeric { text-align: right; font-variant-numeric: tabular-nums; }
+
+.claim-line-amount { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+
+.claim-line-remove {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--sc-text-muted);
+  cursor: pointer;
+}
+
+.claim-line-remove:hover { border-color: #fda29b; background: var(--sc-danger-soft); color: var(--sc-danger); }
+
+.claim-lines-total {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-md);
+  background: var(--sc-surface-soft);
+}
+
+.claim-lines-total span { color: var(--sc-text-secondary); font-size: 12px; }
+
+.claim-lines-total strong {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.claim-lines-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* ------------------------------------------------------------------ *
+ * Empty, loading, notice
+ * ------------------------------------------------------------------ */
+
+.sc-empty {
+  padding: 26px 18px;
+  border: 1px dashed var(--sc-border-strong);
+  border-radius: var(--sc-radius-md);
+  background: var(--sc-surface-soft);
+  text-align: center;
+}
+
+.sc-empty__mark {
+  width: 38px;
+  height: 38px;
+  margin: 0 auto 10px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--sc-primary);
+  background: var(--sc-primary-soft);
+}
+
+.sc-empty strong { display: block; font-size: 13px; }
+.sc-empty p { margin: 5px auto 0; max-width: 46ch; color: var(--sc-text-muted); font-size: 12px; }
+
+.sc-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid;
+  border-radius: var(--sc-radius-md);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.sc-notice--info { border-color: var(--sc-primary-line); background: var(--sc-primary-soft); color: #175cd3; }
+.sc-notice--warning { border-color: #fec84b; background: var(--sc-warning-soft); color: var(--sc-warning); }
+.sc-notice--danger { border-color: #fda29b; background: var(--sc-danger-soft); color: var(--sc-danger); }
+.sc-notice--success { border-color: #a6f4c5; background: var(--sc-success-soft); color: var(--sc-success); }
+
+.sc-notice strong { display: block; margin-bottom: 2px; }
+.sc-notice svg { flex: 0 0 auto; margin-top: 1px; }
+.sc-notice__actions { margin-left: auto; display: flex; gap: 8px; flex-shrink: 0; }
+
+.sc-skeleton {
+  border-radius: 7px;
+  background: linear-gradient(90deg, #eef1f5 25%, #f7f9fc 37%, #eef1f5 63%);
+  background-size: 400% 100%;
+  animation: sc-shimmer 1.4s ease infinite;
+}
+
+@keyframes sc-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* ------------------------------------------------------------------ *
+ * Intelligence rail
+ * ------------------------------------------------------------------ */
+
+.claim-ai-card { background: linear-gradient(170deg, #fbfcff, #fff 42%); }
+
+.sc-beta-badge {
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: var(--sc-primary-soft);
+  color: var(--sc-primary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.sc-ai-copy { margin: 0 0 6px; font-size: 12px; line-height: 1.5; font-weight: 600; }
+.sc-ai-copy.is-muted { color: var(--sc-text-secondary); font-weight: 400; }
+
+.sc-ai-action {
+  width: 100%;
+  min-height: 39px;
+  margin-top: 8px;
+  padding: 0 11px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-sm);
+  background: var(--sc-surface-soft);
+  color: #344054;
+  text-align: left;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.sc-ai-action:hover:not(:disabled) { border-color: var(--sc-primary-line); background: var(--sc-primary-soft); }
+.sc-ai-action:disabled { opacity: 0.6; cursor: not-allowed; }
+.sc-ai-action svg { color: var(--sc-primary); flex: 0 0 auto; }
+
+.sc-btn--ai {
+  width: 100%;
+  margin-top: 12px;
+  color: var(--sc-primary);
+  border-color: #84adff;
+  background: #f5f8ff;
+}
+
+.sc-btn--ai:hover:not(:disabled) { background: var(--sc-primary-soft); }
+
+.claim-summary { margin: 0; }
+
+.claim-summary > div {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--sc-border);
+}
+
+.claim-summary > div:first-child { padding-top: 0; }
+.claim-summary > div:last-child { padding-bottom: 0; border-bottom: 0; }
+
+.claim-summary dt { margin-bottom: 3px; color: var(--sc-text-muted); font-size: 10.5px; }
+.claim-summary dd { margin: 0; color: var(--sc-text); font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.claim-summary dd.is-empty { color: var(--sc-text-muted); font-weight: 400; }
+
+.claim-summary__total {
+  font-size: 16px !important;
+  font-weight: 700 !important;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.claim-draft-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sc-text-muted);
+  font-size: 11px;
+}
+
+.claim-draft-state.is-saved { color: var(--sc-success); }
+
+/* ------------------------------------------------------------------ *
+ * Review
+ * ------------------------------------------------------------------ */
+
+.claim-review-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+
+.claim-review-block {
+  padding: 13px 14px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-md);
+  background: var(--sc-surface-soft);
+}
+
+.claim-review-block h3 {
+  margin: 0 0 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.claim-review-block h3 button {
+  border: 0;
+  background: transparent;
+  color: var(--sc-primary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+
+.claim-review-block h3 button:hover { background: var(--sc-primary-soft); }
+
+.claim-review-block dl { margin: 0; display: grid; gap: 8px; }
+.claim-review-block dt { color: var(--sc-text-muted); font-size: 10.5px; }
+.claim-review-block dd { margin: 2px 0 0; font-size: 12.5px; overflow-wrap: anywhere; }
+.claim-review-block dd.is-missing { color: var(--sc-danger); font-weight: 600; }
+.claim-review-block.is-incomplete { border-color: #fda29b; background: var(--sc-danger-soft); }
+
+.claim-review-prose { margin: 0; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; }
+
+.claim-review-verdict {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px 15px;
+  border: 1px solid;
+  border-radius: var(--sc-radius-md);
+  margin-bottom: 14px;
+}
+
+.claim-review-verdict.is-ready { border-color: #a6f4c5; background: var(--sc-success-soft); color: var(--sc-success); }
+.claim-review-verdict.is-blocked { border-color: #fec84b; background: var(--sc-warning-soft); color: var(--sc-warning); }
+.claim-review-verdict strong { display: block; font-size: 13.5px; }
+.claim-review-verdict span { display: block; margin-top: 2px; font-size: 12px; opacity: 0.92; }
+
+.claim-review-issues { margin: 8px 0 0; padding-left: 18px; font-size: 12px; }
+.claim-review-issues li { margin-top: 3px; }
+
+.claim-review-issues button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ *
+ * Footer
+ * ------------------------------------------------------------------ */
+
+.claim-action-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  margin-top: 10px;
+  padding: 12px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: linear-gradient(to top, rgb(248 250 252 / 100%) 55%, rgb(248 250 252 / 85%) 80%, rgb(248 250 252 / 0%));
+}
+
+.claim-action-footer__group { display: flex; gap: 10px; align-items: center; }
+
+/* ------------------------------------------------------------------ *
+ * Success
+ * ------------------------------------------------------------------ */
+
+.claim-success {
+  max-width: 620px;
+  margin: 24px auto;
+  padding: 28px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-lg);
+  background: #fff;
+  box-shadow: var(--sc-shadow-md);
+  text-align: center;
+}
+
+.claim-success__mark {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #12b76a;
+  animation: sc-pop 320ms ease;
+}
+
+@keyframes sc-pop {
+  0% { transform: scale(0.6); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.claim-success h2 { margin: 0 0 6px; font-size: 19px; }
+.claim-success > p { margin: 0 auto 18px; max-width: 46ch; color: var(--sc-text-secondary); font-size: 13px; }
+
+.claim-success__facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-bottom: 20px;
+  border: 1px solid var(--sc-border);
+  border-radius: var(--sc-radius-md);
+  background: var(--sc-border);
+  overflow: hidden;
+  text-align: left;
+}
+
+.claim-success__facts > div { padding: 11px 13px; background: #fff; }
+.claim-success__facts dt { color: var(--sc-text-muted); font-size: 10.5px; }
+.claim-success__facts dd { margin: 3px 0 0; font-size: 13px; font-weight: 600; }
+
+.claim-success__actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+
+/* ------------------------------------------------------------------ *
+ * Leave dialog
+ * ------------------------------------------------------------------ */
+
+.sc-dialog-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgb(16 24 40 / 45%);
+}
+
+.sc-dialog {
+  width: min(430px, 100%);
+  padding: 20px;
+  border-radius: var(--sc-radius-lg);
+  background: #fff;
+  box-shadow: var(--sc-shadow-pop);
+}
+
+.sc-dialog h2 { margin: 0 0 7px; font-size: 16px; }
+.sc-dialog p { margin: 0 0 18px; color: var(--sc-text-secondary); font-size: 13px; line-height: 1.55; }
+.sc-dialog__actions { display: flex; flex-wrap: wrap; gap: 9px; justify-content: flex-end; }
+
+/* ------------------------------------------------------------------ *
+ * Responsive
+ * ------------------------------------------------------------------ */
+
+@media (max-width: 1439px) {
+  .claim-content-grid { grid-template-columns: minmax(0, 1fr) 280px; }
+  .claim-form-grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .claim-hero { grid-template-columns: 1.6fr repeat(3, 0.75fr) 0.9fr; }
+}
+
+@media (max-width: 1180px) {
+  .claim-hero { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .claim-hero-intro { grid-column: 1 / -1; }
+  .claim-hero-pledge { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--sc-border); }
+  .claim-benefit:nth-child(2)::before { display: none; }
+}
+
+@media (max-width: 1023px) {
+  .claim-content-grid { grid-template-columns: minmax(0, 1fr); }
+  .claim-intelligence-rail { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .claim-stepper { overflow-x: auto; grid-template-columns: repeat(5, minmax(172px, 1fr)); }
+  .claim-form-grid--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .claim-review-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 767px) {
+  .supplier-claim-page { padding: 14px 12px 96px; }
+  .claim-page-header { flex-direction: column; align-items: stretch; }
+  .claim-header-actions { width: 100%; }
+  .claim-header-actions .sc-btn { flex: 1; }
+  .claim-hero { display: block; }
+  .claim-benefit { padding: 13px 18px; border-top: 1px solid var(--sc-border); }
+  .claim-benefit::before { display: none; }
+  .claim-stepper { display: none; }
+  .claim-stepper-compact { display: block; }
+  .claim-form-grid--4,
+  .claim-form-grid--3,
+  .claim-form-grid--2 { grid-template-columns: minmax(0, 1fr); }
+  .claim-intelligence-rail { display: flex; }
+  .sc-dropzone { align-items: flex-start; flex-direction: column; }
+  .claim-success__facts { grid-template-columns: minmax(0, 1fr); }
+
+  /* The way forward stays on screen while the form scrolls. */
+  .claim-action-footer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    margin: 0;
+    padding: 10px 12px;
+    border-top: 1px solid var(--sc-border);
+    background: #fff;
+  }
+
+  .claim-action-footer .sc-btn { flex: 1; }
+  .claim-action-footer__group { flex: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .supplier-claim-page *,
+  .supplier-claim-page *::before,
+  .supplier-claim-page *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Announced, never drawn. Same idea as .purchase-sr-only on the dashboards,
+   scoped here so it cannot leak into a page that did not ask for it. */
+.supplier-claim-page .sc-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The one thing on this screen that spins, and only while something is in
+   flight. Reduced motion stops it, which is handled by the block at the end. */
+.supplier-claim-page .sc-spin { animation: sc-rotate 900ms linear infinite; }
+
+@keyframes sc-rotate {
+  to { transform: rotate(360deg); }
+}

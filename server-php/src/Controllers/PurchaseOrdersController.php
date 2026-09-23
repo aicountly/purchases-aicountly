@@ -44,6 +44,28 @@ final class PurchaseOrdersController extends Controller
         Http::data($po);
     }
 
+    /**
+     * Deliveries, across orders.
+     *
+     * A receipt has always been reachable through its order. This lists them
+     * the other way round, which is what a claim needs: the buyer knows a
+     * delivery was short before they know which order it came from.
+     */
+    public static function receipts(): void
+    {
+        [$auth, $ctx] = self::enter();
+
+        $params = Http::listParams(['received_at', 'created_at', 'status'], 'created_at');
+        $result = (new ReceiptService($ctx, $auth))->search([
+            'supplier_account_id' => Http::intParam('supplier_account_id'),
+            'po_id'               => Http::intParam('po_id'),
+            'status'              => Http::param('status'),
+            'q'                   => $params['q'],
+        ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
+
+        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset']);
+    }
+
     public static function create(): void
     {
         [$auth, $ctx] = self::enter();
