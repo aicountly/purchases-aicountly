@@ -817,15 +817,56 @@ final class SuppliersDashboard extends Dashboard
             'p',
         );
 
-        $points = array_map(static fn (array $r) => [
-            'period'  => $r['month'],
-            'sample'  => (int) $r['receipts'],
-            'on_time' => (int) $r['on_time'],
-            'on_time_pc' => ((int) $r['receipts']) >= self::MIN_SAMPLE
-                ? Decimal::percentOf((string) $r['on_time'], (string) $r['receipts'], 1)
-                : null,
-            'rated'   => ((int) $r['receipts']) >= self::MIN_SAMPLE,
-        ], $rows);
+        // Acceptance per month, counted over the LINES of the receipts booked in
+        // that month. The card above counts order lines over the whole period —
+        // a different denominator, and the basis below says so rather than
+        // letting two figures that disagree both be called "acceptance".
+        $accepted = [];
+        foreach ($this->rows(
+            "SELECT to_char(date_trunc('month', r.received_at), 'YYYY-MM') AS month,
+                    COUNT(*)                                                       AS received_lines,
+                    COUNT(*) FILTER (WHERE COALESCE((receipt_line->>'rejected_qty')::numeric, 0) = 0) AS clean_lines
+             FROM purchase_receipt_requests r
+             JOIN purchase_orders p ON p.po_id = r.po_id
+             CROSS JOIN LATERAL jsonb_array_elements(r.requested_lines) AS receipt_line
+             WHERE {scope} AND r.status = 'ACCEPTED'
+               AND r.received_at >= CURRENT_DATE - INTERVAL '12 months'" . $filterSql . "
+             GROUP BY 1",
+            $filterParams,
+            'p',
+        ) as $row) {
+            $accepted[(string) $row['month']] = [
+                'lines' => (int) $row['received_lines'],
+                'clean' => (int) $row['clean_lines'],
+            ];
+        }
+
+        $points = array_map(function (array $r) use ($accepted): array {
+            $month = (string) $r['month'];
+            $sample = (int) $r['receipts'];
+            $rated = $sample >= self::MIN_SAMPLE;
+
+            $onTimePc = $rated
+                ? Decimal::percentOf((string) $r['on_time'], (string) $sample, 1)
+                : null;
+
+            $lines = $accepted[$month]['lines'] ?? 0;
+            $acceptancePc = $lines >= self::MIN_SAMPLE
+                ? Decimal::percentOf((string) ($accepted[$month]['clean'] ?? 0), (string) $lines, 1)
+                : null;
+
+            return [
+                'period'  => $month,
+                'sample'  => $sample,
+                'on_time' => (int) $r['on_time'],
+                'on_time_pc' => $onTimePc,
+                'rated'   => $rated,
+                'accepted_lines' => $accepted[$month]['clean'] ?? 0,
+                'received_lines' => $lines,
+                'acceptance_pc'  => $acceptancePc,
+                'score'   => self::monthlyScore($onTimePc, $acceptancePc),
+            ];
+        }, $rows);
 
         // Overdue lines with no receipt at all. These never appear in an on-time
         // rate because they never produced a receipt, so they are reported here
@@ -842,14 +883,104 @@ final class SuppliersDashboard extends Dashboard
 
         return $this->panel([
             'points' => $points,
+            'supply' => $this->supplyTrend(),
             'min_sample' => self::MIN_SAMPLE,
+            'series' => [
+                ['key' => 'on_time_pc', 'label' => 'On-time delivery'],
+                ['key' => 'acceptance_pc', 'label' => 'Receipt acceptance'],
+                ['key' => 'score', 'label' => 'Supplier score'],
+            ],
             'still_waiting' => [
                 'lines'  => (int) ($stillWaiting['lines'] ?? 0),
                 'orders' => (int) ($stillWaiting['orders'] ?? 0),
                 'note'   => 'Overdue lines with nothing received. They produce no receipt, so they cannot appear in an on-time rate — they are counted here instead of quietly improving it.',
             ],
-            'basis'  => 'Accepted receipts per month over the last twelve months, against the promised date on the order. A month with fewer than ' . self::MIN_SAMPLE . ' receipts is shown with its count but is not given a rate.',
+            'basis'  => 'Accepted receipts per month over the last twelve months, against the promised date on the order. A month with fewer than ' . self::MIN_SAMPLE . ' receipts is shown with its count but is not given a rate. '
+                . 'Acceptance here is counted over the lines of that month\'s receipts, and the monthly score weights the two rates that a month can carry — on-time ' . self::WEIGHTS['on_time'] . ' and acceptance ' . self::WEIGHTS['acceptance'] . ' — re-normalised over whichever of them cleared the minimum sample.',
         ]);
+    }
+
+    /**
+     * The composite score for one month.
+     *
+     * The scorecard's score has three components; a month can only carry two of
+     * them, because line fulfilment is a position at the end of a period and not
+     * a thing that happens in a month. The published weights are re-used and
+     * re-normalised over what is present, exactly as score() does, so the two
+     * numbers are built the same way rather than merely being called the same.
+     */
+    private static function monthlyScore(?string $onTime, ?string $acceptance): ?string
+    {
+        $weighted = Decimal::ZERO;
+        $weight = 0;
+
+        if ($onTime !== null) {
+            $weighted = Decimal::add($weighted, Decimal::mul($onTime, (string) self::WEIGHTS['on_time']));
+            $weight += self::WEIGHTS['on_time'];
+        }
+        if ($acceptance !== null) {
+            $weighted = Decimal::add($weighted, Decimal::mul($acceptance, (string) self::WEIGHTS['acceptance']));
+            $weight += self::WEIGHTS['acceptance'];
+        }
+
+        if ($weight === 0) {
+            return null;
+        }
+
+        $score = Decimal::div($weighted, (string) $weight, 4);
+
+        return $score === null ? null : Decimal::round($score, 1);
+    }
+
+    /**
+     * The supply base, month by month: how many suppliers were bought from and
+     * how much of the month sat with the largest of them.
+     *
+     * This is what the two KPI sparklines are drawn from. Without it the cards
+     * would have to invent a shape for a single number, and a made-up sparkline
+     * is worse than none — it reads as evidence.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function supplyTrend(): array
+    {
+        [$filterSql, $filterParams] = $this->filters->orderClause('p');
+
+        // Grouped by supplier first, so the month's largest share is taken from
+        // the same scoped, filtered set as the month's total. A correlated
+        // subquery here would have to repeat the company, year, branch and
+        // filter clauses to mean the same thing, and the first time somebody
+        // edited one of them it would quietly stop.
+        $rows = $this->rows(
+            "WITH monthly AS (
+                 SELECT date_trunc('month', p.po_date) AS month,
+                        p.supplier_account_id,
+                        SUM(p.total_amount) AS value
+                 FROM purchase_orders p
+                 WHERE {scope} AND p.status <> 'CANCELLED'
+                   AND p.po_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '11 months'" . $filterSql . "
+                 GROUP BY 1, 2
+             )
+             SELECT to_char(month, 'YYYY-MM')        AS month,
+                    COUNT(*)                         AS suppliers,
+                    COALESCE(SUM(value), 0)::text    AS total,
+                    COALESCE(MAX(value), 0)::text    AS largest
+             FROM monthly
+             GROUP BY month
+             ORDER BY month",
+            $filterParams,
+            'p',
+        );
+
+        return array_map(static function (array $r): array {
+            $total = Decimal::of($r['total']);
+
+            return [
+                'period'    => (string) $r['month'],
+                'suppliers' => (int) $r['suppliers'],
+                'top_share_pc' => Decimal::isZero($total) ? null : Decimal::percentOf(Decimal::of($r['largest']), $total, 1),
+            ];
+        }, $rows);
     }
 
     /**

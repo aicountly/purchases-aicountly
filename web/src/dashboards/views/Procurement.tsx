@@ -6,17 +6,45 @@
  * moved the thinking somewhere else.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { CalendarClock, Package, ThumbsDown, ThumbsUp } from 'lucide-react'
+import {
+  AlertTriangle,
+  BarChart3,
+  CalendarClock,
+  ChevronRight,
+  FileText,
+  Hourglass,
+  Leaf,
+  Mail,
+  MoreHorizontal,
+  Package,
+  PackageCheck,
+  ShoppingCart,
+  ThumbsDown,
+  ThumbsUp,
+  TrendingUp,
+  Truck,
+  Users,
+  type LucideIcon,
+} from 'lucide-react'
 import { api, ApiError } from '../../services/api'
 import { Badge, DashboardPanel, DataTable, EmptyState, PanelUnavailable } from '../shell'
+import { BarChart, DonutChart, TrendChart } from '../charts'
 import { Drawer } from '../Drawer'
 import type { DashboardFilters } from '../filters'
 import type {
   ApprovalRow,
   DashboardResponse,
   Panel,
+  ProcurementActivityPanel,
+  ProcurementActivityRow,
+  ProcurementCentrePanel,
+  ProcurementFlowPanel,
+  ProcurementFlowStage,
+  ProcurementInsightsPanel,
+  ProcurementOnTimePanel,
+  ProcurementSpendTrendPanel,
   ReorderRow,
   TimelineGroup,
   WorkbenchRow,
@@ -37,6 +65,25 @@ type ReorderPanel = Panel<{ rows: ReorderRow[]; as_of: string | null; basis: str
 type ApprovalPanel = Panel<{ rows: ApprovalRow[]; total: number; basis: string }>
 type QuotePanel = Panel<Record<string, unknown>>
 
+const STAGE_ICON: Record<string, LucideIcon> = {
+  requisition: FileText,
+  rfq: Mail,
+  quote_comparison: BarChart3,
+  purchase_order: ShoppingCart,
+  delivery: Truck,
+  receipt: PackageCheck,
+}
+
+const INSIGHT_ICON: Record<string, { icon: LucideIcon; tone: 'success' | 'warning' | 'danger' | 'info' }> = {
+  delay_risk: { icon: AlertTriangle, tone: 'danger' },
+  integration: { icon: AlertTriangle, tone: 'danger' },
+  approval_bottleneck: { icon: Hourglass, tone: 'warning' },
+  price_variance: { icon: TrendingUp, tone: 'warning' },
+  follow_up: { icon: Users, tone: 'info' },
+  savings: { icon: Leaf, tone: 'info' },
+  clear: { icon: ThumbsUp, tone: 'success' },
+}
+
 export function ProcurementDashboard({
   data,
   filters,
@@ -55,10 +102,192 @@ export function ProcurementDashboard({
   const approvals = data.panels.approval_inbox as ApprovalPanel
   const quotes = data.panels.quote_comparison as QuotePanel
 
+  const flow = data.panels.flow as ProcurementFlowPanel
+  const spendTrend = data.panels.spend_trend as ProcurementSpendTrendPanel
+  const onTime = data.panels.supplier_performance as ProcurementOnTimePanel
+  const centres = data.panels.material_centre_spend as ProcurementCentrePanel
+  const insights = data.panels.insights as ProcurementInsightsPanel
+  const activity = data.panels.activity as ProcurementActivityPanel
+
   const page = (offset: number) => filters.set({ offset: String(Math.max(0, offset)) })
+  const open = (route: string, rowFilters: Record<string, string> = {}) => {
+    const query = new URLSearchParams(rowFilters).toString()
+    navigate(query === '' ? route : `${route}?${query}`)
+  }
 
   return (
     <>
+      <DashboardPanel
+        title="Procurement flow"
+        description={flow.available ? flow.basis : undefined}
+        className="purchase-span-all"
+        action={
+          <button type="button" className="purchase-button purchase-button--quiet" onClick={() => open('/purchase-orders')}>
+            View all <ChevronRight size={13} aria-hidden />
+          </button>
+        }
+      >
+        {!flow.available ? (
+          <PanelUnavailable reason={flow.reason} kind={flow.kind} />
+        ) : (
+          <div className="purchase-pipeline">
+            {flow.stages.map((stage) => (
+              <FlowStageButton key={stage.id} stage={stage} onOpen={open} />
+            ))}
+          </div>
+        )}
+      </DashboardPanel>
+
+      <div className="purchase-dashboard-grid" style={{ marginTop: '0.75rem' }}>
+        <DashboardPanel
+          title="Spend trend"
+          description={spendTrend.available ? `Ordered value by ${spendTrend.granularity}` : undefined}
+          className="purchase-col-4"
+        >
+          {!spendTrend.available ? (
+            <PanelUnavailable reason={spendTrend.reason} kind={spendTrend.kind} />
+          ) : spendTrend.points.length === 0 ? (
+            <EmptyState title="No orders in this period." />
+          ) : (
+            <TrendChart
+              title="Ordered value"
+              unitLabel={`Amount in ${spendTrend.currency}`}
+              points={spendTrend.points.map((point) => ({ label: point.label, value: point.amount, formatted: point.formatted }))}
+            />
+          )}
+        </DashboardPanel>
+
+        <DashboardPanel
+          title="Supplier on-time delivery"
+          description={onTime.available ? 'Completed deliveries, against the promised date' : undefined}
+          className="purchase-col-4"
+        >
+          {!onTime.available ? (
+            <PanelUnavailable reason={onTime.reason} kind={onTime.kind} />
+          ) : onTime.rows.length === 0 ? (
+            <EmptyState title="Nothing has been delivered in this period." />
+          ) : (
+            <BarChart
+              title="On-time delivery by supplier"
+              unitLabel="On time"
+              scaleMax={100}
+              data={onTime.rows.map((row) => ({
+                id: String(row.supplier_account_id),
+                label: row.supplier_name,
+                value: row.on_time_pc,
+                formatted: row.on_time_label,
+                tone: row.tone === 'success' ? 'brand' : row.tone,
+                onOpen: () => open(row.route, row.filters),
+              }))}
+            />
+          )}
+        </DashboardPanel>
+
+        <DashboardPanel
+          title="Material centre spend"
+          description={centres.available ? 'Ordered value by destination' : undefined}
+          className="purchase-col-4"
+        >
+          {!centres.available ? (
+            <PanelUnavailable reason={centres.reason} kind={centres.kind} />
+          ) : centres.centres.length === 0 ? (
+            <EmptyState title="No ordered value in this period." />
+          ) : (
+            <DonutChart
+              title="Ordered value by material centre"
+              summary={`Ordered value by material centre. Total ${centres.total_formatted}.`}
+              centreLabel="Total ordered"
+              centreValue={centres.total_compact}
+              segments={centres.centres.map((row) => ({
+                id: String(row.centre_id ?? 'none'),
+                label: row.label,
+                share: row.share_pc,
+                formatted: row.formatted,
+              }))}
+            />
+          )}
+        </DashboardPanel>
+      </div>
+
+      <DashboardPanel
+        title="Procurement insights"
+        description={insights.available ? insights.method_label : undefined}
+        className="purchase-span-all"
+      >
+        {!insights.available ? (
+          <PanelUnavailable reason={insights.reason} kind={insights.kind} />
+        ) : insights.items.length === 0 ? (
+          <EmptyState title="No urgent procurement insights right now." />
+        ) : (
+          <ul className="purchase-intel-list">
+            {insights.items.map((item) => {
+              const face = INSIGHT_ICON[item.category] ?? { icon: AlertTriangle, tone: 'info' as const }
+              const Icon = face.icon
+              return (
+                <li key={item.id}>
+                  <button type="button" onClick={() => open(item.route, item.filters)} title={item.explanation}>
+                    <span className={`purchase-intel-list__icon is-${face.tone}`} aria-hidden>
+                      <Icon size={15} />
+                    </span>
+                    <span className="purchase-intel-list__copy">
+                      <strong>{item.title}</strong>
+                      <span>{item.explanation}</span>
+                    </span>
+                    <ChevronRight size={15} aria-hidden className="purchase-intel-list__chevron" />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </DashboardPanel>
+
+      <DashboardPanel
+        title="Recent activity & exceptions"
+        description={activity.available ? activity.basis : undefined}
+        className="purchase-span-all"
+      >
+        {!activity.available ? (
+          <PanelUnavailable reason={activity.reason} kind={activity.kind} />
+        ) : (
+          <DataTable
+            caption={activity.basis}
+            rows={activity.rows}
+            rowKey={(row) => row.id}
+            empty={<EmptyState title="No procurement activity in this period." />}
+            columns={[
+              { key: 'date', header: 'Date', render: (row) => row.date_label },
+              { key: 'type', header: 'Type', render: (row) => row.type },
+              {
+                key: 'ref',
+                header: 'Ref no.',
+                render: (row) => (
+                  <button type="button" className="purchase-table__link" onClick={() => open(row.route)}>
+                    {row.reference}
+                  </button>
+                ),
+              },
+              { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? '—' },
+              { key: 'description', header: 'Description', render: (row) => row.description },
+              {
+                key: 'value',
+                header: 'Value',
+                numeric: true,
+                render: (row) => row.value_formatted ?? <span className="purchase-muted">Hidden</span>,
+              },
+              {
+                key: 'status',
+                header: 'Status',
+                render: (row) => <Badge tone={row.tone}>{row.status}</Badge>,
+              },
+              { key: 'actions', header: 'Actions', render: (row) => <ActivityRowMenu row={row} onOpen={open} /> },
+            ]}
+          />
+        )}
+      </DashboardPanel>
+
+      <h2 className="purchase-section-heading">Working lists</h2>
+
       <DashboardPanel
         title="Procurement workbench"
         description={workbench.available ? workbench.basis : undefined}
@@ -762,5 +991,118 @@ function QuoteComparison({ panel, filters }: { panel: QuotePanel; filters: Dashb
         nobody quoted. <button type="button" className="purchase-table__link" onClick={() => navigate(rfq.route)}>Open the RFQ</button> to award it.
       </p>
     </DashboardPanel>
+  )
+}
+
+// ---------------------------------------------------------------------------
+
+function FlowStageButton({
+  stage,
+  onOpen,
+}: {
+  stage: ProcurementFlowStage
+  onOpen: (route: string, filters: Record<string, string>) => void
+}) {
+  const Icon = STAGE_ICON[stage.id] ?? FileText
+  // The metric card's own is-good/is-warn/is-bad/is-info vocabulary, not the
+  // Badge component's success/warning/danger/info one — the two tinted icon
+  // treatments live on different classes with different suffixes.
+  const toneClass: 'good' | 'warn' | 'bad' | 'info' | '' =
+    stage.tone === 'success' ? 'good' : stage.tone === 'danger' ? 'bad' : stage.tone === 'warning' ? 'warn' : stage.tone === 'info' ? 'info' : ''
+
+  return (
+    <button
+      type="button"
+      className="purchase-pipeline__stage"
+      onClick={() => onOpen(stage.route, stage.filters)}
+      title={stage.detail}
+      aria-label={`${stage.label}: ${stage.count_label}${stage.value_compact === null ? '' : `, ${stage.value_compact} ${stage.value_label}`}. ${stage.status_label}.`}
+    >
+      <span
+        className={`purchase-metric__icon${toneClass === '' ? '' : ` is-${toneClass}`}`}
+        aria-hidden
+        style={{ width: 30, height: 30, marginBottom: '0.4rem' }}
+      >
+        <Icon size={15} />
+      </span>
+      <span className="purchase-pipeline__count">{stage.count_label}</span>
+      <span className="purchase-pipeline__label">{stage.label}</span>
+      <span className="purchase-muted" style={{ fontSize: 11, display: 'block', marginTop: 2 }}>
+        {stage.value_compact ?? '—'}
+        {stage.value_compact !== null && ` ${stage.value_label}`}
+      </span>
+      <Badge tone={stage.tone}>{stage.status_label}</Badge>
+    </button>
+  )
+}
+
+/**
+ * The row menu on the activity feed.
+ *
+ * Only screens this product actually has. A menu entry that opens nothing is
+ * worse than no menu at all.
+ */
+function ActivityRowMenu({
+  row,
+  onOpen,
+}: {
+  row: ProcurementActivityRow
+  onOpen: (route: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const wrapper = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (event: MouseEvent) => {
+      if (!wrapper.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (row.actions.length <= 1) {
+    return (
+      <button type="button" className="purchase-button purchase-button--quiet" onClick={() => onOpen(row.route)}>
+        Open <ChevronRight size={13} aria-hidden />
+      </button>
+    )
+  }
+
+  return (
+    <div className="purchase-overflow" ref={wrapper}>
+      <button
+        type="button"
+        className="purchase-button purchase-button--secondary purchase-button--icon"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Actions for ${row.reference}`}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <MoreHorizontal size={16} aria-hidden />
+      </button>
+      <div className="purchase-overflow__menu" role="menu" hidden={!open}>
+        {row.actions.map((action) => (
+          <button
+            key={action.route + action.label}
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false)
+              onOpen(action.route)
+            }}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
+    </div>
   )
 }

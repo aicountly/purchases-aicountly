@@ -83,6 +83,73 @@ missing and the observation period. Components below the minimum are excluded
 and the remaining weights re-normalised, so a supplier is never penalised for
 data that does not exist.
 
+## The procurement workspace
+
+`/dashboard/procurement` is a workspace rather than a report: six KPIs, the flow
+they belong to, three analytics cards, an action list and a feed — then the
+working lists (workbench, reorder review, incoming deliveries, approval inbox,
+quotation comparison) that a buyer actually spends the day in.
+
+### The flow never adds up
+
+Six stages, requisition → RFQ → quote comparison → purchase order → delivery →
+receipt, each with a count, a value and where to click. The panel shows **no
+total**, and each stage labels the kind of money it is holding, because the four
+kinds are not the same thing:
+
+| Stage | Value shown | What it is |
+|---|---|---|
+| Requisition | `estimated` | the requester's own estimate, used for approval routing |
+| RFQ | `estimated` | that estimate against the quantity asked for — nobody has quoted |
+| Quote comparison | `best offers` | the lowest live offer per line, summed |
+| Purchase order | `ordered` | a price somebody agreed to |
+| Delivery | `still to arrive` | remaining quantity × the rate agreed on the line |
+| Receipt / GRN | `awaiting Inventory` | the receipt's own lines at their order-line rate |
+
+An RFQ raised without a requisition behind it has no estimate at all. That stage
+reads `—`, not `₹0`.
+
+### Why five of the six cards carry no percentage
+
+Five of them are **positions** — what is open as at now — and one, "Purchase
+orders released", is a period total. Only the period total has a comparison,
+because only the period total has one: nothing in this schema records how long a
+queue was a month ago, and measuring the same queue over an older window always
+flatters it, since those documents have had longer to clear. A card with no
+comparison shows its **ageing footnote** instead ("3 waiting more than 3 days"),
+which is the thing that can be acted on, and the reason there is no delta is in
+the card's basis and its tooltip.
+
+The two bars beside a card are that comparison drawn. They appear only where the
+server sent a previous figure. A sparkline over invented points is a chart of
+nothing, and a reader who finds out is right to stop trusting the rest of the
+screen.
+
+### On-time delivery counts deliveries, not orders
+
+`supplier_performance` measures accepted goods receipts dated in the period
+against the promised date on the order. An order that is not yet due has not
+been late and is not counted; an order with no promised date cannot be judged
+either way and is excluded. Counting open orders as failures is the commonest
+way a scorecard defames a supplier who has done nothing wrong. The sample
+travels with every rate, in the bar's tooltip and in the figures table.
+
+### The insights panel is rules, and says so
+
+`InsightRules::procurement` measures five things — late deliveries by supplier,
+receipts Inventory refused, approvals older than three days, a rate more than
+10% above the 90-day average for the **same item and the same unit**, and
+suppliers invited to quote who have not answered in five days — plus the
+clearest saving from the same `opportunities()` rules the AI Insights screen
+uses, so the two screens cannot disagree. Every finding clears a stated
+threshold; "approval bottleneck" over a two-hour-old queue is an insight nobody
+can act on and everybody learns to ignore.
+
+`AiClient::status()` travels in the envelope so the panel can say whether a
+model is configured. It changes nothing on this panel: no finding here is
+written by a model, none is phrased as a prediction, and an empty list says so
+rather than being filled.
+
 ## Currency
 
 `scope.reporting_currency` is `null` when documents in the period use more than
@@ -425,9 +492,9 @@ same way.
 ## Running the checks
 
 ```bash
-server-php/tests/run.sh                       # 73 integration tests
+server-php/tests/run.sh                       # 122 integration tests
 PURCHASE_APP_URL=http://127.0.0.1:5173 \
-  npm --prefix web run test:ui                # 13 browser checks
+  npm --prefix web run test:ui                # 31 browser checks
 ```
 
 See `docs/DEVELOPMENT.md` for the local stack the browser checks need.

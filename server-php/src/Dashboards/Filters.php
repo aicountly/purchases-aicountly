@@ -105,6 +105,42 @@ final class Filters
         return [$sql, $params];
     }
 
+    /**
+     * The same narrowing for RFQs.
+     *
+     * A supplier narrows an RFQ through the invitation rather than a column on
+     * it: an RFQ is a question put to several suppliers, so "this supplier's
+     * RFQs" means the ones they were asked, not ones they own.
+     *
+     * @return array{0: string, 1: array<string, mixed>}
+     */
+    public function rfqClause(string $alias = 'r'): array
+    {
+        $prefix = $alias === '' ? '' : $alias . '.';
+        $sql = '';
+        $params = [];
+
+        if ($this->supplierAccountId !== null) {
+            $sql .= ' AND EXISTS (SELECT 1 FROM purchase_rfq_invitations i
+                                   WHERE i.rfq_id = ' . $prefix . 'rfq_id AND i.supplier_account_id = :f_supplier)';
+            $params['f_supplier'] = $this->supplierAccountId;
+        }
+        if ($this->buyerUuid !== null) {
+            $sql .= ' AND ' . $prefix . 'created_by = :f_buyer';
+            $params['f_buyer'] = $this->buyerUuid;
+        }
+        if ($this->warehouseId !== null) {
+            $sql .= ' AND ' . $prefix . 'delivery_warehouse_id = :f_warehouse';
+            $params['f_warehouse'] = $this->warehouseId;
+        }
+        if ($this->search !== '') {
+            $sql .= ' AND (' . $prefix . 'rfq_no ILIKE :f_search OR COALESCE(' . $prefix . "title, '') ILIKE :f_search)";
+            $params['f_search'] = '%' . $this->search . '%';
+        }
+
+        return [$sql, $params];
+    }
+
     /** @return array{0: string, 1: array<string, mixed>} for purchase_bill_requests */
     public function billClause(string $alias = 'b'): array
     {

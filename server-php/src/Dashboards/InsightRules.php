@@ -614,6 +614,260 @@ final class InsightRules
         return $out;
     }
 
+
+    /**
+     * The action list on the Procurement workspace.
+     *
+     * Five kinds of finding, each one a measurement rather than a guess: an
+     * order is late or it is not, an approval has been waiting three days or it
+     * has not, a rate is higher than the rate paid before or it is not. Nothing
+     * here is phrased as a prediction, because none of it is one.
+     *
+     * A finding is only raised when it clears a stated threshold. "Approval
+     * bottleneck" over a queue that is two hours old would be an insight nobody
+     * can act on and everybody learns to ignore.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function procurement(
+        Context $ctx,
+        Period $period,
+        string $currency,
+        bool $money,
+        ?int $supplierAccountId = null,
+    ): array {
+        $scope = ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId];
+        $supplierSql = $supplierAccountId === null ? '' : ' AND p.supplier_account_id = :supplier';
+        $supplierParam = $supplierAccountId === null ? [] : ['supplier' => $supplierAccountId];
+        $items = [];
+
+        // 1. The supplier holding up the most money, right now.
+        $late = Db::first(
+            "SELECT p.supplier_account_id,
+                    MAX(p.supplier_name_snapshot) AS supplier_name,
+                    COUNT(DISTINCT p.po_id) AS orders,
+                    MAX(CURRENT_DATE - p.promised_date) AS worst_days,
+                    COALESCE(SUM(GREATEST(l.ordered_qty - l.received_qty, 0) * l.agreed_rate), 0)::text AS exposure
+             FROM purchase_order_lines l
+             JOIN purchase_orders p ON p.po_id = l.po_id
+             WHERE p.cmp_id = :cmp AND p.fy_id = :fy
+               AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED')
+               AND l.ordered_qty > l.received_qty
+               AND p.promised_date < CURRENT_DATE" . $supplierSql . '
+             GROUP BY p.supplier_account_id
+             ORDER BY COUNT(DISTINCT p.po_id) DESC, MAX(CURRENT_DATE - p.promised_date) DESC
+             LIMIT 1',
+            $scope + $supplierParam,
+        );
+        if ($late !== null && (int) $late['orders'] > 0) {
+            $orders = (int) $late['orders'];
+            $worst = (int) $late['worst_days'];
+            $supplier = $late['supplier_name'] ?? ('Account ' . (int) $late['supplier_account_id']);
+            $items[] = self::item(
+                'delay-risk',
+                $worst > 7 ? 'danger' : 'warning',
+                $orders . ' order' . ($orders === 1 ? '' : 's') . ' from ' . $supplier . ' past the promised date',
+                'The worst is ' . Format::days((string) $worst) . ' late.'
+                    . ($money ? ' ' . Format::money(Decimal::of($late['exposure']), $currency) . ' of ordered value is still to arrive.' : ''),
+                $money ? Decimal::of($late['exposure']) : null,
+                $orders,
+                'Chase',
+                '/dashboard/procurement',
+                ['view' => 'delayed', 'supplier_id' => (string) (int) $late['supplier_account_id']],
+                900,
+                $currency,
+            ) + ['category' => 'delay_risk'];
+        }
+
+        // 2. Receipts Inventory refused. Nothing retries these behind anyone's
+        //    back, so they sit until a person opens them.
+        $refused = Db::first(
+            "SELECT COUNT(*) AS n, MIN(rr.created_at) AS oldest
+             FROM purchase_receipt_requests rr
+             JOIN purchase_orders p ON p.po_id = rr.po_id
+             WHERE rr.cmp_id = :cmp AND rr.fy_id = :fy AND rr.status = 'FAILED'" . $supplierSql,
+            $scope + $supplierParam,
+        );
+        if ($refused !== null && (int) $refused['n'] > 0) {
+            $n = (int) $refused['n'];
+            $items[] = self::item(
+                'receipt-refused',
+                'danger',
+                $n . ' goods receipt' . ($n === 1 ? '' : 's') . ' Inventory did not accept',
+                'A receipt this app sent to Inventory was refused. The stock has not been recorded and the order still shows the quantity as outstanding until somebody re-sends it.',
+                null,
+                $n,
+                'Resend',
+                '/dashboard/procurement',
+                ['view' => 'receipt_pending'],
+                880,
+                $currency,
+            ) + ['category' => 'integration'];
+        }
+
+        // 3. Approvals that have stopped moving. Three days is the threshold, and
+        //    the finding says so rather than calling any queue a bottleneck.
+        $stuck = Db::first(
+            "SELECT COUNT(*) AS n,
+                    MAX(EXTRACT(DAY FROM NOW() - a.created_at))::int AS worst_days,
+                    COALESCE(SUM(a.actual_value), 0)::text AS value
+             FROM purchase_approval_requests a
+             WHERE a.cmp_id = :cmp AND a.fy_id = :fy AND a.status = 'PENDING'
+               AND a.created_at < NOW() - INTERVAL '3 days'",
+            $scope,
+        );
+        if ($stuck !== null && (int) $stuck['n'] > 0) {
+            $n = (int) $stuck['n'];
+            $items[] = self::item(
+                'approval-ageing',
+                (int) $stuck['worst_days'] > 7 ? 'danger' : 'warning',
+                $n . ' approval' . ($n === 1 ? '' : 's') . ' waiting more than 3 days',
+                'The oldest has been waiting ' . Format::days((string) (int) $stuck['worst_days'])
+                    . '. Who may decide is set by the approval rules, not by this list.'
+                    . ($money && !Decimal::isZero(Decimal::of($stuck['value']))
+                        ? ' ' . Format::money(Decimal::of($stuck['value']), $currency) . ' is held up behind them.'
+                        : ''),
+                $money ? Decimal::parse($stuck['value']) : null,
+                $n,
+                'Resolve',
+                '/approvals',
+                [],
+                800,
+                $currency,
+            ) + ['category' => 'approval_bottleneck'];
+        }
+
+        // 4. A rate that moved against us on the SAME item and the SAME unit.
+        //    Comparing an item to itself in another unit, or across currencies,
+        //    produces a percentage that means nothing, so neither is compared.
+        $variance = Db::first(
+            "WITH history AS (
+                SELECT l.item_id, l.unit_id, l.agreed_rate, p.po_date, p.po_no, p.po_id, p.currency_code,
+                       p.supplier_name_snapshot, l.description,
+                       ROW_NUMBER() OVER (PARTITION BY l.item_id, l.unit_id ORDER BY p.po_date DESC, l.line_id DESC) AS recency,
+                       AVG(l.agreed_rate) OVER (PARTITION BY l.item_id, l.unit_id) AS mean_rate,
+                       COUNT(*)           OVER (PARTITION BY l.item_id, l.unit_id) AS observations
+                FROM purchase_order_lines l
+                JOIN purchase_orders p ON p.po_id = l.po_id
+                WHERE p.cmp_id = :cmp AND p.fy_id = :fy
+                  AND p.status <> 'CANCELLED'
+                  AND l.item_id IS NOT NULL AND l.unit_id IS NOT NULL
+                  AND l.agreed_rate > 0
+                  AND p.po_date >= CURRENT_DATE - 90" . $supplierSql . "
+            )
+            SELECT item_id, po_no, po_id, supplier_name_snapshot, description, currency_code,
+                   agreed_rate::text AS latest_rate,
+                   mean_rate::text   AS mean_rate,
+                   observations,
+                   ROUND(((agreed_rate - mean_rate) / NULLIF(mean_rate, 0)) * 100, 1)::text AS change_pc
+            FROM history
+            WHERE recency = 1 AND observations >= 3
+              AND mean_rate > 0
+              AND ((agreed_rate - mean_rate) / mean_rate) >= 0.10
+            ORDER BY ((agreed_rate - mean_rate) / mean_rate) DESC
+            LIMIT 1",
+            $scope + $supplierParam,
+        );
+        if ($variance !== null && $money) {
+            $changePc = Decimal::of($variance['change_pc']);
+            $label = $variance['description'] !== null && $variance['description'] !== ''
+                ? (string) $variance['description']
+                : 'Item ' . (int) $variance['item_id'];
+            $items[] = self::item(
+                'price-variance',
+                'warning',
+                Format::percent($changePc, 1) . ' above the recent average on ' . $label,
+                'The latest rate on ' . $variance['po_no'] . ' is ' . Format::money(Decimal::of($variance['latest_rate']), (string) $variance['currency_code'])
+                    . ' against an average of ' . Format::money(Decimal::of($variance['mean_rate']), (string) $variance['currency_code'])
+                    . ' across ' . (int) $variance['observations'] . ' orders in the last 90 days, same item and same unit.',
+                null,
+                null,
+                'Review',
+                '/purchase-orders/' . (int) $variance['po_id'],
+                [],
+                700,
+                $currency,
+            ) + ['category' => 'price_variance'];
+        }
+
+        // 5. Suppliers who were asked and have not answered.
+        $silent = Db::first(
+            "SELECT COUNT(*) AS n, MAX(EXTRACT(DAY FROM NOW() - i.invited_at))::int AS worst_days
+             FROM purchase_rfq_invitations i
+             JOIN purchase_rfqs r ON r.rfq_id = i.rfq_id
+             WHERE i.cmp_id = :cmp AND r.fy_id = :fy
+               AND r.status IN ('ISSUED', 'RESPONSES_OPEN')
+               AND i.status IN ('INVITED', 'VIEWED')
+               AND i.invited_at < NOW() - INTERVAL '5 days'
+               AND NOT EXISTS (SELECT 1 FROM purchase_quotes q
+                                WHERE q.rfq_id = i.rfq_id AND q.supplier_account_id = i.supplier_account_id
+                                  AND q.status NOT IN ('WITHDRAWN', 'REJECTED'))"
+                . ($supplierAccountId === null ? '' : ' AND i.supplier_account_id = :supplier'),
+            $scope + $supplierParam,
+        );
+        if ($silent !== null && (int) $silent['n'] > 0) {
+            $n = (int) $silent['n'];
+            $items[] = self::item(
+                'rfq-no-response',
+                'info',
+                $n . ' supplier' . ($n === 1 ? '' : 's') . ' invited to quote and still silent',
+                'Invited more than 5 days ago with no quote against the RFQ. The oldest invitation has been open '
+                    . Format::days((string) (int) $silent['worst_days'])
+                    . '. Awarding on two quotes where five were invited is a decision worth making on purpose.',
+                null,
+                $n,
+                'Follow up',
+                '/rfqs',
+                [],
+                600,
+                $currency,
+            ) + ['category' => 'follow_up'];
+        }
+
+        // 6. The clearest saving on the table, borrowed from the same rules the
+        //    AI Insights screen uses so the two screens cannot disagree.
+        if ($money) {
+            $opportunities = self::opportunities($ctx, $period, $currency);
+            if ($opportunities !== []) {
+                $best = $opportunities[0];
+                $items[] = self::item(
+                    'savings-' . $best['id'],
+                    'info',
+                    (string) $best['title'],
+                    $best['detail'] . ' ' . $best['assumption'],
+                    Decimal::parse($best['estimate'] ?? null),
+                    null,
+                    'Explore',
+                    (string) $best['route'],
+                    (array) $best['filters'],
+                    500,
+                    $currency,
+                ) + ['category' => 'savings'];
+            }
+        }
+
+        // 7. Quiet is a finding too, and it is stated rather than left blank.
+        if ($items === []) {
+            $items[] = self::item(
+                'procurement-clear',
+                'success',
+                'Nothing is holding procurement up',
+                'No late deliveries, no refused receipts, no approval older than 3 days and no supplier silent on an RFQ, in this company, financial year and branch.',
+                null,
+                null,
+                'Open',
+                '/dashboard/procurement',
+                ['view' => 'needs_action'],
+                100,
+            ) + ['category' => 'clear'];
+        }
+
+        usort($items, static fn (array $a, array $b): int => $b['rank'] <=> $a['rank']);
+
+        return $items;
+    }
+
+
     // -----------------------------------------------------------------------
 
     /** @return array<string, mixed> */

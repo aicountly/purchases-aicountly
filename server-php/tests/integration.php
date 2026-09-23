@@ -1086,7 +1086,70 @@ check('the workbench separates delayed from merely open', function () use ($ctx,
     $open = dashboardFor('procurement', $ctx, $auth, ['view' => 'open_orders']);
     assertSame(2, $open['panels']['workbench']['total'], 'both orders are open');
 
-    assertSame('1', metric($delayed, 'overdue_orders')['raw_value'], 'the card agrees with the table');
+    // The in-transit card and the open-orders view are written from the same
+    // predicate, so they agree by construction rather than by luck.
+    assertSame('2', metric($open, 'in_transit_deliveries')['raw_value'], 'the card agrees with the table');
+
+    $delivery = null;
+    foreach ($delayed['panels']['flow']['stages'] as $stage) {
+        if ($stage['id'] === 'delivery') {
+            $delivery = $stage;
+        }
+    }
+    assertSame('1 delayed', $delivery['status_label'] ?? null, 'the flow stage names the late one');
+    assertSame('danger', $delivery['tone'] ?? null, 'and colours it as a problem');
+});
+
+check('the flow never adds two stages of money together', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput(['promised_date' => gmdate('Y-m-d', strtotime('+10 days'))]));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $flow = dashboardFor('procurement', $ctx, $auth)['panels']['flow'];
+    assertSame(6, count($flow['stages']), 'six stages, requisition to receipt');
+    assertTrue(!array_key_exists('total', $flow), 'no total across the stages');
+
+    // A requisition estimate and an agreed order price are not the same kind of
+    // money, and the stage says which one it is showing.
+    $labels = array_column($flow['stages'], 'value_label', 'id');
+    assertSame('estimated', $labels['requisition'], 'a requisition carries an estimate');
+    assertSame('ordered', $labels['purchase_order'], 'an order carries a price');
+    assertSame('still to arrive', $labels['delivery'], 'a delivery carries what is left');
+});
+
+check('on-time delivery counts deliveries that happened, never orders that have not', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+
+    // Overdue and never received. It must NOT appear as a failed delivery: a
+    // supplier who has not delivered yet has not delivered late.
+    $late = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $late['po_id']);
+    $orders->issue((int) $late['po_id']);
+
+    $performance = dashboardFor('procurement', $ctx, $auth, ['preset' => 'this_year'])['panels']['supplier_performance'];
+    assertTrue($performance['available'], 'the panel is available');
+    assertSame([], $performance['rows'], 'an undelivered order is not a late delivery');
+});
+
+check('the activity feed puts what costs most to ignore first', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+
+    $ok = $orders->create(poInput(['promised_date' => gmdate('Y-m-d', strtotime('+10 days'))]));
+    $orders->submit((int) $ok['po_id']);
+    $orders->issue((int) $ok['po_id']);
+
+    $late = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $late['po_id']);
+    $orders->issue((int) $late['po_id']);
+
+    $rows = dashboardFor('procurement', $ctx, $auth, ['preset' => 'this_year'])['panels']['activity']['rows'];
+    assertTrue($rows !== [], 'the feed has rows');
+    assertSame('Delayed', $rows[0]['status'], 'the late order is first, not the newest one');
+    assertTrue($rows[0]['actions'] !== [], 'and every row carries somewhere to go');
 });
 
 check('quantities keep their unit and are never added across units', function () use ($ctx, $auth) {

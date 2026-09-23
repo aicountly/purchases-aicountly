@@ -5,53 +5,78 @@
  * components. They are not all rendered with four hidden by CSS: four hidden
  * dashboards are four sets of requests nobody asked for, and a switcher that
  * does not change the URL is a switcher the Back button cannot undo.
+ *
+ * This file owns the chrome the five views share — the heading, the command
+ * bar, the actions — and the shell owns how it is laid out. The split matters:
+ * the filters have to know what the API reads, and the shell must not.
  */
 
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Navigate, useNavigate, useParams } from 'react-router-dom'
-import { Check, Download, FileText, Link2, MoreHorizontal, Search, X } from 'lucide-react'
+import {
+  ArrowUpRight,
+  Download,
+  FileSpreadsheet,
+  FileText,
+  Link2,
+  MoreHorizontal,
+  RefreshCw,
+  Search,
+  X,
+} from 'lucide-react'
 import { usePurchases } from '../context/PurchasesContext'
 import { api } from '../services/api'
-import { PurchaseDashboardShell, type ShellFeature } from './shell'
-import { DATE_PRESETS, isPurchaseView, useDashboardFilters, type DashboardFilters, type PurchaseViewId } from './filters'
+import { LiveChip, PurchaseDashboardShell } from './shell'
+import { DATE_PRESETS, isPurchaseView, useDashboardFilters, type PurchaseViewId } from './filters'
+import { FilterCombo, useCentreOptions, useSupplierOptions } from './FilterCombo'
 import { useDashboard } from './useDashboard'
 import { OverviewDashboard } from './views/Overview'
 import { ProcurementDashboard } from './views/Procurement'
 import { SuppliersDashboard } from './views/Suppliers'
 import { AiInsightsDashboard } from './views/AiInsights'
 import { PayablesPage } from './payables/PayablesPage'
+import { supplierSparklines } from './suppliers/sparklines'
 import './purchase.css'
 
-const TITLES: Record<PurchaseViewId, { title: string; subtitle: string; breadcrumb: string }> = {
+const TITLES: Record<PurchaseViewId, { title: string; subtitle: string }> = {
   overview: {
     title: 'Purchase overview',
     subtitle: 'Your purchasing priorities, in one place.',
-    breadcrumb: 'Purchase overview',
   },
   procurement: {
     title: 'Procurement workspace',
     subtitle: 'Move every request from requirement to receipt.',
-    breadcrumb: 'Procurement workspace',
   },
   suppliers: {
     title: 'Supplier performance',
-    subtitle: 'Understand reliability, cost and concentration.',
-    breadcrumb: 'Supplier performance',
+    subtitle: 'Understand reliability, cost, concentration and supplier risk.',
   },
   'bills-payables': {
     title: 'Bills & payables',
     subtitle: 'Match invoices and plan supplier payments.',
-    breadcrumb: 'Bills & payables',
   },
   'ai-insights': {
     title: 'Purchase intelligence',
     subtitle: 'Understand spend, pricing, anomalies, savings and purchase risk.',
-    breadcrumb: 'Purchase intelligence',
   },
 }
 
-/** Filters that mean the same thing on every dashboard follow the reader across. */
-const KEPT_ACROSS_VIEWS = ['preset', 'from', 'to', 'compare', 'supplier_id', 'buyer', 'warehouse_id']
+/** What the crumb above the heading says you are looking at. */
+const CRUMB: Record<PurchaseViewId, string> = {
+  overview: 'Overview',
+  procurement: 'Procurement',
+  suppliers: 'Supplier performance',
+  'bills-payables': 'Bills & payables',
+  'ai-insights': 'AI insights',
+}
+
+const COMPARISONS = [
+  { id: 'previous_period', label: 'Previous period' },
+  { id: 'none', label: 'No comparison' },
+]
+
+/** Filters that describe the question rather than the screen follow the tabs. */
+const PORTABLE = ['preset', 'from', 'to', 'compare', 'supplier_id', 'supplier_name', 'buyer', 'warehouse_id', 'warehouse_name']
 
 export default function PurchaseDashboards() {
   const { view } = useParams<{ view: string }>()
@@ -62,24 +87,80 @@ export default function PurchaseDashboards() {
   const resolved: PurchaseViewId = isPurchaseView(view) ? view : 'overview'
   const { data, loading, refreshing, error, retryable, fetchedAt, refresh } = useDashboard(resolved, filters.apiParams)
 
+  const [busy, setBusy] = useState<'csv' | 'pdf' | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [menu, setMenu] = useState<'export' | 'more' | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Search is typed here and committed to the URL on a timer, so the query
+  // string still holds the state and the API is not asked on every keystroke.
+  const committed = filters.get('q') ?? ''
+  const [term, setTerm] = useState(committed)
+  const termRef = useRef(committed)
+
+  const commit = useRef(filters.set)
+  commit.current = filters.set
+
+  const supplierOptions = useSupplierOptions()
+  const centreOptions = useCentreOptions()
+
   // The document title follows the dashboard, so a browser history entry reads
   // as the screen it was.
   useEffect(() => {
     document.title = `${TITLES[resolved].title} · Aicountly Purchases`
   }, [resolved])
 
-  // Hooks first, unconditionally: a render that returns early is still a
+  // Hooks first, unconditionally, and every one of the following stays above
+  // both early returns below: a render that takes one of them is still a
   // render, and one fewer hook call than the render before it is exactly what
-  // React's rule against a hook behind a branch exists to prevent.
-  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
-  const [exportError, setExportError] = useState<string | null>(null)
+  // React's rule against a hook behind a branch exists to prevent. (busy,
+  // actionError and menu are declared with the rest of the component's state,
+  // above the document-title effect.)
+
+  // A filter changed somewhere else — a cleared set, the Back button — so the
+  // box follows the URL rather than the two quietly disagreeing.
+  useEffect(() => {
+    if (committed !== termRef.current) {
+      termRef.current = committed
+      setTerm(committed)
+    }
+  }, [committed])
+
+  useEffect(() => {
+    if (term === termRef.current) return
+
+    const timer = setTimeout(() => {
+      termRef.current = term
+      commit.current({ q: term })
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [term])
+
+  useEffect(() => {
+    if (menu === null) return
+
+    function onClickAway(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenu(null)
+    }
+    function onEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setMenu(null)
+    }
+
+    document.addEventListener('mousedown', onClickAway)
+    document.addEventListener('keydown', onEscape)
+    return () => {
+      document.removeEventListener('mousedown', onClickAway)
+      document.removeEventListener('keydown', onEscape)
+    }
+  }, [menu])
 
   // Filters that only make sense on one dashboard do not follow it to the next
   // one; the period and the supplier do. Shared with the header's own switcher
   // below, so the two can never carry a different set across.
   const changeView = (next: PurchaseViewId) => {
     const kept = new URLSearchParams()
-    for (const name of KEPT_ACROSS_VIEWS) {
+    for (const name of PORTABLE) {
       const value = filters.get(name)
       if (value !== null) kept.set(name, value)
     }
@@ -120,70 +201,143 @@ export default function PurchaseDashboards() {
    * Fetched with the session key rather than linked to: this API authenticates
    * with a bearer token and a plain <a href> cannot carry one, so the link this
    * replaced was answering 401 and the click did nothing visible.
+   *
+   * It carries `filters.apiParams`, which is exactly what drew the screen, so
+   * an export and the dashboard it came from cannot disagree.
    */
   const take = async (format: 'csv' | 'pdf') => {
-    setExporting(format)
-    setExportError(null)
+    setBusy(format)
+    setActionError(null)
+    setMenu(null)
     try {
       await api.download(
         `v1/dashboards/${resolved}/export`,
-        `purchases-${resolved}-${filters.get('preset') ?? 'period'}.${format}`,
+        `purchases-${resolved}-${preset}.${format}`,
         { ...filters.apiParams, format },
       )
-    } catch (error) {
-      setExportError(error instanceof Error ? error.message : 'That export could not be produced.')
+    } catch (failure) {
+      setActionError(failure instanceof Error ? failure.message : 'That export could not be produced.')
     } finally {
-      setExporting(null)
+      setBusy(null)
     }
   }
 
-  // The green card is only offered where its arrow has somewhere real to go.
-  // A decorative button that does nothing is worse than no button.
-  const feature: ShellFeature | undefined =
-    resolved === 'ai-insights'
-      ? {
-          title: 'Smarter purchase decisions',
-          description: 'Evidence-backed insights for better buying.',
-          actionLabel: 'Ask Aicountly AI about your purchases',
-          onAction: () => filters.set({ ask: '1' }),
-        }
-      : resolved === 'suppliers'
-        ? {
-            title: 'Better supplier relationships',
-            description: 'A stronger, more resilient supply chain.',
-            actionLabel: 'Open the supplier list',
-            onAction: () => navigate('/suppliers'),
-          }
-        : undefined
+  const copyLink = async () => {
+    setMenu(null)
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setActionError(null)
+    } catch {
+      setActionError('This browser would not let the page copy to the clipboard.')
+    }
+  }
+
+  const sparklines = resolved === 'suppliers' && data !== null ? supplierSparklines(data) : undefined
 
   return (
     <PurchaseDashboardShell
       activeView={resolved}
+      breadcrumb={['Aicountly Purchases', CRUMB[resolved]]}
       title={TITLES[resolved].title}
       subtitle={TITLES[resolved].subtitle}
-      breadcrumb={TITLES[resolved].breadcrumb}
-      monitorNoun={resolved === 'ai-insights' ? 'AI monitoring' : 'Data'}
-      feature={feature}
       onViewChange={changeView}
+      periodLabel={
+        data && (
+          <>
+            {data.period.label} · {data.scope.branch_label}
+            {data.scope.reporting_currency === null && ' · mixed currencies'}
+            {data.period.comparison_mode === 'previous_period' && ` · ${data.period.comparison_label}`}
+          </>
+        )
+      }
+      hero={
+        resolved === 'suppliers' ? (
+          <aside className="purchase-hero" aria-hidden>
+            <span className="purchase-hero__mark">
+              <ArrowUpRight size={15} aria-hidden />
+            </span>
+            <strong>Better supplier relationships</strong>
+            <p>A stronger, more resilient supply chain.</p>
+          </aside>
+        ) : undefined
+      }
       actions={
         <>
-          {canExport && data && (
+          <button
+            type="button"
+            className="purchase-button purchase-button--secondary"
+            onClick={refresh}
+            disabled={refreshing}
+          >
+            <RefreshCw size={15} aria-hidden className={refreshing ? 'purchase-spin' : undefined} />
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+
+          <div className="purchase-menu-group" ref={menuRef}>
+          <div className="purchase-menu">
+            {canExport && (
+              <button
+                type="button"
+                className="purchase-button purchase-button--primary"
+                onClick={() => setMenu((open) => (open === 'export' ? null : 'export'))}
+                aria-expanded={menu === 'export'}
+                aria-haspopup="menu"
+                disabled={data === null || busy !== null}
+              >
+                <Download size={15} aria-hidden />
+                {busy === null ? 'Export' : 'Exporting…'}
+              </button>
+            )}
+
+            {menu === 'export' && (
+              <div className="purchase-menu__list" role="menu">
+                <button type="button" role="menuitem" className="purchase-menu__item" onClick={() => void take('csv')}>
+                  <FileSpreadsheet size={15} aria-hidden /> Spreadsheet (CSV)
+                </button>
+                <button type="button" role="menuitem" className="purchase-menu__item" onClick={() => void take('pdf')}>
+                  <FileText size={15} aria-hidden /> Print-ready PDF
+                </button>
+                <div className="purchase-menu__rule" />
+                <p className="purchase-menu__item" style={{ cursor: 'default', fontSize: '0.74rem', color: 'var(--purchase-muted)' }}>
+                  Exports carry the filters on screen.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="purchase-menu">
             <button
               type="button"
-              className="purchase-button purchase-button--primary"
-              onClick={() => void take('csv')}
-              disabled={exporting !== null}
+              className="purchase-button purchase-button--secondary purchase-button--icon"
+              aria-label="More actions"
+              aria-haspopup="menu"
+              aria-expanded={menu === 'more'}
+              onClick={() => setMenu((open) => (open === 'more' ? null : 'more'))}
             >
-              <Download size={15} aria-hidden /> {exporting === 'csv' ? 'Exporting…' : 'Export'}
+              <MoreHorizontal size={16} aria-hidden />
             </button>
-          )}
-          <OverflowMenu
-            view={resolved}
-            filters={filters}
-            canExport={canExport && data !== null}
-            exporting={exporting}
-            onPdf={() => void take('pdf')}
-          />
+
+            {menu === 'more' && (
+              <div className="purchase-menu__list" role="menu">
+                <button type="button" role="menuitem" className="purchase-menu__item" onClick={() => void copyLink()}>
+                  <Link2 size={15} aria-hidden /> Copy a link to this report
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="purchase-menu__item"
+                  onClick={() => {
+                    setMenu(null)
+                    filters.reset()
+                  }}
+                  disabled={!filters.isNarrowed}
+                >
+                  <X size={15} aria-hidden /> Clear every filter
+                </button>
+              </div>
+            )}
+          </div>
+          </div>
         </>
       }
       filters={
@@ -199,7 +353,7 @@ export default function PurchaseDashboards() {
             </select>
           </label>
 
-          {preset === 'custom' && (
+          {preset === 'custom' ? (
             <>
               <label className="purchase-field">
                 <span>From</span>
@@ -211,95 +365,107 @@ export default function PurchaseDashboards() {
               </label>
               <label className="purchase-field">
                 <span>To</span>
-                <input type="date" value={filters.get('to') ?? ''} onChange={(event) => filters.set({ to: event.target.value })} />
+                <input
+                  type="date"
+                  value={filters.get('to') ?? ''}
+                  onChange={(event) => filters.set({ to: event.target.value })}
+                />
               </label>
             </>
+          ) : (
+            <label className="purchase-field">
+              <span>Compare with</span>
+              <select
+                value={filters.get('compare') ?? 'previous_period'}
+                onChange={(event) => filters.set({ compare: event.target.value })}
+              >
+                {COMPARISONS.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
 
-          <label className="purchase-field">
-            <span>Compare with</span>
-            <select
-              value={filters.get('compare') ?? 'previous_period'}
-              onChange={(event) => filters.set({ compare: event.target.value })}
-            >
-              <option value="previous_period">Previous period</option>
-              <option value="none">No comparison</option>
-            </select>
-          </label>
+          <FilterCombo
+            label="Supplier account"
+            allLabel="All suppliers"
+            value={filters.get('supplier_id')}
+            valueLabel={filters.get('supplier_name')}
+            load={supplierOptions}
+            minimumTerm={2}
+            onChange={(option) =>
+              filters.set({
+                supplier_id: option?.id ?? null,
+                supplier_name: option?.label ?? null,
+              })
+            }
+          />
 
-          <label className="purchase-field">
-            <span>Supplier account</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              defaultValue={filters.get('supplier_id') ?? ''}
-              placeholder="All suppliers"
-              onBlur={(event) => filters.set({ supplier_id: event.target.value })}
-            />
-          </label>
+          <FilterCombo
+            label="Material centre"
+            allLabel="All centres"
+            value={filters.get('warehouse_id')}
+            valueLabel={filters.get('warehouse_name')}
+            load={centreOptions}
+            onChange={(option) =>
+              filters.set({
+                warehouse_id: option?.id ?? null,
+                warehouse_name: option?.label ?? null,
+              })
+            }
+          />
 
-          <label className="purchase-field">
-            <span>Material centre</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              defaultValue={filters.get('warehouse_id') ?? ''}
-              placeholder="All centres"
-              onBlur={(event) => filters.set({ warehouse_id: event.target.value })}
-            />
-          </label>
-
-          <label className="purchase-field purchase-field--search">
+          <label className="purchase-field purchase-search">
             <span>Search</span>
-            <span className="purchase-searchbox">
-              <Search size={15} aria-hidden />
-              <input
-                type="search"
-                defaultValue={filters.get('q') ?? ''}
-                placeholder="Order, supplier or invoice…"
-                onBlur={(event) => filters.set({ q: event.target.value })}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') filters.set({ q: (event.target as HTMLInputElement).value })
-                }}
-              />
-            </span>
+            <Search size={14} className="purchase-search__icon" aria-hidden />
+            <input
+              type="search"
+              value={term}
+              placeholder="Order, supplier or invoice…"
+              onChange={(event) => setTerm(event.target.value)}
+            />
+            {term !== '' && (
+              <button
+                type="button"
+                className="purchase-search__clear"
+                onClick={() => setTerm('')}
+                aria-label="Clear the search"
+              >
+                <X size={14} aria-hidden />
+              </button>
+            )}
           </label>
 
-          {filters.isNarrowed && (
-            <button type="button" className="purchase-button purchase-button--quiet purchase-field__clear" onClick={filters.reset}>
-              <X size={14} aria-hidden /> Clear filters
-            </button>
-          )}
+          <LiveChip sources={data?.sources ?? []} />
         </>
       }
       sources={data?.sources ?? []}
       metrics={data?.metrics ?? []}
+      sparklines={sparklines}
       loading={loading}
       refreshing={refreshing}
       fetchedAt={fetchedAt}
-      onRefresh={refresh}
     >
-      {exportError !== null && (
-        <div className="purchase-notice purchase-notice--danger" style={{ marginBottom: '1rem' }}>
-          {exportError}
+      {actionError !== null && (
+        <div className="purchase-notice purchase-notice--danger" style={{ marginBottom: 14 }}>
+          {actionError}
         </div>
-      )}
-
-      {data && (
-        <p className="purchase-scope-line">
-          {data.period.label} · {data.scope.branch_label}
-          {data.scope.reporting_currency === null && ' · mixed currencies'}
-          {data.period.comparison_mode === 'previous_period' && ` · ${data.period.comparison_label}`}
-        </p>
       )}
 
       {error && (
         <div className="purchase-notice purchase-notice--danger">
           <div>
-            <strong>Could not load this dashboard</strong>
+            <strong>Supplier performance could not be loaded</strong>
             <p>{error}</p>
             {retryable && (
-              <button type="button" className="purchase-button purchase-button--secondary" style={{ marginTop: 10 }} onClick={refresh}>
+              <button
+                type="button"
+                className="purchase-button purchase-button--secondary"
+                style={{ marginTop: 10 }}
+                onClick={refresh}
+              >
                 Try again
               </button>
             )}
@@ -307,11 +473,19 @@ export default function PurchaseDashboards() {
         </div>
       )}
 
+      {/* The skeleton keeps the shape of what is coming, so nothing jumps when
+          it arrives. The KPI row draws its own. */}
       {loading && !data && (
-        <div className="purchase-panel" style={{ padding: 20 }}>
-          <div className="purchase-skeleton purchase-skeleton--row" style={{ width: '40%' }} />
-          <div className="purchase-skeleton purchase-skeleton--row" />
-          <div className="purchase-skeleton purchase-skeleton--row" style={{ width: '80%' }} />
+        <div className="purchase-analytics">
+          <div className="purchase-panel purchase-skeleton" style={{ height: 420 }} />
+          <div className="purchase-stack">
+            <div className="purchase-panel purchase-skeleton" style={{ height: 300 }} />
+            <div className="purchase-panel purchase-skeleton" style={{ height: 300 }} />
+          </div>
+          <div className="purchase-stack purchase-stack--wide">
+            <div className="purchase-panel purchase-skeleton" style={{ height: 250 }} />
+            <div className="purchase-panel purchase-skeleton" style={{ height: 250 }} />
+          </div>
         </div>
       )}
 
@@ -322,101 +496,5 @@ export default function PurchaseDashboards() {
           before this shell renders at all. */}
       {data && resolved === 'ai-insights' && <AiInsightsDashboard data={data} filters={filters} onRefresh={refresh} />}
     </PurchaseDashboardShell>
-  )
-}
-
-/**
- * The overflow menu beside Export.
- *
- * Only the things that would otherwise crowd the header, and every one of them
- * does something: the PDF is the same export in another format, the link is
- * this screen's own URL with its filters, and clearing the filters is the
- * action the filter row offers when one is applied.
- */
-function OverflowMenu({
-  view,
-  filters,
-  canExport,
-  exporting,
-  onPdf,
-}: {
-  view: PurchaseViewId
-  filters: DashboardFilters
-  canExport: boolean
-  exporting: 'csv' | 'pdf' | null
-  onPdf: () => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const wrapper = useRef<HTMLDivElement>(null)
-  const menuId = useId()
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (event: MouseEvent) => {
-      if (!wrapper.current?.contains(event.target as Node)) setOpen(false)
-    }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  const copyLink = async () => {
-    const query = filters.params.toString()
-    const url = `${window.location.origin}/dashboard/${view}${query === '' ? '' : `?${query}`}`
-    try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Clipboard access can be refused; the URL bar already holds the link.
-      setCopied(false)
-    }
-  }
-
-  return (
-    <div className="purchase-overflow" ref={wrapper}>
-      <button
-        type="button"
-        className="purchase-button purchase-button--secondary purchase-button--icon"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={menuId}
-        aria-label="More actions"
-        onClick={() => setOpen((was) => !was)}
-      >
-        <MoreHorizontal size={16} aria-hidden />
-      </button>
-
-      <div className="purchase-overflow__menu" id={menuId} role="menu" hidden={!open}>
-        {canExport && (
-          <button type="button" role="menuitem" onClick={onPdf} disabled={exporting !== null}>
-            <FileText size={15} aria-hidden /> {exporting === 'pdf' ? 'Printing…' : 'Download as PDF'}
-          </button>
-        )}
-        <button type="button" role="menuitem" onClick={() => void copyLink()}>
-          {copied ? <Check size={15} aria-hidden /> : <Link2 size={15} aria-hidden />}
-          {copied ? 'Link copied' : 'Copy link to this view'}
-        </button>
-        {filters.isNarrowed && (
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              filters.reset()
-              setOpen(false)
-            }}
-          >
-            <X size={15} aria-hidden /> Clear filters
-          </button>
-        )}
-      </div>
-    </div>
   )
 }

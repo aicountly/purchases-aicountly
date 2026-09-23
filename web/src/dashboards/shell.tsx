@@ -7,13 +7,11 @@
  * reader would learn to treat both as zero.
  */
 
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
-  ArrowDownRight,
   ArrowRight,
-  ArrowUpRight,
   Banknote,
   BadgeIndianRupee,
   Boxes,
@@ -25,30 +23,34 @@ import {
   CreditCard,
   FileText,
   FileWarning,
+  Inbox,
   Info,
   LayoutGrid,
+  Mail,
+  Minus,
+  PackageCheck,
   PauseCircle,
   PiggyBank,
-  RefreshCw,
   ShoppingCart,
   Sparkles,
   Timer,
+  TrendingDown,
   TrendingUp,
   Truck,
   Users,
   type LucideIcon,
 } from 'lucide-react'
-import { MetricSpark } from './charts'
+import { MetricSparkline, type SparkTone } from './charts'
 import { PURCHASE_VIEWS, type PurchaseViewId } from './filters'
 import type { DashboardMetric, Drilldown, SourceStatus } from './types'
 
 export { PURCHASE_VIEWS }
 
 // ---------------------------------------------------------------------------
-// Switcher
+// Report category tabs
 // ---------------------------------------------------------------------------
 
-/** The face of each dashboard in the tab strip. */
+/** One face per dashboard, so the strip reads at a glance and not as five words. */
 const VIEW_ICON: Record<PurchaseViewId, LucideIcon> = {
   overview: LayoutGrid,
   procurement: ShoppingCart,
@@ -65,23 +67,52 @@ export function DashboardSwitcher({
   onChange: (view: PurchaseViewId) => void
 }) {
   return (
-    <nav className="purchase-switcher" aria-label="Purchase dashboards">
+    <nav className="purchase-tabs" aria-label="Purchase intelligence report categories">
       {PURCHASE_VIEWS.map((view) => {
         const Icon = VIEW_ICON[view.id]
+        const active = activeView === view.id
+
         return (
           <button
             key={view.id}
             type="button"
-            className={activeView === view.id ? 'purchase-switcher__button is-active' : 'purchase-switcher__button'}
-            aria-current={activeView === view.id ? 'page' : undefined}
+            className={active ? 'purchase-tab is-active' : 'purchase-tab'}
+            aria-current={active ? 'page' : undefined}
             onClick={() => onChange(view.id)}
           >
-            <Icon size={16} aria-hidden />
+            <Icon size={15} className="purchase-tab__icon" aria-hidden />
             {view.label}
           </button>
         )
       })}
     </nav>
+  )
+}
+
+/**
+ * Whether the insight engine is reading live data right now.
+ *
+ * It is wired to the source statuses rather than being a decoration that is
+ * always lit: a green dot that cannot go amber teaches people to ignore it, and
+ * then it cannot warn them about anything.
+ */
+export function LiveChip({ sources }: { sources: SourceStatus[] }) {
+  const degraded = sources.filter((source) => source.status !== 'ready')
+  const limited = degraded.length > 0
+
+  return (
+    <span
+      className={limited ? 'purchase-live purchase-live--stale' : 'purchase-live'}
+      title={
+        limited
+          ? `Running on what answered: ${degraded.map((source) => `${source.label} ${source.status_label.toLowerCase()}`).join(', ')}.`
+          : 'Insights on this screen are recomputed from live Purchase data every time it loads. Nothing here is a stored snapshot.'
+      }
+    >
+      <span className="purchase-live__dot" aria-hidden />
+      AI monitoring
+      <strong style={{ fontWeight: 700 }}>{limited ? 'limited' : 'live'}</strong>
+    </span>
   )
 }
 
@@ -131,31 +162,75 @@ const METRIC_FACE: Record<string, { icon: LucideIcon; tone: 'good' | 'warn' | 'b
   avg_po_value: { icon: ChartNoAxesCombined, tone: 'info' },
   price_anomalies: { icon: AlertTriangle, tone: 'bad' },
   purchase_risks_open: { icon: Boxes, tone: 'warn' },
+
+  // The Procurement workspace's own six.
+  open_requisitions: { icon: ClipboardList, tone: 'warn' },
+  rfqs_awaiting_quotes: { icon: Mail, tone: 'warn' },
+  purchase_orders_released: { icon: ShoppingCart, tone: 'good' },
+  in_transit_deliveries: { icon: Truck, tone: 'info' },
+  grn_pending: { icon: PackageCheck, tone: 'warn' },
+  spend_under_approval: { icon: BadgeIndianRupee, tone: 'warn' },
 }
 
-export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen: (target: Drilldown) => void }) {
+/**
+ * One KPI.
+ *
+ * WHAT MOVED OUT OF THE CARD. The methodology used to be printed inside every
+ * card — a basis sentence and a footnote, six times over — and six cards of
+ * prose is not a KPI row, it is a page of small print with numbers in it. The
+ * definition now lives behind the info button, where somebody who is asking
+ * "what does this count?" can find it and nobody else has to read past it.
+ *
+ * WHAT AN UNAVAILABLE CARD LOOKS LIKE. It keeps the card, the tile and the
+ * footprint, shows a dash where the figure would be, and says in small type
+ * that there is not enough data and why. The old screen wrote "Unavailable" in
+ * the size a number would have been, and six of those read as six failures when
+ * what they actually mean is that nothing has been bought yet.
+ */
+export function MetricCard({
+  metric,
+  spark,
+  onOpen,
+}: {
+  metric: DashboardMetric
+  /** The months behind the figure, when the server can produce them honestly. */
+  spark?: { period: string; value: string | null }[]
+  onOpen: (target: Drilldown) => void
+}) {
+  const [tipOpen, setTipOpen] = useState(false)
+  const tipId = useId()
+
   const available = metric.status === 'ready'
   const clickable = available && metric.drilldown !== undefined
   const face = METRIC_FACE[metric.id] ?? { icon: Sparkles, tone: '' as const }
   const Face = face.icon
-  const trend = metric.trend ?? []
 
-  // The line takes its colour from the comparison, not from the direction of
-  // the line: a falling count of anomalies is good news and a green line is
-  // the honest way to draw it.
-  const sparkTone =
-    metric.change_tone === 'is-positive' ? 'positive' : metric.change_tone === 'is-negative' ? 'negative' : 'neutral'
+  const comparison = metric.comparison?.available === true
+  const Trend = metric.change_tone === 'is-positive' ? TrendingUp : metric.change_tone === 'is-negative' ? TrendingDown : Minus
+
+  // The line under the value, in order of what a reader most needs: the reason
+  // a figure is missing, the backend's own "X in the previous period" footer
+  // (which folds in a footnote where there is no numeric comparison to state),
+  // then the reason there is no comparison at all.
+  const caption = !available
+    ? (metric.unavailable_reason ?? null)
+    : (metric.footer ?? metric.comparison?.reason ?? null)
+
+  // Explicit per-card data (Suppliers, matched against its own delivery-trend
+  // panel) wins when supplied; otherwise the backend's own `metric.trend` is
+  // used, which is how the AI Insights cards get a shape now that Metric::ready
+  // accepts a `trend` option directly.
+  const points = spark ?? (metric.trend && metric.trend.length > 0 ? metric.trend.map((point) => ({ period: point.period, value: point.value })) : undefined)
 
   const body = (
     <>
       <span className="purchase-metric__head">
         <span className={`purchase-metric__icon ${face.tone === '' ? '' : `is-${face.tone}`}`} aria-hidden>
-          <Face size={18} />
+          <Face size={17} />
         </span>
-        <span className="purchase-metric__label">{metric.label}</span>
-        {/* The basis is in the tooltip on the card and spelled out in the
-            figures table behind every panel — never only in a hover. */}
-        <Info size={13} aria-hidden className="purchase-metric__info" />
+        <span className="purchase-metric__label">
+          <span>{metric.label}</span>
+        </span>
       </span>
 
       <strong
@@ -163,40 +238,70 @@ export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen
         // The short form is what fits; the exact figure is what reconciles.
         title={available ? (metric.exact_value ?? undefined) : undefined}
       >
-        {available ? metric.formatted_value : 'Unavailable'}
+        {available ? metric.formatted_value : '—'}
       </strong>
 
-      <span className={`purchase-metric__change ${available ? metric.change_tone : 'is-neutral'}`}>
-        {/* The arrow says which way the figure moved; the colour says whether
-            that is good news. They are not the same thing and are drawn from
-            different fields — `change_pc` for the direction, `change_tone` for
-            the reading. */}
-        {available && metric.comparison.available && (
-          metric.comparison_text.startsWith('▼')
-            ? <ArrowDownRight size={14} aria-hidden />
-            : metric.comparison_text.startsWith('▲')
-              ? <ArrowUpRight size={14} aria-hidden />
-              : null
-        )}
-        {available ? metric.comparison_text.replace(/^[▲▼]\s*/, '') : (metric.unavailable_reason ?? 'Comparison unavailable')}
-      </span>
-
-      {/* The slot keeps its height whether or not there is a series to draw,
-          so six cards stay one row of six rather than a ragged edge. */}
-      <span className="purchase-metric__sparkslot">
-        {trend.length > 0 ? (
-          <MetricSpark points={trend} tone={sparkTone} label={metric.label} />
+      <span className={`purchase-metric__change ${available && comparison ? metric.change_tone : 'is-neutral'}`}>
+        {available ? (
+          comparison && (
+            <>
+              <Trend size={13} aria-hidden />
+              {metric.comparison_text.replace(/^[▲▼]\s*/, '')}
+            </>
+          )
         ) : (
-          <span className="purchase-metric__nospark">{available ? 'Position as at now' : ''}</span>
+          'Insufficient data'
         )}
       </span>
 
-      <span className="purchase-metric__footer">{metric.footer ?? metric.footnote ?? metric.basis}</span>
+      {caption !== null && caption !== '' && (
+        <span className="purchase-metric__compare" title={caption}>
+          {caption}
+        </span>
+      )}
+
+      <span className="purchase-metric__spark" aria-hidden={points === undefined}>
+        {points !== undefined && (
+          <MetricSparkline
+            points={points}
+            tone={sparkTone(metric, points)}
+            label={`${metric.label} by month`}
+          />
+        )}
+      </span>
     </>
   )
 
   return (
-    <article className="purchase-metric" title={metric.explanation}>
+    <article className="purchase-metric">
+      {/* The info control sits outside the drill-down button: a button inside a
+          button is not valid HTML and the browser will not give you both. */}
+      <button
+        type="button"
+        className="purchase-metric__info"
+        aria-expanded={tipOpen}
+        aria-controls={tipId}
+        aria-label={`What "${metric.label}" counts`}
+        onClick={(event) => {
+          event.stopPropagation()
+          setTipOpen((open) => !open)
+        }}
+        onMouseEnter={() => setTipOpen(true)}
+        onMouseLeave={() => setTipOpen(false)}
+        onFocus={() => setTipOpen(true)}
+        onBlur={() => setTipOpen(false)}
+      >
+        <Info size={14} aria-hidden />
+      </button>
+
+      {tipOpen && (
+        <span className="purchase-tip" id={tipId} role="tooltip">
+          <strong>{metric.label}</strong>
+          {metric.explanation}
+          {metric.basis !== metric.explanation && <p>{metric.basis}</p>}
+        </span>
+      )}
+
       {clickable ? (
         <button
           type="button"
@@ -213,6 +318,27 @@ export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen
   )
 }
 
+/**
+ * The colour of a sparkline, from the BUSINESS meaning of its movement.
+ *
+ * Never from the arithmetic alone. Weighted payment terms going from 34 days to
+ * 38 is a line sloping up and a fact sloping down, and a green line there would
+ * be telling the reader the opposite of what happened.
+ */
+function sparkTone(metric: DashboardMetric, spark: { value: string | null }[]): SparkTone {
+  if (metric.direction === 'neutral') return 'neutral'
+
+  const rated = spark.filter((point) => point.value !== null)
+  if (rated.length < 2) return 'neutral'
+
+  const first = Number.parseFloat(rated[0].value as string)
+  const last = Number.parseFloat(rated[rated.length - 1].value as string)
+  if (!Number.isFinite(first) || !Number.isFinite(last) || first === last) return 'neutral'
+
+  const up = last > first
+  return (metric.direction === 'higher_is_better') === up ? 'positive' : 'negative'
+}
+
 // ---------------------------------------------------------------------------
 // Panels
 // ---------------------------------------------------------------------------
@@ -225,7 +351,7 @@ export function DashboardPanel({
   flush = false,
   children,
 }: {
-  title: string
+  title: ReactNode
   description?: ReactNode
   action?: ReactNode
   className?: string
@@ -268,10 +394,25 @@ export function PanelUnavailable({ reason, kind }: { reason: string; kind?: 'per
   )
 }
 
-export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
+export function EmptyState({
+  title,
+  /** True when the panel is empty because nothing is WRONG, not because nothing is there. */
+  reassuring = false,
+  children,
+}: {
+  title: string
+  reassuring?: boolean
+  children?: ReactNode
+}) {
+  const Face = reassuring ? CheckCircle2 : Inbox
+
   return (
     <div className="purchase-empty">
-      <CheckCircle2 size={22} aria-hidden style={{ color: 'var(--purchase-action)' }} />
+      <Face
+        size={22}
+        aria-hidden
+        style={{ color: reassuring ? 'var(--purchase-good)' : 'var(--purchase-faint)' }}
+      />
       <strong>{title}</strong>
       {children && <span>{children}</span>}
     </div>
@@ -436,7 +577,6 @@ export function SourceList({ sources, fetchedAt }: { sources: SourceStatus[]; fe
           <span>
             {source.label}: {source.status_label}
           </span>
-          {source.message && <span className="purchase-muted">— {source.message}</span>}
         </li>
       ))}
       {fetchedAt && (
@@ -454,79 +594,15 @@ export function SourceList({ sources, fetchedAt }: { sources: SourceStatus[]; fe
   )
 }
 
-/**
- * The monitoring pill, and the source list behind it.
- *
- * The three states are read from what the products actually answered, never
- * hard-coded: everything live is green, anything degraded is amber and says
- * "Limited", and nothing live at all is red. Clicking opens the same list the
- * screen used to print in full, so nothing is hidden — only folded.
- */
-export function MonitorPill({
-  noun,
-  sources,
-  fetchedAt,
-}: {
-  noun: string
-  sources: SourceStatus[]
-  fetchedAt: Date | null
-}) {
-  const [open, setOpen] = useState(false)
-  const wrapper = useRef<HTMLDivElement>(null)
-  const panelId = useId()
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (event: MouseEvent) => {
-      if (!wrapper.current?.contains(event.target as Node)) setOpen(false)
-    }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  const live = sources.filter((source) => source.status === 'ready').length
-  const state = live === 0 ? 'unavailable' : live === sources.length ? 'ready' : 'limited'
-  const label =
-    state === 'ready' ? `${noun} live` : state === 'limited' ? `Limited ${noun.toLowerCase()}` : `${noun} unavailable`
-
-  return (
-    <div className="purchase-monitor" ref={wrapper}>
-      <button
-        type="button"
-        className={`purchase-monitor__pill is-${state}`}
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={() => setOpen((was) => !was)}
-      >
-        <span className="purchase-monitor__dot" aria-hidden />
-        {label}
-      </button>
-
-      <div className="purchase-monitor__popover" id={panelId} hidden={!open}>
-        <strong>Where these figures come from</strong>
-        <SourceList sources={sources} fetchedAt={fetchedAt} />
-        <p className="purchase-muted">
-          This screen monitors the selected scope for the rules it states. Nothing is fetched that your permissions do
-          not already allow.
-        </p>
-      </div>
-    </div>
-  )
-}
-
 export function MetricsRow({
   metrics,
+  sparklines,
   loading,
   onOpen,
 }: {
   metrics: DashboardMetric[]
+  /** Monthly series by metric id, for the cards the server can draw a shape for. */
+  sparklines?: Record<string, { period: string; value: string | null }[]>
   loading: boolean
   onOpen: (target: Drilldown) => void
 }) {
@@ -543,57 +619,62 @@ export function MetricsRow({
   return (
     <div className="purchase-metrics">
       {metrics.map((metric) => (
-        <MetricCard key={metric.id} metric={metric} onOpen={onOpen} />
+        <MetricCard key={metric.id} metric={metric} spark={sparklines?.[metric.id]} onOpen={onOpen} />
       ))}
     </div>
   )
 }
 
-/** The pale green card at the top right of every dashboard. */
-export interface ShellFeature {
-  title: string
-  description: string
-  actionLabel: string
-  onAction: () => void
-}
-
+/**
+ * The page frame every purchase dashboard sits in.
+ *
+ * The order on the page is deliberate and it is not the order it used to be.
+ * It was: tabs, heading, a period in the header, a comparison strip, a filter
+ * row behind a toggle, then the figures. Five places to look before the first
+ * number, and two of them hidden.
+ *
+ * It is now: heading, every filter in one bar, the report you are on, then the
+ * figures. A reader can see what is being measured, over what, and narrowed by
+ * what, without opening anything.
+ */
 export function PurchaseDashboardShell({
   activeView,
+  breadcrumb,
   title,
   subtitle,
-  breadcrumb,
   onViewChange,
   actions,
+  hero,
   filters,
-  monitorNoun = 'Data',
-  feature,
+  periodLabel,
   sources,
   metrics,
+  sparklines,
   loading,
   refreshing,
   fetchedAt,
-  onRefresh,
   children,
 }: {
   activeView: string
+  /** The trail above the heading. The last entry is where you are. */
+  breadcrumb: string[]
   title: string
   subtitle: string
-  /** The last crumb. The product name before it is the same on every screen. */
-  breadcrumb: string
   onViewChange: (view: PurchaseViewId) => void
-  /** Export and the overflow menu. Refresh is the shell's own. */
-  actions?: ReactNode
-  /** The labelled controls in the filter row. */
+  /** Refresh, Export and the overflow menu. */
+  actions: ReactNode
+  /** The one decorative card, on wide screens only. */
+  hero?: ReactNode
+  /** The whole command bar: period, comparison, supplier, centre, search. */
   filters: ReactNode
-  /** What the monitoring pill is monitoring: "AI monitoring", "Data". */
-  monitorNoun?: string
-  feature?: ShellFeature
+  /** "01 Sep 2026 – 21 Sep 2026 · All branches", from the response. */
+  periodLabel?: ReactNode
   sources: SourceStatus[]
   metrics: DashboardMetric[]
+  sparklines?: Record<string, { period: string; value: string | null }[]>
   loading: boolean
   refreshing: boolean
   fetchedAt: Date | null
-  onRefresh: () => void
   children: ReactNode
 }) {
   const navigate = useNavigate()
@@ -607,58 +688,48 @@ export function PurchaseDashboardShell({
     // A div, not a <main>: the application frame already provides the main
     // landmark, and two of them is one too many for a screen reader.
     <div className="purchase-workspace">
-      <header className="purchase-page-header">
-        <div className="purchase-page-heading">
-          <nav className="purchase-breadcrumb" aria-label="Breadcrumb">
-            <span>Aicountly Purchases</span>
-            <ChevronRight size={13} aria-hidden />
-            <span aria-current="page">{breadcrumb}</span>
-          </nav>
-          <h1>{title}</h1>
-          <p className="purchase-page-subtitle">{subtitle}</p>
+      <div className="purchase-page">
+        <header className="purchase-page-header">
+          <div className="purchase-page-header__text">
+            <p className="purchase-eyebrow">
+              {breadcrumb.map((crumb, index) => (
+                <span key={crumb} className={index === breadcrumb.length - 1 ? 'purchase-eyebrow__here' : undefined}>
+                  {index > 0 && (
+                    <span className="purchase-eyebrow__sep" aria-hidden>
+                      {'  ›  '}
+                    </span>
+                  )}
+                  {crumb}
+                </span>
+              ))}
+            </p>
+
+            <h1>{title}</h1>
+            <p className="purchase-page-subtitle">{subtitle}</p>
+          </div>
+
+          <div className="purchase-page-header__side">
+            <div className="purchase-header-actions">{actions}</div>
+            {hero}
+          </div>
+        </header>
+
+        <section className="purchase-commandbar" aria-label="Report filters">
+          {filters}
+        </section>
+
+        <DashboardSwitcher activeView={activeView} onChange={onViewChange} />
+
+        <div className="purchase-meta">
+          {periodLabel !== undefined && <span className="purchase-meta__period">{periodLabel}</span>}
+          <SourceList sources={sources} fetchedAt={fetchedAt} />
         </div>
 
-        <div className="purchase-header-actions">
-          <button
-            type="button"
-            className="purchase-button purchase-button--secondary"
-            onClick={onRefresh}
-            disabled={refreshing}
-            aria-label="Refresh the figures"
-          >
-            <RefreshCw size={15} aria-hidden className={refreshing ? 'purchase-spin' : undefined} />{' '}
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-          {actions}
+        <MetricsRow metrics={metrics} sparklines={sparklines} loading={loading} onOpen={openDrilldown} />
+
+        <div className="purchase-dashboard-content" aria-busy={refreshing}>
+          {children}
         </div>
-
-        {feature && (
-          <aside className="purchase-feature">
-            <div>
-              <strong>{feature.title}</strong>
-              <p>{feature.description}</p>
-            </div>
-            <button type="button" onClick={feature.onAction} aria-label={feature.actionLabel} title={feature.actionLabel}>
-              <ArrowUpRight size={19} aria-hidden />
-            </button>
-            <span className="purchase-feature__wave" aria-hidden />
-          </aside>
-        )}
-      </header>
-
-      {/* The filters sit above the tabs and stay put across them: the period a
-          reader chose on one dashboard is the period they meant on the next. */}
-      <div className="purchase-filterbar">
-        {filters}
-        <MonitorPill noun={monitorNoun} sources={sources} fetchedAt={fetchedAt} />
-      </div>
-
-      <DashboardSwitcher activeView={activeView} onChange={onViewChange} />
-
-      <MetricsRow metrics={metrics} loading={loading} onOpen={openDrilldown} />
-
-      <div className="purchase-dashboard-content" aria-busy={refreshing}>
-        {children}
       </div>
     </div>
   )
