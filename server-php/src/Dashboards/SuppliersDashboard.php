@@ -376,6 +376,10 @@ final class SuppliersDashboard extends Dashboard
         $currency = $this->documentCurrency() ?? 'INR';
         $rows = [];
 
+        $trends = $this->supplierDeliveryTrends(
+            array_map(static fn (array $r) => (int) $r['supplier_account_id'], $performance),
+        );
+
         foreach ($performance as $row) {
             $receipts = (int) $row['receipt_count'];
             $inspected = (int) $row['inspected_lines'];
@@ -397,6 +401,7 @@ final class SuppliersDashboard extends Dashboard
 
             $rows[] = [
                 'supplier_account_id' => (int) $row['supplier_account_id'],
+                'trend_points'    => $trends[(int) $row['supplier_account_id']] ?? [],
                 'supplier_name'   => $row['supplier_name'],
                 'qualification_status' => $row['qualification_status'] ?? 'none',
                 'is_preferred'    => (bool) ($row['is_preferred'] ?? false),
@@ -737,11 +742,22 @@ final class SuppliersDashboard extends Dashboard
             }
         }
 
+        $series = $this->priceSeries(
+            array_map(static fn (array $r) => [
+                'item_id'  => (int) $r['item_id'],
+                'unit_id'  => $r['unit_id'],
+                'currency_code' => $r['currency_code'],
+            ], $rows),
+            $filterSql,
+            $filterParams,
+        );
+
         $out = [];
         foreach ($rows as $row) {
             $first = Decimal::of($row['first_rate']);
             $last = Decimal::of($row['last_rate']);
             $itemId = (int) $row['item_id'];
+            $seriesKey = $itemId . '|' . ($row['unit_id'] ?? '') . '|' . (string) $row['currency_code'];
             $out[] = [
                 'item_id'    => $itemId,
                 'item_label' => $items[$itemId]['name'] ?? ('Item ' . $itemId),
@@ -749,6 +765,7 @@ final class SuppliersDashboard extends Dashboard
                 'currency'   => $row['currency_code'],
                 'observations' => (int) $row['observations'],
                 'supplier_count' => (int) $row['supplier_count'],
+                'points'     => $series[$seriesKey] ?? [],
                 'first_rate' => $first,
                 'first_formatted' => Format::money($first, (string) $row['currency_code']),
                 'first_date' => $row['first_date'],
@@ -768,6 +785,8 @@ final class SuppliersDashboard extends Dashboard
             'rows'  => $out,
             'observation_period' => $this->period->label(),
             'min_sample' => self::MIN_SAMPLE,
+            'index_note' => 'The path is indexed to 100 at the first month each item was ordered in this period, '
+                . 'so items priced per tonne and per coil share one honest axis instead of one axis each.',
             'basis' => 'First and last agreed rate for the SAME item, unit and currency, over at least ' . self::MIN_SAMPLE
                 . ' orders in ' . $this->period->label() . '. Rates are before line discount, freight and tax — the tax actually charged is decided when the bill is entered, and the inventory cost of what arrived is Inventory\'s figure, not this one.',
         ]);
@@ -831,6 +850,140 @@ final class SuppliersDashboard extends Dashboard
             ],
             'basis'  => 'Accepted receipts per month over the last twelve months, against the promised date on the order. A month with fewer than ' . self::MIN_SAMPLE . ' receipts is shown with its count but is not given a rate.',
         ]);
+    }
+
+    /**
+     * On-time delivery per supplier per month, for the scorecard sparkline.
+     *
+     * WHY A SPARKLINE IS NOT A SECOND RATE. The scorecard already states each
+     * supplier's on-time percentage for the period. What it cannot say is
+     * whether that number is where the supplier is heading or where they have
+     * just come from — 86% improving and 86% collapsing need different
+     * conversations, and the single figure reads identically for both.
+     *
+     * SIX MONTHS, AND EVERY POINT CARRIES ITS SAMPLE. A month with two receipts
+     * is not a data point about reliability, it is two deliveries; those months
+     * are returned with their count and no rate, and the chart leaves a gap
+     * rather than drawing through them. A line that dives to 0% on a single
+     * late delivery is a drawing, not a trend, and it is the fastest way to
+     * make somebody distrust the whole screen.
+     *
+     * @param list<int> $supplierIds
+     * @return array<int, list<array<string, mixed>>>
+     */
+    private function supplierDeliveryTrends(array $supplierIds): array
+    {
+        $ids = array_values(array_unique(array_filter($supplierIds, static fn ($id) => $id > 0)));
+        if ($ids === []) {
+            return [];
+        }
+
+        // The ids come from this product's own previous query and are cast to
+        // int on the way in, so the list is built rather than bound: PDO has no
+        // array binding and a placeholder per id would defeat the statement
+        // cache on a list whose length changes with the filter.
+        $inList = implode(',', array_map('intval', $ids));
+
+        $rows = $this->rows(
+            "SELECT p.supplier_account_id,
+                    to_char(date_trunc('month', r.received_at), 'YYYY-MM')   AS month,
+                    COUNT(*)                                                 AS receipts,
+                    COUNT(*) FILTER (WHERE r.received_at <= p.promised_date) AS on_time
+             FROM purchase_receipt_requests r
+             JOIN purchase_orders p ON p.po_id = r.po_id
+             WHERE {scope} AND r.status = 'ACCEPTED' AND p.promised_date IS NOT NULL
+               AND p.supplier_account_id IN (" . $inList . ")
+               AND r.received_at >= date_trunc('month', CURRENT_DATE) - INTERVAL '5 months'
+             GROUP BY 1, 2 ORDER BY 1, 2",
+            [],
+            'p',
+        );
+
+        $out = [];
+        foreach ($rows as $row) {
+            $receipts = (int) $row['receipts'];
+            $out[(int) $row['supplier_account_id']][] = [
+                'period'     => (string) $row['month'],
+                'sample'     => $receipts,
+                'on_time_pc' => $receipts >= self::MIN_SAMPLE
+                    ? Decimal::percentOf((string) $row['on_time'], (string) $receipts, 1)
+                    : null,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * The monthly price path behind each row of the price-movement table.
+     *
+     * The table states a first rate and a last rate. Two numbers cannot tell a
+     * steady climb from a spike that came back down, and those are different
+     * negotiations — so the path is returned as well.
+     *
+     * INDEXED TO 100 AT THE FIRST MONTH, SERVER-SIDE. Items priced per tonne and
+     * per coil cannot share a rupee axis, and giving them one axis each would be
+     * the dual-axis mistake wearing a different hat. Indexing puts them on one
+     * honest scale, and the arithmetic is exact decimal here rather than
+     * floating point in the browser.
+     *
+     * @param list<array<string, mixed>> $keys item_id / unit_id / currency_code
+     * @return array<string, list<array<string, mixed>>> keyed item|unit|currency
+     */
+    private function priceSeries(array $keys, string $filterSql, array $filterParams): array
+    {
+        $itemIds = array_values(array_unique(array_map(static fn (array $k) => (int) $k['item_id'], $keys)));
+        if ($itemIds === []) {
+            return [];
+        }
+
+        $inList = implode(',', array_map('intval', $itemIds));
+
+        $rows = $this->rows(
+            "SELECT l.item_id, l.unit_id, p.currency_code,
+                    to_char(date_trunc('month', p.po_date), 'YYYY-MM') AS month,
+                    -- Weighted by quantity: the average of a 10-unit order and a
+                    -- 10,000-unit order is not the price anybody paid.
+                    (SUM(l.agreed_rate * l.ordered_qty) / NULLIF(SUM(l.ordered_qty), 0))::text AS rate,
+                    COUNT(*) AS observations
+             FROM purchase_order_lines l
+             JOIN purchase_orders p ON p.po_id = l.po_id
+             WHERE {scope} AND p.po_date BETWEEN :from AND :to
+               AND p.status <> 'CANCELLED' AND l.agreed_rate > 0 AND l.ordered_qty > 0
+               AND l.item_id IN (" . $inList . ")" . $filterSql . "
+             GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4",
+            $this->period->params() + $filterParams,
+            'p',
+        );
+
+        $grouped = [];
+        foreach ($rows as $row) {
+            $key = (int) $row['item_id'] . '|' . ($row['unit_id'] ?? '') . '|' . (string) $row['currency_code'];
+            $grouped[$key][] = $row;
+        }
+
+        $out = [];
+        foreach ($grouped as $key => $series) {
+            $base = Decimal::of($series[0]['rate']);
+            if (Decimal::isZero($base)) {
+                continue;
+            }
+            $points = [];
+            foreach ($series as $point) {
+                $rate = Decimal::of($point['rate']);
+                $points[] = [
+                    'period'       => (string) $point['month'],
+                    'rate'         => $rate,
+                    'formatted'    => Format::money($rate, (string) $point['currency_code']),
+                    // 100 at the first month this item was bought in the period.
+                    'index'        => Decimal::percentOf($rate, $base, 1),
+                    'observations' => (int) $point['observations'],
+                ];
+            }
+            $out[$key] = $points;
+        }
+
+        return $out;
     }
 
     /**

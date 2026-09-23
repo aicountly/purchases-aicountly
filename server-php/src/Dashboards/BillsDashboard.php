@@ -720,10 +720,19 @@ final class BillsDashboard extends Dashboard
                 ['id' => 'matching', 'label' => 'Three-way match against order and receipt', 'available' => true],
                 ['id' => 'review', 'label' => 'Human review of every exception', 'available' => true],
                 ['id' => 'posting', 'label' => 'Authorised posting to Smart Books, idempotent', 'available' => true],
-                ['id' => 'extraction', 'label' => 'Automatic extraction from a PDF or scan', 'available' => false,
-                 'reason' => 'Not implemented in this application. Bills are entered by a person or created from a purchase order.'],
-                ['id' => 'statement_import', 'label' => 'Supplier statement import and reconciliation', 'available' => false,
-                 'reason' => 'Not implemented in this application.'],
+                ['id' => 'document_reading', 'label' => 'Reading an uploaded CSV, XLSX or text PDF', 'available' => true,
+                 'route' => '/statements'],
+                ['id' => 'statement_import', 'label' => 'Supplier statement import and reconciliation', 'available' => true,
+                 'route' => '/statements'],
+                ['id' => 'extraction', 'label' => 'Creating a bill automatically from an uploaded invoice', 'available' => false,
+                 'reason' => 'Not implemented. An uploaded document can be READ — that is what statement reconciliation '
+                     . 'uses — but nothing here turns one into a bill. A bill is a financial document, and creating one '
+                     . 'from a parsed file needs the duplicate refusal, tolerance and approval rules that manual entry '
+                     . 'already has; half of that is worse than none.'],
+                ['id' => 'ocr', 'label' => 'Reading a scanned document', 'available' => false,
+                 'reason' => 'Not installed on this server. A text PDF is read exactly; a scan is a picture, and '
+                     . 'getting figures out of a picture needs optical character recognition that is not here. '
+                     . 'The reader says which of the two it was given rather than returning an empty result.'],
             ],
             'basis' => 'Bill requests in this scope by workflow state. A bill reaches Smart Books only after it has matched or an exception has been decided, and posting carries an idempotency key so a retry cannot produce a second voucher.',
         ]);

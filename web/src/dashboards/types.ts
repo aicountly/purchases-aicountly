@@ -33,9 +33,18 @@ export interface MetricComparison {
   tone: 'is-positive' | 'is-negative' | 'is-neutral'
   reason?: string
   previous_raw?: string
+  /** The previous period's own figure, formatted on the server. */
+  previous_formatted?: string
   change_raw?: string
   change_pc?: string | null
   label?: string
+}
+
+/** One point of a KPI sparkline. `value` null is a GAP, never a zero. */
+export interface MetricTrendPoint {
+  period: string
+  value: string | null
+  formatted: string
 }
 
 export interface DashboardMetric {
@@ -56,6 +65,12 @@ export interface DashboardMetric {
   comparison_text: string
   change_tone: 'is-positive' | 'is-negative' | 'is-neutral'
   footnote: string | null
+  /** The full-precision figure, where `formatted_value` is a short form. */
+  exact_value?: string | null
+  /** Empty when this figure has no honest monthly series behind it. */
+  trend?: MetricTrendPoint[]
+  /** The line at the foot of the card. */
+  footer?: string | null
   drilldown?: Drilldown
 }
 
@@ -244,6 +259,12 @@ export interface ApprovalRow {
 
 export interface SupplierRow {
   supplier_account_id: number
+  /**
+   * On-time delivery per month for the last six, for the scorecard sparkline.
+   * `on_time_pc` is null in a month with too few deliveries to rate — that is a
+   * gap in the line, never a zero.
+   */
+  trend_points: { period: string; sample: number; on_time_pc: string | null }[]
   supplier_name: string | null
   qualification_status: string
   is_preferred: boolean
@@ -271,6 +292,8 @@ export interface SupplierRow {
 
 export interface PriceMovementRow {
   item_id: number
+  /** The monthly path, indexed to 100 at the first month of the period. */
+  points: { period: string; formatted: string; index: string | null; observations: number }[]
   item_label: string
   unit: string | null
   currency: string
@@ -370,3 +393,104 @@ export interface AskAnswer {
   suggestions?: { id: string; question: string }[]
   ai?: { available: boolean; reason: string | null }
 }
+
+// ---------------------------------------------------------------------------
+// Purchase intelligence
+// ---------------------------------------------------------------------------
+
+/**
+ * How strongly a rule is evidenced — a COUNT of observations, never a
+ * probability. The server refuses to put a percentage on a deterministic rule
+ * and this type refuses to carry one.
+ */
+export interface EvidenceStrength {
+  level: 'strong' | 'moderate' | 'indicative'
+  label: string
+  observations: number
+  basis: string
+}
+
+export interface IntelligenceOpportunity extends OpportunityCard {
+  area: string
+  area_label: string
+  priority: 'low' | 'medium' | 'high'
+  priority_label: string
+  priority_basis: string
+  status: string
+  status_label: string
+  action_label: string
+  impact_formatted: string | null
+  evidence_strength: EvidenceStrength
+  overlaps: string[]
+}
+
+export interface SpendTrendMonth {
+  month: string
+  label: string
+  value: string
+  formatted: string
+  compact: string
+  orders: number
+}
+
+export type SpendTrendPanel = Panel<{
+  currency: string
+  months: SpendTrendMonth[]
+  ranges: { id: string; label: string }[]
+  series: { id: string; label: string; axis: string }[]
+  projection:
+    | { available: false; reason: string }
+    | { available: true; label: string; value: string; formatted: string; method: string }
+  basis: string
+}>
+
+export type CategoryPanel = Panel<{
+  currency: string
+  total: string
+  total_formatted: string
+  total_compact: string
+  categories: { id: string; name: string; amount: string; formatted: string; share_pc: string | null }[]
+  source: string
+  basis: string
+}>
+
+export interface PurchaseRisk {
+  id: string
+  severity: 'critical' | 'warning' | 'info'
+  severity_label: string
+  title: string
+  detail: string
+  count: number | null
+  basis: string
+  route: string
+  filters: Record<string, string>
+}
+
+export type RiskPanel = Panel<{ method_label: string; rows: PurchaseRisk[]; basis: string }>
+
+export interface PurchaseInsight {
+  id: string
+  tone: 'success' | 'warning' | 'danger' | 'info'
+  kind: 'observation' | 'estimate' | 'projection'
+  kind_label: string
+  title: string
+  detail: string
+  basis: string
+  route: string
+  filters: Record<string, string>
+}
+
+export type InsightPanel = Panel<{
+  method_label: string
+  ai: { available: boolean; reason: string | null }
+  rows: PurchaseInsight[]
+  basis: string
+}>
+
+export type OpportunityPanel = Panel<{
+  method_label: string
+  currency: string
+  cards: IntelligenceOpportunity[]
+  ranking: string
+  basis: string
+}>

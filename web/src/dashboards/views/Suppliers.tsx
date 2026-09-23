@@ -9,13 +9,19 @@
 import { useNavigate } from 'react-router-dom'
 import { ArrowDownRight, ArrowRight, ArrowUpRight, ShieldCheck } from 'lucide-react'
 import { Badge, DashboardPanel, DataTable, EmptyState, PanelUnavailable } from '../shell'
-import { BarChart, ShareBar } from '../charts'
+import { BarChart, DonutChart, IndexLineChart, Sparkline } from '../charts'
 import { Drawer } from '../Drawer'
 import type { DashboardFilters } from '../filters'
 import type { DashboardResponse, Panel, PriceMovementRow, SupplierRow } from '../types'
 
 type MatrixPanel = Panel<{ rows: SupplierRow[]; currency: string; values_visible: boolean; basis: string }>
-type PricePanel = Panel<{ rows: PriceMovementRow[]; observation_period: string; min_sample: number; basis: string }>
+type PricePanel = Panel<{
+  rows: PriceMovementRow[]
+  observation_period: string
+  min_sample: number
+  index_note?: string
+  basis: string
+}>
 type TrendPanel = Panel<{
   points: { period: string; sample: number; on_time: number; on_time_pc: string | null; rated: boolean }[]
   min_sample: number
@@ -30,6 +36,41 @@ type ConcentrationPanel = Panel<{
   basis: string
 }>
 type DetailPanel = Panel<Record<string, unknown>>
+
+/**
+ * Top four suppliers by share, and everything else as one neutral slice.
+ *
+ * A ninth hue is never generated: the tail folds. "Others" is grey rather than
+ * a fifth colour because it is not an identity — it is the absence of one.
+ */
+function donutSegments(
+  suppliers: { supplier_account_id: number; supplier_name: string | null; formatted: string; share_pc: string | null }[],
+) {
+  const head = suppliers.slice(0, 4).map((row) => ({
+    id: String(row.supplier_account_id),
+    label: row.supplier_name ?? `Account ${row.supplier_account_id}`,
+    share: row.share_pc,
+    formatted: row.formatted,
+  }))
+
+  const tail = suppliers.slice(4)
+  if (tail.length === 0) return head
+
+  // Shares are exact decimal strings from the server. Summing them here is
+  // geometry for one slice, not a figure anybody reads as money — the count is
+  // what the label states.
+  const rest = tail.reduce((sum, row) => sum + Number.parseFloat(row.share_pc ?? '0'), 0)
+
+  return [
+    ...head,
+    {
+      id: 'others',
+      label: `${tail.length} other supplier${tail.length === 1 ? '' : 's'}`,
+      share: rest.toFixed(1),
+      formatted: `${tail.length} supplier${tail.length === 1 ? '' : 's'}`,
+    },
+  ]
+}
 
 export function SuppliersDashboard({ data, filters }: { data: DashboardResponse; filters: DashboardFilters }) {
   const navigate = useNavigate()
@@ -107,6 +148,23 @@ export function SuppliersDashboard({ data, filters }: { data: DashboardResponse;
                     row.avg_lead_days === null ? <span className="purchase-muted">—</span> : `${row.avg_lead_days}d`,
                 },
                 {
+                  // The rate says where a supplier is; this says which way they
+                  // are going. 86% improving and 86% collapsing read identically
+                  // as a number and need different conversations.
+                  key: 'trend',
+                  header: 'Trend',
+                  render: (row) => (
+                    <Sparkline
+                      label={`On-time delivery for ${row.supplier_name ?? `account ${row.supplier_account_id}`}`}
+                      points={(row.trend_points ?? []).map((point) => ({
+                        period: point.period,
+                        value: point.on_time_pc,
+                        sample: point.sample,
+                      }))}
+                    />
+                  ),
+                },
+                {
                   key: 'exposure',
                   header: 'Open exposure',
                   numeric: true,
@@ -166,7 +224,32 @@ export function SuppliersDashboard({ data, filters }: { data: DashboardResponse;
               At least {price.min_sample} orders of the same item, unit and currency are needed.
             </EmptyState>
           ) : (
-            <DataTable
+            <>
+              {/* The table already states a first and a last rate. Two numbers
+                  cannot tell a steady climb from a spike that came back down,
+                  and those are different negotiations. */}
+              <IndexLineChart
+                title="Price path by item"
+                summary={
+                  'Agreed rate per month for the items that moved most, indexed to 100 at the first month each was ordered. ' +
+                  price.rows
+                    .slice(0, 4)
+                    .map((row) => `${row.item_label} ended at ${row.last_formatted}`)
+                    .join('. ')
+                }
+                baseLabel={price.index_note ?? 'Indexed to 100 at each item’s first month in this period.'}
+                series={price.rows.slice(0, 4).map((row) => ({
+                  id: `${row.item_id}-${row.currency}`,
+                  label: row.item_label,
+                  points: (row.points ?? []).map((point) => ({
+                    period: point.period,
+                    index: point.index,
+                    formatted: point.formatted,
+                  })),
+                }))}
+              />
+
+              <DataTable
               caption={price.basis}
               rows={price.rows}
               rowKey={(row) => `${row.item_id}-${row.currency}`}
@@ -233,7 +316,8 @@ export function SuppliersDashboard({ data, filters }: { data: DashboardResponse;
                   ),
                 },
               ]}
-            />
+              />
+            </>
           )}
         </DashboardPanel>
 
@@ -282,16 +366,23 @@ export function SuppliersDashboard({ data, filters }: { data: DashboardResponse;
             <PanelUnavailable reason={concentration.reason} kind={concentration.kind} />
           ) : (
             <div className="purchase-dashboard-grid" style={{ gap: 24 }}>
-              <ShareBar
+              {/* Part-to-whole at a glance, which is the one thing a donut is
+                  good at. Four named suppliers and the rest folded into one
+                  neutral slice: past six, adjacent slices blur and the table
+                  below the toggle is the better answer. */}
+              <DonutChart
                 title="Ordered value by supplier"
-                totalLabel={concentration.total_formatted}
-                data={concentration.suppliers.map((row) => ({
-                  id: String(row.supplier_account_id),
-                  label: row.supplier_name ?? `Account ${row.supplier_account_id}`,
-                  formatted: row.formatted,
-                  sharePc: row.share_pc,
-                  onOpen: () => filters.set({ supplier_id: String(row.supplier_account_id) }),
-                }))}
+                summary={
+                  `Ordered value of ${concentration.total_formatted} across ${concentration.suppliers.length} suppliers. ` +
+                  concentration.suppliers
+                    .slice(0, 4)
+                    .map((row) => `${row.supplier_name ?? `Account ${row.supplier_account_id}`} ${row.share_pc ?? '—'}%`)
+                    .join(', ') +
+                  (concentration.suppliers.length > 4 ? `, and ${concentration.suppliers.length - 4} others.` : '.')
+                }
+                centreLabel="Total ordered"
+                centreValue={concentration.total_formatted}
+                segments={donutSegments(concentration.suppliers)}
               />
 
               <div>

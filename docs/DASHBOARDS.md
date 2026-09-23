@@ -19,9 +19,20 @@ Filters are query parameters for the same reason.
 Not a number. A contract, built by `Dashboards\Metric`:
 
 ```
-id, label, status, raw_value, formatted_value, format, currency, unit,
-basis, explanation, direction, comparison{…}, footnote, drilldown{route, filters}
+id, label, status, raw_value, formatted_value, exact_value, format, currency,
+unit, basis, explanation, direction, comparison{…}, trend[], footer, footnote,
+drilldown{route, filters}
 ```
+
+`formatted_value` may be a short form — ₹28.45L, ₹1.20Cr — where the card asked
+for one; `exact_value` is always the full figure and is what the tooltip, the
+table and the export show. Nothing rounded is ever the only figure on screen.
+
+`trend` is the card's sparkline: points formatted on the server, with `value`
+null for a month that cannot be rated. A null is a GAP in the line, never a
+zero. A figure with no honest monthly series behind it — a count of open risks
+is a position as at now, not a series — carries an empty `trend` and the card
+says so in words instead of drawing a flat line.
 
 `basis` says what it counts and over what period. `direction` says whether a
 bigger number is good news — overdue payables going up is a red line even
@@ -137,6 +148,39 @@ With no key configured the rules engine answers instead, every panel says it is
 rules-based, and the screen reads "AI insights are currently unavailable". Set
 `PURCHASES_AI_API_KEY` on the server to enable commentary; the hint naming that
 variable is shown only to somebody holding `settings.manage`.
+
+## Purchase intelligence
+
+The fifth dashboard is a control tower rather than a chat window. Six figures
+across the top — purchase value, purchase orders, average PO value, price
+anomalies, potential savings and open purchase risks — then three zones: the
+opportunities somebody acts on, the analytics they check those against, and the
+two lists they scan.
+
+**Nothing on it carries a confidence percentage.** Opportunities come from fixed
+rules over the company's own orders, and a rule does not have a confidence
+interval. Each card carries an *evidence strength* instead — Strong, Moderate or
+Indicative — which is a COUNT of observations with the count stated beside it.
+"94% confident" would be the only number on the screen nobody could reproduce.
+
+Three panels are worth stating in full:
+
+- **Price anomalies** compare the latest agreed rate against the MEDIAN of the
+  same item's earlier rates in the same period and the same unit, not against
+  the previous rate: one unusual order would otherwise make the next ordinary
+  one look like a correction. Three observations is the floor — a pair of rates
+  is not a distribution. Rates are compared before discount, freight and tax, so
+  a change in quantity break or delivery terms can show here legitimately.
+- **Spend concentration by category** groups by Inventory's item groups, read
+  live on the request. With Inventory unavailable the panel says so rather than
+  grouping the spend by something else and calling the result a category.
+- **AI Insights** labels every row as an observation, an estimate or a
+  projection. Where a model is configured it can comment on these figures in Ask
+  Aicountly AI; it writes none of them.
+
+Opportunities and risks are recomputed from the records on every load. There is
+nowhere to record that one was reviewed or dismissed, and the drawer says so
+rather than offering a Dismiss button that forgets itself on the next refresh.
 
 ## Exports
 
@@ -289,6 +333,94 @@ anything here — an administrator assigns the profile in this screen.
 provision hook on this product with `{user_uuid, profile}` when an invitation is
 accepted, mirroring the Books contract. That is a change to `manage-aicountly`
 and is deliberately not made here.
+
+## Reading documents, reconciling statements, printing
+
+### The reader answers facts; a separate step interprets them
+
+`Import\Table` holds every cell as a STRING. A statement holds `1,23,456.78`
+and `1.234,56` and `(2,500.00)`, and each becomes a different float depending on
+who parses it — so reading and interpreting are separate passes with separate
+tests. `Import\Values` does the interpreting and returns **null**, never `0`,
+for anything it cannot read: a zero looks like an answer.
+
+The rule that decides a decimal point: whichever of `.` and `,` appears LAST is
+the decimal separator, because no notation puts a thousands separator after the
+decimal point. That one rule reads Indian, Western and European notation without
+knowing where the file came from. The grouping character is stripped BEFORE the
+decimal is converted — the other order turns `1.250,00` into `125000`, a
+hundredfold error that looks like a plausible number.
+
+| Format | How | Notes |
+|---|---|---|
+| CSV | delimiter decided by counting consistency across the first rows | comma, semicolon, tab and pipe; BOM and CP1252 handled and reported |
+| XLSX | ZipArchive + SimpleXML, no library | shared strings, date serials (including Excel's 1900 leap-year bug), cells placed by column letter so a skipped column does not shift the row |
+| PDF | Flate streams inflated, text operators parsed | fragments carry their position, a shared baseline is a line, a wide gap is a column |
+| Scan | — | **not read.** There are no characters in a picture. The reader says which of the two it was given rather than returning an empty table |
+
+`ColumnMap` finds the header row by SCORING rows rather than assuming the first
+one — statements begin with a letterhead. A mapping the vocabulary cannot
+justify comes back as null with its candidates, and the screen asks: a "Credit"
+column silently read as the invoice amount reconciles cleanly and is entirely
+wrong.
+
+### Statement reconciliation
+
+`/statements`. Two steps on purpose — the file is read and shown BEFORE anything
+is compared, because a statement read with the wrong amount column reconciles
+confidently and there is no way to tell from the result.
+
+Matching goes in order of evidence: invoice reference first (compared in reduced
+form, so `INV-4460` and `INV/004460` agree), then amount and date within five
+days, then a unique amount — and only a unique one, because two bills for the
+same money make it a coin toss.
+
+Four buckets: **agreed**, **same bill different amount**, **on the statement
+only**, **in Smart Books only**. It REPORTS AND STOPS. Books owns the ledger, a
+statement is the supplier's opinion of it, and the only thing this product may
+do with a disagreement is put it in front of somebody who can decide.
+
+This is the gap `docs` recorded earlier as blocked: Books answers
+`reports/bill-by-bill` for one account at a time, which is why there is no
+company-wide "due within N days". A reconciliation is inherently one supplier at
+a time, so the same constraint costs nothing here.
+
+**Nothing is stored.** The upload is parsed in memory and deleted before the
+response is written. It is the supplier's document; what the audit log records
+is that a reconciliation happened, by whom, for which supplier, and how it came
+out — counts only.
+
+### PDF output
+
+`?format=pdf` on any dashboard export, and the buttons on `/reports`.
+
+`Pdf\PdfDocument` writes the file directly. No library, because this API has no
+dependencies at all; no headless browser, because Gotenberg or wkhtmltopdf means
+a second service to deploy and patch so that a table of numbers can be laid out
+by a rendering engine built for web pages. Fonts are the base fourteen, which
+every conforming reader must have, so nothing is embedded and the output is a
+few kilobytes.
+
+It renders the SAME payload the screen drew and the CSV exports, so a figure
+cannot differ between what somebody saw, exported and printed. An unavailable
+figure prints the word **Unavailable** — a printout gets circulated, filed and
+quoted months later, and a zero standing in for "we could not ask" becomes a
+fact the moment it is printed. Anything the renderer cannot draw (a chart, a
+drawer) is NAMED on the page rather than silently dropped.
+
+Helvetica cannot write Devanagari or Tamil. A name that will not survive the
+format is substituted visibly rather than dropped — a report that silently omits
+a supplier is worse than one that admits it could not print their name.
+
+### Exports are fetched, not linked
+
+Every export button posts through the API client with the session key and saves
+the resulting Blob. A plain `<a href>` cannot carry a bearer token, so the links
+this replaced were answering 401 and the click did nothing — a bug that had been
+in the CSV export since it shipped, found by the first test that actually
+downloaded the file. There is no cookie to fall back on and there should not be:
+a cookie that authenticates a download authenticates every other request the
+same way.
 
 ## Running the checks
 

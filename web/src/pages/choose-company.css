@@ -1,0 +1,401 @@
+/**
+ * The company launcher.
+ *
+ * Nothing in this product works without a company, a financial year and a
+ * branch, so this is the first screen most sessions see. It used to be a one
+ * line notice inside the application frame, which meant the very first thing
+ * the product showed was a sidebar full of links that all went nowhere.
+ *
+ * This is its own page, outside that frame, for the same reason a front door
+ * is not a corridor.
+ */
+
+.launcher {
+  --launcher-ink: #14181a;
+  --launcher-muted: #6b7280;
+  --launcher-faint: #9aa3a0;
+  --launcher-border: #e6eae7;
+  --launcher-tint: #eef8ec;
+  --launcher-tint-strong: #dff1da;
+  --launcher-brand: #25b003;
+  --launcher-brand-strong: #187b12;
+
+  min-height: 100vh;
+  background: #fbfcfb;
+  color: var(--launcher-ink);
+  display: flex;
+  flex-direction: column;
+}
+
+.launcher *,
+.launcher *::before,
+.launcher *::after { box-sizing: border-box; }
+
+.launcher :focus-visible {
+  outline: 2px solid var(--launcher-brand-strong);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.launcher__bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1.5rem;
+  background: #fff;
+  border-bottom: 1px solid var(--launcher-border);
+}
+
+.launcher__brand { line-height: 1.05; }
+.launcher__brand strong { display: block; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.025em; }
+.launcher__brand span {
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--launcher-muted);
+  margin-top: 0.1rem;
+}
+
+.launcher__bar-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.launcher__who {
+  font-size: 0.85rem;
+  color: var(--launcher-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 16rem;
+}
+
+.launcher__body {
+  flex: 1;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2.25rem 1.5rem 3.5rem;
+}
+
+.launcher__hero h1 {
+  margin: 0;
+  font-size: 2.15rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.12;
+}
+
+.launcher__hero p {
+  margin: 0.5rem 0 0;
+  color: var(--launcher-muted);
+  font-size: 1rem;
+  max-width: 46rem;
+}
+
+.launcher__search {
+  margin-top: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: #fff;
+  border: 1px solid var(--launcher-border);
+  border-radius: 999px;
+  padding: 0 1.1rem;
+  height: 46px;
+  max-width: 34rem;
+  color: var(--launcher-muted);
+}
+
+.launcher__search:focus-within { border-color: var(--launcher-brand-strong); }
+
+/* The global stylesheet gives every input a border and a background; inside a
+   pill-shaped field that draws a second box around the first. */
+.launcher__search input[type='search'] {
+  flex: 1;
+  min-width: 0;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0;
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--launcher-ink);
+  outline: none;
+  height: 100%;
+}
+
+.launcher__stats {
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+  margin-top: 1.5rem;
+  padding-top: 1.35rem;
+  border-top: 1px solid var(--launcher-border);
+}
+
+.launcher__stat strong {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.launcher__stat span { font-size: 0.82rem; color: var(--launcher-muted); }
+
+.launcher__section { margin-top: 2rem; }
+
+.launcher__section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.launcher__section-head h2 {
+  margin: 0;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--launcher-faint);
+}
+
+.launcher__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 0.85rem;
+}
+
+.launcher__card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  border: 1px solid var(--launcher-border);
+  border-radius: 14px;
+  padding: 1rem 1.05rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.launcher__card:hover {
+  border-color: var(--launcher-tint-strong);
+  box-shadow: 0 2px 10px rgba(20, 40, 24, 0.06);
+}
+
+.launcher__card.is-selected {
+  border-color: var(--launcher-brand-strong);
+  box-shadow: 0 0 0 1px var(--launcher-brand-strong);
+}
+
+.launcher__card-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background: var(--launcher-tint);
+  color: var(--launcher-brand-strong);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.launcher__card-text { min-width: 0; flex: 1; }
+
+.launcher__card-name {
+  display: block;
+  font-weight: 600;
+  font-size: 0.97rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.launcher__card-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--launcher-muted);
+}
+
+.launcher__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: #f1f3f2;
+  color: var(--launcher-muted);
+}
+
+.launcher__tag--owner { background: var(--launcher-tint); color: var(--launcher-brand-strong); }
+.launcher__tag--default { background: #fdf3e0; color: #9a6400; }
+
+.launcher__star {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0.2rem;
+  border-radius: 7px;
+  color: var(--launcher-faint);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.launcher__star:hover { background: #f3f5f4; color: #9a6400; }
+.launcher__star.is-on { color: #d99b16; }
+
+/* ------------------------------------------------------------------ *
+ * The confirm step: year and branch, once a company is chosen.
+ * ------------------------------------------------------------------ */
+
+.launcher__confirm {
+  position: sticky;
+  bottom: 0;
+  margin-top: 1.5rem;
+  background: #fff;
+  border: 1px solid var(--launcher-tint-strong);
+  border-radius: 14px;
+  padding: 1.1rem 1.2rem;
+  box-shadow: 0 -2px 24px rgba(20, 40, 24, 0.08);
+}
+
+.launcher__confirm-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+  font-weight: 600;
+}
+
+.launcher__confirm-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.launcher__field { min-width: 0; flex: 1 1 13rem; }
+
+.launcher__field label {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--launcher-faint);
+  margin-bottom: 0.3rem;
+}
+
+.launcher__field select {
+  appearance: none;
+  width: 100%;
+  font: inherit;
+  font-size: 0.92rem;
+  color: var(--launcher-ink);
+  background: #fff;
+  border: 1px solid #d3dad5;
+  border-radius: 10px;
+  padding: 0.55rem 2rem 0.55rem 0.75rem;
+  min-height: 40px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.7rem center;
+}
+
+.launcher__btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 0.62rem 1.1rem;
+  min-height: 40px;
+  border-radius: 10px;
+  border: 1px solid #d3dad5;
+  background: #fff;
+  color: var(--launcher-ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.launcher__btn:hover:not(:disabled) { background: #f5f7f5; }
+.launcher__btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.launcher__btn--primary {
+  background: var(--launcher-brand-strong);
+  border-color: var(--launcher-brand-strong);
+  color: #fff;
+}
+
+.launcher__btn--primary:hover:not(:disabled) { background: #14670f; border-color: #14670f; }
+
+.launcher__note {
+  border-radius: 12px;
+  padding: 1rem 1.15rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  border: 1px solid var(--launcher-border);
+  background: #fff;
+  color: var(--launcher-muted);
+}
+
+.launcher__note--warning { background: #fdf3e0; border-color: #f3e2bd; color: #7a5000; }
+.launcher__note--danger { background: #fdeceb; border-color: #f6cdc9; color: #a03227; }
+.launcher__note strong { display: block; color: inherit; margin-bottom: 0.25rem; font-size: 0.95rem; }
+
+.launcher__skeleton {
+  height: 84px;
+  border-radius: 14px;
+  background: linear-gradient(90deg, #f1f4f2 25%, #e8ece9 37%, #f1f4f2 63%);
+  background-size: 400% 100%;
+  animation: launcher-shimmer 1.3s ease infinite;
+}
+
+@keyframes launcher-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+.launcher__foot {
+  border-top: 1px solid var(--launcher-border);
+  padding: 1rem 1.5rem;
+  font-size: 0.8rem;
+  color: var(--launcher-faint);
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+@media (max-width: 620px) {
+  .launcher__body { padding: 1.5rem 1rem 2.5rem; }
+  .launcher__hero h1 { font-size: 1.7rem; }
+  .launcher__grid { grid-template-columns: 1fr; }
+  .launcher__stats { gap: 1.25rem; }
+  .launcher__who { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .launcher__skeleton { animation: none; }
+  .launcher * { transition: none !important; }
+}

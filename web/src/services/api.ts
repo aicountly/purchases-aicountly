@@ -97,6 +97,8 @@ interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
   params?: QueryParams
   body?: unknown
+  /** A multipart upload. Mutually exclusive with `body`. */
+  form?: FormData
   /** Pass false for calls that take no company context. */
   scoped?: boolean
   signal?: AbortSignal
@@ -111,8 +113,15 @@ async function send<T>(path: string, options: RequestOptions, sesKey: string): P
     Authorization: `Bearer ${sesKey}`,
   }
 
-  let body: string | undefined
-  if (options.body !== undefined) {
+  let body: string | FormData | undefined
+
+  if (options.form !== undefined) {
+    // NO Content-Type header. The browser must set it itself, because a
+    // multipart body is only parseable with the boundary token the browser
+    // generates — setting it by hand produces a request every server rejects
+    // as malformed, and the error says nothing about why.
+    body = options.form
+  } else if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json'
     // Context travels in the body as well: a POST that carries it only in the
     // query string works until someone reads the body first, and then fails in
@@ -201,4 +210,65 @@ export const api = {
    */
   unscoped: <T>(path: string, params?: QueryParams, signal?: AbortSignal) =>
     request<T>(path, { method: 'GET', params, scoped: false, signal }),
+
+  /**
+   * A file, posted as multipart.
+   *
+   * The company context rides in the query string rather than the body: a
+   * multipart body is a stream of parts, and appending scope fields to it would
+   * put them after the file on the wire for no benefit.
+   */
+  upload: <T>(path: string, form: FormData, params?: QueryParams, signal?: AbortSignal) =>
+    request<ItemResponse<T>>(path, { method: 'POST', form, params, signal }),
+
+  /**
+   * Fetch a file and hand it to the browser to save.
+   *
+   * WHY NOT AN <a href>. This API authenticates with a bearer token, and a
+   * plain link cannot carry one: the browser sends the URL and nothing else, so
+   * every export link in this product was answering 401 and the click appeared
+   * to do nothing. There is no cookie to fall back on and there should not be —
+   * a cookie that authenticates a download authenticates every other request
+   * the same way, from any page that can make one.
+   *
+   * So the file is fetched like any other call, with the header, and saved from
+   * the Blob. The object URL is revoked immediately; leaving it alive pins the
+   * whole file in memory for the life of the tab.
+   */
+  download: async (path: string, filename: string, params?: QueryParams): Promise<void> => {
+    const sesKey = await ensureSesKey()
+
+    const pull = async (key: string): Promise<Response> =>
+      fetch(buildUrl(path, params, true), {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${key}`, Accept: '*/*' },
+      })
+
+    let response = await pull(sesKey)
+    if (response.status === 401) {
+      response = await pull(await ensureSesKey(true))
+    }
+
+    if (!response.ok) {
+      const text = await response.text()
+      let message = `That export could not be produced (${response.status}).`
+      try {
+        const envelope = JSON.parse(text) as { error?: { message?: string }; message?: string }
+        message = envelope?.error?.message ?? envelope?.message ?? message
+      } catch {
+        /* a non-JSON error body is not worth showing raw */
+      }
+      throw new ApiError(response.status, 'export_failed', message, {})
+    }
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  },
 }

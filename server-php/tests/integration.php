@@ -38,6 +38,15 @@ use Aicountly\Api\Dashboards\OverviewDashboard;
 use Aicountly\Api\Dashboards\Period;
 use Aicountly\Api\Dashboards\ProcurementDashboard;
 use Aicountly\Api\Dashboards\SuppliersDashboard;
+use Aicountly\Api\Import\ColumnMap;
+use Aicountly\Api\Import\CsvReader;
+use Aicountly\Api\Import\DocumentReader;
+use Aicountly\Api\Import\PdfTextReader;
+use Aicountly\Api\Import\StatementReconciler;
+use Aicountly\Api\Import\Values;
+use Aicountly\Api\Import\XlsxReader;
+use Aicountly\Api\Pdf\PdfDocument;
+use Aicountly\Api\Pdf\ReportRenderer;
 
 $passed = 0;
 $failed = 0;
@@ -1193,6 +1202,65 @@ check('a rate is not stated from too small a sample', function () use ($ctx, $au
     assertTrue(str_contains($row['on_time_label'], 'too few to rate'), 'in words as well');
 });
 
+check('a sparkline month with too few deliveries is a gap, never a zero', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $receipts = new ReceiptService($ctx, $auth);
+
+    // August: three deliveries, all on time — enough to rate.
+    // September: one delivery — not enough, and that is the whole point.
+    foreach ([['2026-08-05', '2026-08-20', '2026-08-18'], ['2026-08-05', '2026-08-20', '2026-08-18'],
+              ['2026-08-05', '2026-08-20', '2026-08-18'], ['2026-09-05', '2026-09-20', '2026-09-18']] as [$poDate, $promised, $received]) {
+        $po = $orders->create(poInput(['po_date' => $poDate, 'promised_date' => $promised]));
+        $orders->submit((int) $po['po_id']);
+        $orders->issue((int) $po['po_id']);
+        $receipts->request((int) $po['po_id'], ['received_at' => $received]);
+    }
+
+    $rows = dashboardFor('suppliers', $ctx, $auth, ['from' => '2026-08-01', 'to' => '2026-09-30'])['panels']['matrix']['rows'];
+    $points = [];
+    foreach ($rows[0]['trend_points'] as $point) {
+        $points[$point['period']] = $point;
+    }
+
+    assertSame('100', $points['2026-08']['on_time_pc'] ?? null, 'three on-time deliveries rate the month');
+    assertSame(3, $points['2026-08']['sample'] ?? null, 'with its sample stated');
+
+    // The month happened and had a delivery. It is reported, with its count,
+    // and WITHOUT a rate — a null the chart leaves as a gap. A 0 here would
+    // draw a collapse that did not happen.
+    assertTrue(array_key_exists('2026-09', $points), 'the thin month is still reported');
+    assertSame(null, $points['2026-09']['on_time_pc'], 'but carries no rate');
+    assertSame(1, $points['2026-09']['sample'], 'only its count');
+});
+
+check('a price path is indexed to 100 at the first month, in exact decimal', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+
+    // The same item at 200, then 250, then 300 — a path, not two endpoints.
+    foreach ([['2026-07-05', 200], ['2026-08-05', 250], ['2026-09-05', 300]] as [$date, $rate]) {
+        $po = $orders->create(poInput([
+            'po_date' => $date,
+            'lines'   => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => $rate, 'estimated_tax_pc' => 18, 'warehouse_id' => 3]],
+        ]));
+        $orders->submit((int) $po['po_id']);
+    }
+
+    $price = dashboardFor('suppliers', $ctx, $auth, ['from' => '2026-07-01', 'to' => '2026-09-30'])['panels']['price_movement'];
+    assertTrue(count($price['rows']) > 0, 'the item qualifies');
+
+    $points = $price['rows'][0]['points'];
+    assertSame(3, count($points), 'one point per month it was bought in');
+
+    // 100, 125, 150 — exact, because the arithmetic is decimal on the server
+    // rather than floating point in the browser. Items priced per tonne and per
+    // coil can then share one axis instead of needing one each.
+    assertSame(['100', '125', '150'], array_map(static fn ($p) => $p['index'], $points), 'indexed to 100 at the first month');
+    assertSame(['2026-07', '2026-08', '2026-09'], array_map(static fn ($p) => $p['period'], $points), 'in month order');
+    assertTrue(str_contains($points[2]['formatted'], '300'), 'and each point keeps its real rate');
+});
+
 check('the composite score publishes its weights and what was missing', function () use ($ctx, $auth) {
     resetDatabase();
     (new PurchaseOrderService($ctx, $auth))->create(poInput());
@@ -1404,7 +1472,153 @@ check('a forecast is refused rather than extrapolated from too little history', 
     assertTrue(str_contains($forecast['reason'], 'at least 4 complete months'), 'and it says how much is needed');
     assertTrue(str_contains($forecast['reason'], 'Nothing is extrapolated'), 'and refuses to extrapolate');
 
-    assertSame('unavailable', metric(dashboardFor('ai-insights', $ctx, $auth), 'forecast_spend')['status'], 'the card agrees');
+    // The trend card carries the same refusal, in the same words, rather than
+    // drawing a projected point the panel has just declined to state.
+    $trend = dashboardFor('ai-insights', $ctx, $auth)['panels']['spend_trend'];
+    assertSame(false, $trend['projection']['available'], 'the trend card agrees');
+    assertTrue(str_contains($trend['projection']['reason'], 'at least 4 complete months'), 'and says the same thing');
+});
+
+check('the six figures at the top are the ones the screen is about', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+        'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 1000]],
+    ]));
+
+    $insights = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year']);
+    $ids = array_map(static fn (array $m) => $m['id'], $insights['metrics']);
+    assertSame(
+        ['purchase_value', 'purchase_orders', 'avg_po_value', 'price_anomalies', 'opportunity_value', 'purchase_risks_open'],
+        $ids,
+        'six cards, in the order the screen reads them',
+    );
+
+    $orders = metric($insights, 'purchase_orders');
+    assertSame('1', $orders['raw_value'], 'one order was raised');
+    // The mean of one order is that order, and the card says so exactly.
+    assertSame(metric($insights, 'purchase_value')['raw_value'], metric($insights, 'avg_po_value')['raw_value'], 'one order is its own average');
+});
+
+check('a card carries the short form and the exact figure, never only the short one', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+        'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 2845000]],
+    ]));
+
+    $value = metric(dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year']), 'purchase_value');
+    assertSame('₹28.45L', $value['formatted_value'], 'the card reads in lakhs');
+    assertSame('₹28,45,000.00', $value['exact_value'], 'and the exact figure travels with it');
+});
+
+check('the sparkline fills the months that had nothing, and never invents one', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $trend = metric(dashboardFor('ai-insights', $ctx, $auth), 'purchase_orders')['trend'];
+    assertSame(6, count($trend), 'six months of shape');
+    foreach ($trend as $point) {
+        assertTrue($point['value'] !== null, 'a month with no orders is zero, not a gap, for a count');
+    }
+
+    // The figures the rules cannot produce a monthly series for carry none at
+    // all, rather than a flat line drawn from one number.
+    assertSame([], metric(dashboardFor('ai-insights', $ctx, $auth), 'purchase_risks_open')['trend'], 'no series is invented for a position');
+});
+
+check('an opportunity is triaged by its own counts, never by a confidence percentage', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $orders->create(poInput(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250]]]));
+    $orders->create(poInput(['supplier_account_id' => 602, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 300]]]));
+
+    $card = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year'])['panels']['opportunities']['cards'][0];
+    assertSame('supplier', $card['area'], 'fragmented buying is a supplier question');
+    assertSame('Compare', $card['status_label'], 'and the next step is to compare the rates');
+    assertTrue(in_array($card['priority'], ['low', 'medium', 'high'], true), 'priority is one of three');
+    assertTrue(str_contains($card['evidence_strength']['basis'], 'not a probability'), 'strength is a count of evidence, and says so');
+    assertTrue(!isset($card['confidence']), 'no confidence percentage is manufactured');
+});
+
+check('a rate is compared against its own median, not against the last one', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    // Three ordinary rates, then one well above the median of the others.
+    foreach ([['2026-09-01', 100], ['2026-09-02', 100], ['2026-09-03', 104], ['2026-09-10', 150]] as [$date, $rate]) {
+        $orders->create(poInput([
+            'po_date' => $date,
+            'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => $rate]],
+        ]));
+    }
+
+    $insights = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year']);
+    assertSame('1', metric($insights, 'price_anomalies')['raw_value'], 'one rate stands out');
+
+    $rows = $insights['panels']['risks']['rows'];
+    $found = null;
+    foreach ($rows as $row) {
+        if ($row['id'] === 'price-anomalies') {
+            $found = $row;
+        }
+    }
+    assertTrue($found !== null, 'and it reaches the risk list');
+    assertTrue(str_contains($found['basis'], 'median'), 'with the comparison named');
+});
+
+check('a risk row opens the records behind it', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $rows = dashboardFor('ai-insights', $ctx, $auth)['panels']['risks']['rows'];
+    $late = null;
+    foreach ($rows as $row) {
+        if ($row['id'] === 'late-receipts') {
+            $late = $row;
+        }
+    }
+    assertTrue($late !== null, 'a promised date long past is a risk');
+    assertSame('critical', $late['severity'], 'and it needs attention');
+    assertSame('/dashboard/procurement', $late['route'], 'the row opens the delayed orders');
+    assertTrue($late['basis'] !== '', 'and states the rule behind it');
+});
+
+check('every insight row says what kind of statement it is', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $orders->create(poInput(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250]]]));
+    $orders->create(poInput(['supplier_account_id' => 602, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 300]]]));
+
+    $panel = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year'])['panels']['insights'];
+    assertTrue($panel['rows'] !== [], 'there is something to say');
+    foreach ($panel['rows'] as $row) {
+        assertTrue(in_array($row['kind'], ['observation', 'estimate', 'projection'], true), 'one of three kinds');
+        assertTrue($row['basis'] !== '', 'each states its basis');
+        assertTrue($row['route'] !== '', 'and each opens something');
+    }
+});
+
+check('the category split refuses rather than grouping the spend by something else', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+        'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100]],
+    ]));
+
+    $panel = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year'])['panels']['categories'];
+    if ($panel['available']) {
+        assertSame('inventory', $panel['source'], 'categories are Inventory\'s item groups');
+        assertTrue(str_contains($panel['basis'], 'item groups'), 'and the basis says so');
+        $shares = 0;
+        foreach ($panel['categories'] as $category) {
+            assertTrue($category['formatted'] !== '', 'each row carries its own value');
+            $shares++;
+        }
+        assertTrue($shares <= 6, 'five named categories and one tail at most');
+    } else {
+        assertSame('source', $panel['kind'], 'or it says Inventory did not answer');
+        assertTrue(str_contains($panel['reason'], 'Inventory'), 'and names the product that did not');
+    }
 });
 
 check('obligations and projections are never mixed together', function () use ($ctx, $auth) {
@@ -2082,6 +2296,233 @@ check('the session endpoint reports ownership the client can act on', function (
         $data = $sent->payload['data'] ?? [];
         assertSame(true, $data['is_owner'], 'the client is told they are the owner');
         assertTrue(in_array('reports.view', $data['permissions'] ?? [], true), 'and handed the permissions that prove it');
+    } finally {
+        Auth::adopt(null);
+    }
+});
+
+echo "\nImport, reconciliation and print\n";
+
+check('an amount is read the way its own notation means it', function () {
+    // The two that matter most and are most often wrong. Indian lakh grouping
+    // is not a decimal point, and European notation is the mirror image of
+    // Western — read either one naively and the figure is out by 100x.
+    assertSame('125000', Values::amount('1,25,000.00'), 'Indian grouping');
+    assertSame('1250', Values::amount('1.250,00'), 'European separators');
+    assertSame('98400.5', Values::amount('₹ 98,400.50'), 'a currency symbol and Western grouping');
+
+    // Accounting writes a negative three different ways and means one thing.
+    assertSame('-2500', Values::amount('(2,500.00)'), 'parentheses');
+    assertSame('-2500', Values::amount('2500.00-'), 'trailing minus');
+    assertSame('-2500', Values::amount('-2,500'), 'leading minus');
+
+    // NOT ZERO. A parser that answers 0 for text it cannot read hands back a
+    // figure that looks like an answer and reconciles against nothing.
+    assertSame(null, Values::amount('subtotal'), 'unreadable text is null');
+    assertSame(null, Values::amount(''), 'and so is blank');
+});
+
+check('a date is read day-first, and refuses what it cannot tell', function () {
+    assertSame('2026-04-05', Values::date('05/04/2026'), 'day-first, as every statement here is written');
+    assertSame('2026-04-13', Values::date('13/04/2026'), 'a first part above 12 can only be a day');
+    assertSame('2026-04-05', Values::date('5 Apr 2026'), 'a month name is unambiguous');
+    assertSame('2026-04-05', Values::date('2026-04-05'), 'ISO passes through');
+    assertSame(null, Values::date('last Tuesday'), 'and prose is refused');
+
+    // Reduced for matching only; the original is what any screen shows.
+    assertSame(Values::reference('INV-4460'), Values::reference('inv/004460'), 'one reference, two spellings');
+});
+
+check('a delimited file is read by counting, not by assuming commas', function () {
+    $table = CsvReader::read("Date;Invoice;Amount\n2026-04-05;INV-4460;1.250,00\n2026-05-05;INV-4461;98.400,50\n");
+
+    assertSame(['Date', 'Invoice', 'Amount'], $table->headers, 'semicolons were found');
+    assertSame(2, count($table->rows), 'both rows survived');
+    assertSame('1.250,00', $table->rows[0][2], 'and the cell is untouched — interpretation is a separate step');
+    assertTrue(str_contains(implode(' ', $table->notes), 'semicolon'), 'and the reader says what it decided');
+});
+
+check('a workbook survives shared strings, date serials and skipped columns', function () {
+    $path = sys_get_temp_dir() . '/purchases-test-book.xlsx';
+    @unlink($path);
+
+    $zip = new \ZipArchive();
+    assertTrue($zip->open($path, \ZipArchive::CREATE) === true, 'the fixture workbook was created');
+    $zip->addFromString('xl/workbook.xml',
+        '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<sheets><sheet name="Statement" sheetId="1"/></sheets></workbook>');
+    $zip->addFromString('xl/sharedStrings.xml',
+        '<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<si><t>Date</t></si><si><t>Invoice</t></si><si><t>Narration</t></si><si><t>Amount</t></si><si><t>Cement</t></si></sst>');
+    $zip->addFromString('xl/styles.xml',
+        '<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        . '<numFmts count="1"><numFmt numFmtId="164" formatCode="dd-mm-yyyy"/></numFmts>'
+        . '<cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164"/></cellXfs></styleSheet>');
+    // Row 3 has NO column C. A reader that appends values in order shifts the
+    // amount one column left and imports the narration as money.
+    $zip->addFromString('xl/worksheets/sheet1.xml',
+        '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+        . '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c></row>'
+        . '<row r="2"><c r="A2" s="1"><v>46117</v></c><c r="B2" t="inlineStr"><is><t>INV-4460</t></is></c><c r="C2" t="s"><v>4</v></c><c r="D2"><v>125000.00</v></c></row>'
+        . '<row r="3"><c r="A3" s="1"><v>46147</v></c><c r="B3" t="inlineStr"><is><t>INV-4461</t></is></c><c r="D3"><v>98400.5</v></c></row>'
+        . '</sheetData></worksheet>');
+    $zip->close();
+
+    $table = XlsxReader::read($path);
+    @unlink($path);
+
+    assertSame(['Date', 'Invoice', 'Narration', 'Amount'], $table->headers, 'shared strings were resolved');
+    // 46117 is 5 April 2026 once Excel's 1900 leap-year bug is accounted for.
+    assertSame('2026-04-05', $table->rows[0][0], 'a date serial became a date');
+    assertSame('Cement', $table->rows[0][2], 'an inline string was read');
+    assertSame('', $table->rows[1][2], 'the skipped column is BLANK');
+    assertSame('98400.5', $table->rows[1][3], 'so the amount stayed in its own column');
+});
+
+check('a PDF this product writes is a PDF this product can read back', function () {
+    $pdf = new PdfDocument();
+    $pdf->text('Supplier statement', 40, 14, PdfDocument::FONT_BOLD);
+    $pdf->advance(24);
+    $pdf->text('Date', 40, 9, PdfDocument::FONT_BOLD);
+    $pdf->text('Invoice', 150, 9, PdfDocument::FONT_BOLD);
+    $pdf->textRight('Amount', 540, 9, PdfDocument::FONT_BOLD);
+    $pdf->advance(18);
+    foreach ([['2026-04-05', 'INV-4460', '1,25,000.00'], ['2026-05-05', 'INV-4461', '98,400.50']] as $row) {
+        $pdf->text($row[0], 40, 9);
+        $pdf->text($row[1], 150, 9);
+        $pdf->textRight($row[2], 540, 9);
+        $pdf->advance(16);
+    }
+
+    $bytes = $pdf->render('Statement');
+    assertTrue(str_starts_with($bytes, '%PDF-'), 'it is a PDF');
+    assertTrue(str_contains($bytes, 'startxref'), 'with a cross-reference table');
+
+    $table = PdfTextReader::read($bytes);
+    $flat = array_map(static fn (array $r) => implode('|', $r), $table->rows);
+
+    assertTrue(in_array('2026-04-05|INV-4460|1,25,000.00', $flat, true), 'the row came back whole: ' . implode(' / ', $flat));
+    assertTrue(in_array('Date|Invoice|Amount', $flat, true), 'and so did the heading');
+});
+
+check('a scan is reported as a scan, not as an empty document', function () {
+    // A PDF with a page and no text operators — what a scanner produces.
+    $bare = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n";
+    $table = PdfTextReader::read($bare);
+
+    assertTrue($table->isEmpty(), 'nothing was read');
+    // The distinction that matters: "there is no text in this file" is a
+    // different problem from "this file is empty", and only one of them is
+    // fixed by exporting a CSV instead.
+    assertTrue(
+        str_contains(implode(' ', $table->notes), 'no text layer') || str_contains(implode(' ', $table->notes), 'decompressed'),
+        'and the reason says the file has no text to read: ' . implode(' ', $table->notes),
+    );
+});
+
+check('the header row is found below a letterhead, not assumed to be first', function () {
+    $table = CsvReader::read(
+        "Shree Cement Ltd.,,,\n"
+        . "Statement of account,,,\n"
+        . "01 Apr 2026 to 30 Sep 2026,,,\n"
+        . "Bill Date,Invoice No,Particulars,Amount\n"
+        . "05/04/2026,INV-4460,Cement,1,25,000.00\n"
+    );
+
+    $map = ColumnMap::detect($table);
+    assertSame(3, $map->headerRow, 'the fourth row is the heading');
+    assertSame(0, $map->columns['date'], 'Bill Date is the date');
+    assertSame(1, $map->columns['reference'], 'Invoice No is the reference');
+    assertSame(2, $map->columns['description'], 'Particulars is the narration');
+    assertTrue(str_contains(implode(' ', $map->notes), 'letterhead'), 'and it says it skipped a letterhead');
+});
+
+check('a reconciliation sorts every line into one of four answers', function () use ($ctx, $auth) {
+    $statement = CsvReader::read(
+        "Date,Invoice,Amount\n"
+        . "2026-08-01,INV-0001,200000.00\n"    // agrees with Books
+        . "2026-08-10,INV/0002,45000.25\n"     // agrees, written differently
+        . "2026-08-15,INV-0003,11000.00\n"     // Books says 10,000
+        . "2026-08-22,INV-9999,7500.00\n"      // Books has never seen this
+    );
+    $map = ColumnMap::detect($statement);
+
+    $ledger = (new \Aicountly\Api\Dashboards\BooksReader($ctx, $auth->sesKey()))->supplierLedger(601, '2026-08-01', '2026-08-31');
+    assertTrue($ledger['ok'], 'the ledger was read');
+    assertSame(4, count($ledger['rows']), 'including the settled bill, which openItems() would have dropped');
+
+    $report = StatementReconciler::reconcile($map->dataRows($statement), $map, $ledger['rows'], 'INR');
+    $buckets = [];
+    foreach ($report['buckets'] as $bucket) {
+        $buckets[$bucket['id']] = $bucket;
+    }
+
+    assertSame(2, $buckets['agreed']['count'], 'two lines agree');
+    assertSame(1, $buckets['differs']['count'], 'one is the same bill for different money');
+    assertSame(1, $buckets['only_statement']['count'], 'one is billed to us and unknown to Books');
+    assertSame(1, $buckets['only_books']['count'], 'and one bill is ours and not on their statement');
+
+    // INV/0002 and INV-0002 are the same document, and matching them is the
+    // difference between a clean reconciliation and four false exceptions.
+    $refs = array_map(static fn (array $r) => $r['statement']['reference'], $buckets['agreed']['rows']);
+    assertTrue(in_array('INV/0002', $refs, true), 'punctuation did not break the match');
+
+    assertSame('INV-9999', $buckets['only_statement']['rows'][0]['reference'], 'the unknown one is named');
+});
+
+check('a reconciliation reports and never writes', function () use ($ctx, $auth) {
+    // The whole safety property in one assertion: Books owns the ledger, and a
+    // statement is the supplier's opinion of it. Nothing about reconciling may
+    // change a bill, a payable or a voucher.
+    resetDatabase();
+    $before = (int) Db::scalar('SELECT COUNT(*) FROM purchase_bill_requests');
+
+    $statement = CsvReader::read("Date,Invoice,Amount\n2026-08-01,INV-0001,999999.00\n");
+    $map = ColumnMap::detect($statement);
+    $ledger = (new \Aicountly\Api\Dashboards\BooksReader($ctx, $auth->sesKey()))->supplierLedger(601, '2026-08-01', '2026-08-31');
+
+    $report = StatementReconciler::reconcile($map->dataRows($statement), $map, $ledger['rows'], 'INR');
+
+    assertTrue($report['lines_read'] === 1, 'the line was read');
+    assertSame($before, (int) Db::scalar('SELECT COUNT(*) FROM purchase_bill_requests'), 'and nothing was created');
+});
+
+check('a dashboard prints, and an unavailable figure prints as Unavailable', function () use ($ctx, $auth) {
+    resetDatabase();
+    $payload = dashboardFor('overview', $ctx, $auth, ['preset' => 'this_year']);
+    $pdf = ReportRenderer::render($payload, 'Purchase overview', 'Company 88');
+
+    assertTrue(str_starts_with($pdf, '%PDF-'), 'a PDF was produced');
+    assertTrue(strlen($pdf) > 1200, 'with content in it');
+    assertTrue(str_contains($pdf, 'Purchase overview'), 'titled with the report, not the route');
+
+    // A printout is circulated, filed and quoted months later. A zero standing
+    // in for "we could not ask" becomes a fact the moment it is printed.
+    $hasUnavailable = false;
+    foreach ($payload['metrics'] as $metric) {
+        if ($metric['status'] !== 'ready') {
+            $hasUnavailable = true;
+            break;
+        }
+    }
+    if ($hasUnavailable) {
+        assertTrue(str_contains($pdf, 'Unavailable'), 'and it says so on the page');
+    }
+});
+
+check('the export endpoint answers with a real PDF when asked for one', function () use ($ctx, $auth) {
+    resetDatabase();
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => '0', 'format' => 'pdf', 'preset' => 'this_year'];
+    Auth::adopt($auth);
+
+    try {
+        \Aicountly\Api\Controllers\DashboardsController::export('overview');
+        throw new \RuntimeException('export returned without responding');
+    } catch (ResponseSent $sent) {
+        $data = $sent->payload['data'] ?? [];
+        assertSame('pdf', $data['format'] ?? null, 'the PDF branch answered');
+        $bytes = base64_decode((string) ($data['pdf'] ?? ''), true);
+        assertTrue(is_string($bytes) && str_starts_with($bytes, '%PDF-'), 'and the bytes are a PDF');
     } finally {
         Auth::adopt(null);
     }
