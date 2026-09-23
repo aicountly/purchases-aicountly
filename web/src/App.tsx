@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { Suspense, lazy, useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth } from './auth/AuthProvider'
 import { PurchasesProvider, usePurchases } from './context/PurchasesContext'
@@ -7,7 +7,6 @@ import ChooseCompany from './pages/ChooseCompany'
 import Reports from './pages/Reports'
 import Statements from './pages/Statements'
 import SignIn from './pages/SignIn'
-import PurchaseDashboards from './dashboards'
 import { RequisitionDetail, RequisitionEditor, RequisitionsList } from './pages/Requisitions'
 import { RfqDetail, RfqEditor, RfqList } from './pages/Sourcing'
 import { PurchaseOrderDetail, PurchaseOrderEditor, PurchaseOrderList } from './pages/PurchaseOrders'
@@ -21,6 +20,13 @@ import Access from './pages/Access'
 import { Notice } from './ui'
 import { initAnalytics, trackPageView } from './utils/analytics'
 import './App.css'
+
+/**
+ * The five dashboards, their charts and their panels are about a third of this
+ * bundle and none of it is needed to sign in or to choose a company. They are
+ * fetched when somebody opens one, which is also the moment they are needed.
+ */
+const PurchaseDashboards = lazy(() => import('./dashboards'))
 
 initAnalytics()
 
@@ -96,7 +102,16 @@ export default function App() {
                 between them rather than out of the product. */}
             <Route index element={<Navigate to="/dashboard/overview" replace />} />
             <Route path="dashboard" element={<Navigate to="/dashboard/overview" replace />} />
-            <Route path="dashboard/:view" element={<RequireScope><PurchaseDashboards /></RequireScope>} />
+            <Route
+              path="dashboard/:view"
+              element={
+                <RequireScope>
+                  <Suspense fallback={<p style={{ padding: '2rem', color: 'var(--muted)' }}>Opening…</p>}>
+                    <PurchaseDashboards />
+                  </Suspense>
+                </RequireScope>
+              }
+            />
 
             <Route path="requisitions">
               <Route index element={<RequireScope><RequisitionsList /></RequireScope>} />

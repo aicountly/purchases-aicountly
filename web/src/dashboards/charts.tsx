@@ -875,3 +875,284 @@ export function SegmentedBar({ segments, onOpen }: { segments: MatchSegment[]; o
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// Metric sparkline — the shape behind a KPI
+// ---------------------------------------------------------------------------
+
+export type SparkTone = 'positive' | 'negative' | 'neutral'
+
+const SPARK_STROKE: Record<SparkTone, string> = {
+  positive: '#16a34a',
+  negative: '#dc2626',
+  neutral: '#64748b',
+}
+
+/**
+ * The twelve-month shape behind a single figure, at card scale.
+ *
+ * TWO RULES, and they are the same two the table sparkline follows.
+ *
+ * A month with too small a sample is a GAP, not a zero: the line breaks rather
+ * than diving to the floor and back, because a drawing that says a supplier
+ * collapsed in July when July had two deliveries is the fastest way to lose a
+ * reader's trust in the whole screen.
+ *
+ * The colour is the metric's DIRECTION applied to the movement, never the
+ * arithmetic on its own. Payment terms stretching from 34 to 38 days is a line
+ * going up and a fact going the wrong way, so it is drawn red.
+ */
+export function MetricSparkline({
+  points,
+  tone,
+  label,
+}: {
+  points: { period: string; value: string | null }[]
+  tone: SparkTone
+  label: string
+}) {
+  const rated = points.filter((point) => point.value !== null)
+  if (rated.length < 2) return null
+
+  const width = 100
+  const height = 30
+  const values = rated.map((point) => px(point.value))
+  const low = Math.min(...values)
+  const high = Math.max(...values)
+  // A flat series still needs a line through the middle rather than along an
+  // edge, and a tight series needs room to breathe above and below.
+  const pad = (high - low) * 0.18 || Math.max(Math.abs(high) * 0.08, 1)
+  const min = low - pad
+  const span = high + pad - min || 1
+
+  const x = (index: number) => (points.length === 1 ? width / 2 : (index / (points.length - 1)) * width)
+  const y = (value: number) => height - ((value - min) / span) * height
+
+  // Unbroken runs, so the line never joins across a month it cannot rate.
+  const runs: { d: string; area: string }[] = []
+  let current: { x: number; y: number }[] = []
+
+  const flush = () => {
+    if (current.length > 1) {
+      const d = current.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')
+      runs.push({
+        d,
+        area: `${d} L${current[current.length - 1].x.toFixed(2)},${height} L${current[0].x.toFixed(2)},${height} Z`,
+      })
+    }
+    current = []
+  }
+
+  points.forEach((point, index) => {
+    if (point.value === null) {
+      flush()
+      return
+    }
+    current.push({ x: x(index), y: y(px(point.value)) })
+  })
+  flush()
+
+  if (runs.length === 0) return null
+
+  const stroke = SPARK_STROKE[tone]
+  const gradientId = `spark-${tone}`
+
+  return (
+    <svg
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={`${label}: ${rated.map((point) => `${point.period} ${point.value}`).join(', ')}`}
+    >
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={stroke} stopOpacity="0.18" />
+          <stop offset="100%" stopColor={stroke} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      {runs.map((run, index) => (
+        <path key={`area-${index}`} d={run.area} fill={`url(#${gradientId})`} stroke="none" />
+      ))}
+      {runs.map((run, index) => (
+        <path
+          key={`line-${index}`}
+          d={run.d}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={1.75}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+    </svg>
+  )
+}
+
+/**
+ * Several rates over the same months, on one 0–100 axis.
+ *
+ * All three series here ARE percentages of the same shape, so unlike the price
+ * paths they need no indexing — they are already comparable, and the axis is
+ * fixed to the range the data actually occupies rather than always 0–100, which
+ * would flatten every real movement into a hairline near the top.
+ */
+export function RateLineChart({
+  title,
+  summary,
+  series,
+  periods,
+  note,
+}: {
+  title: string
+  summary: string
+  periods: string[]
+  note?: string
+  series: { id: string; label: string; dashed?: boolean; points: { period: string; value: string | null }[] }[]
+}) {
+  if (periods.length < 2) {
+    return <p className="purchase-empty">Not enough months to draw a trend yet.</p>
+  }
+
+  const width = 560
+  const height = 250
+  const padLeft = 36
+  const padRight = 12
+  const padTop = 12
+  const padBottom = 26
+
+  const all = series.flatMap((s) => s.points.filter((p) => p.value !== null).map((p) => px(p.value)))
+  const rawMin = all.length === 0 ? 0 : Math.min(...all)
+  const rawMax = all.length === 0 ? 100 : Math.max(...all)
+  const min = Math.max(0, Math.floor((rawMin - 6) / 10) * 10)
+  const max = Math.min(100, Math.ceil((rawMax + 6) / 10) * 10)
+  const span = max - min || 1
+
+  const x = (period: string) => padLeft + (periods.indexOf(period) / (periods.length - 1)) * (width - padLeft - padRight)
+  const y = (value: number) => padTop + (1 - (value - min) / span) * (height - padTop - padBottom)
+
+  const ticks = [min, min + span / 2, max]
+  const monthLabel = (period: string) => {
+    const [, month] = period.split('-')
+    return ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(month)] ?? period
+  }
+
+  return (
+    <ChartFrame
+      title={title}
+      summary={summary}
+      table={
+        <table className="purchase-table">
+          <caption className="purchase-sr-only">{title}, as figures</caption>
+          <thead>
+            <tr>
+              <th scope="col">Series</th>
+              {periods.map((period) => (
+                <th key={period} scope="col" className="is-numeric">
+                  {monthLabel(period)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {series.map((s) => (
+              <tr key={s.id}>
+                <th scope="row" style={{ fontWeight: 500 }}>{s.label}</th>
+                {periods.map((period) => {
+                  const point = s.points.find((p) => p.period === period)
+                  return (
+                    <td key={period} className="is-numeric">
+                      {point?.value == null ? '—' : `${point.value}%`}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      }
+    >
+      <svg viewBox={`0 0 ${width} ${height}`} className="purchase-chart purchase-chart--line" role="img" aria-hidden="true">
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line x1={padLeft} x2={width - padRight} y1={y(tick)} y2={y(tick)} className="purchase-chart__grid" />
+            <text x={padLeft - 8} y={y(tick) + 4} textAnchor="end" className="purchase-chart__tick">
+              {Math.round(tick)}%
+            </text>
+          </g>
+        ))}
+
+        {periods.map((period) => (
+          <text key={period} x={x(period)} y={height - 8} textAnchor="middle" className="purchase-chart__tick">
+            {monthLabel(period)}
+          </text>
+        ))}
+
+        {series.map((s, index) => {
+          // Each unbroken run is its own path: a month nobody could rate is a
+          // gap in the line, never a point drawn through.
+          const runs: string[] = []
+          let current: string[] = []
+          for (const period of periods) {
+            const point = s.points.find((p) => p.period === period)
+            if (point?.value == null) {
+              if (current.length > 1) runs.push(current.join(' '))
+              current = []
+              continue
+            }
+            current.push(`${current.length === 0 ? 'M' : 'L'} ${x(period).toFixed(1)} ${y(px(point.value)).toFixed(1)}`)
+          }
+          if (current.length > 1) runs.push(current.join(' '))
+
+          return (
+            <g key={s.id}>
+              {runs.map((run, runIndex) => (
+                <path
+                  key={runIndex}
+                  d={run}
+                  fill="none"
+                  stroke={seriesColour(index)}
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray={s.dashed === true ? '5 4' : undefined}
+                />
+              ))}
+              {s.points
+                .filter((point) => point.value !== null && periods.includes(point.period))
+                .map((point) => (
+                  <circle
+                    key={point.period}
+                    cx={x(point.period)}
+                    cy={y(px(point.value))}
+                    r={3.5}
+                    fill={seriesColour(index)}
+                    stroke="#fff"
+                    strokeWidth={2}
+                  >
+                    <title>{`${s.label} · ${monthLabel(point.period)}: ${point.value}%`}</title>
+                  </circle>
+                ))}
+            </g>
+          )
+        })}
+      </svg>
+
+      <ul className="purchase-legend" style={{ listStyle: 'none', padding: 0, margin: '0.35rem 0 0' }}>
+        {series.map((s, index) => (
+          <li key={s.id}>
+            <span>
+              <i style={{ background: seriesColour(index) }} aria-hidden />
+              {s.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {note !== undefined && (
+        <p className="purchase-soft" style={{ fontSize: '0.72rem', textAlign: 'center', margin: '0.3rem 0 0' }}>
+          {note}
+        </p>
+      )}
+    </ChartFrame>
+  )
+}

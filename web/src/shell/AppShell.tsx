@@ -21,8 +21,10 @@ import {
   Search,
   Settings as SettingsIcon,
   ShieldCheck,
+  Sparkles,
   Truck,
   BarChart3,
+  FileSpreadsheet,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -34,17 +36,18 @@ import { useScopeLabels } from './useScopeLabels'
 import './app-shell.css'
 
 /**
- * Navigation, flat.
+ * Navigation, in six named sections.
  *
- * This was six collapsing groups. It read as a filing cabinet: to find out
- * whether the product could do something you had to open three drawers, and a
- * user with no permissions saw an almost empty cabinet and concluded the
- * product was empty. A flat list says what exists in one glance, which is what
- * the supplied designs do and what they were right about.
+ * This was six COLLAPSING groups, then one flat list of fourteen. The flat
+ * list fixed the real complaint — you could see what the product does without
+ * opening three drawers — and introduced a smaller one: fourteen links with no
+ * captions read as one pile, and nobody could tell the screens they work in
+ * from the screens they administer. These are captions, not drawers: nothing
+ * opens, nothing closes, and everything is still visible in one glance.
  *
  * `match` is a path prefix, and the LONGEST matching prefix wins — so
- * /dashboard/procurement lights Receipts rather than Dashboard, without either
- * entry needing to know about the other.
+ * /dashboard/suppliers lights Supplier reports rather than Dashboards, without
+ * either entry needing to know about the other.
  */
 interface NavItem {
   to: string
@@ -55,22 +58,34 @@ interface NavItem {
   permission?: string
 }
 
-type NavEntry = NavItem | { rule: true }
+type NavEntry = NavItem | { group: string }
 
 const NAV: NavEntry[] = [
-  { to: '/dashboard/overview', match: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { group: 'Workspace' },
+  { to: '/dashboard/overview', match: '/dashboard/overview', label: 'Dashboards', icon: LayoutDashboard },
+  { to: '/approvals', label: 'My approvals', icon: AlertTriangle },
+
+  { group: 'Procurement' },
   { to: '/requisitions', label: 'Requisitions', icon: ClipboardList, permission: 'requisition.view' },
-  { to: '/rfqs', label: 'Supplier quotations', icon: FileSearch, permission: 'rfq.view' },
   { to: '/purchase-orders', label: 'Purchase orders', icon: Truck, permission: 'po.view' },
-  { to: '/dashboard/procurement', label: 'Receipts', icon: PackageCheck, permission: 'po.view' },
+  { to: '/rfqs', label: 'Supplier quotations', icon: FileSearch, permission: 'rfq.view' },
+
+  { group: 'Purchase processing' },
+  { to: '/dashboard/procurement', label: 'Goods receipts', icon: PackageCheck, permission: 'po.view' },
   { to: '/bills', label: 'Purchase bills', icon: Receipt, permission: 'bill.enter' },
-  { to: '/statements', label: 'Supplier statements', icon: Scale, permission: 'bill.enter' },
   { to: '/returns', label: 'Returns', icon: RotateCcw, permission: 'return.create' },
   { to: '/claims', label: 'Claims', icon: ScrollText, permission: 'claim.create' },
+
+  { group: 'Relationships & finance' },
   { to: '/suppliers', label: 'Suppliers', icon: ShieldCheck, permission: 'supplier.view' },
-  { to: '/reports', label: 'Reports', icon: BarChart3, permission: 'reports.view' },
-  { to: '/approvals', label: 'My approvals', icon: AlertTriangle },
-  { rule: true },
+  { to: '/statements', label: 'Supplier statements', icon: Scale, permission: 'bill.enter' },
+
+  { group: 'Intelligence' },
+  { to: '/dashboard/suppliers', label: 'Supplier reports', icon: BarChart3, permission: 'supplier.view' },
+  { to: '/dashboard/ai-insights', label: 'AI insights', icon: Sparkles },
+  { to: '/reports', label: 'Reports', icon: FileSpreadsheet, permission: 'reports.view' },
+
+  { group: 'Administration' },
   { to: '/access', label: 'Access', icon: KeyRound, permission: 'access.manage' },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
@@ -102,14 +117,15 @@ export function AppShell() {
   // what looks exactly like a permission problem when nothing has been asked.
   const permissionsKnown = session !== null
 
-  const items = useMemo(
-    () =>
-      NAV.filter(
-        (entry) =>
-          !isLink(entry) || entry.permission === undefined || !permissionsKnown || can(entry.permission),
-      ),
-    [permissionsKnown, can],
-  )
+  const items = useMemo(() => {
+    const visible = NAV.filter(
+      (entry) =>
+        !isLink(entry) || entry.permission === undefined || !permissionsKnown || can(entry.permission),
+    )
+
+    // A caption with nothing beneath it names a section the user cannot open.
+    return visible.filter((entry, index) => isLink(entry) || isLink(visible[index + 1] ?? { group: '' }))
+  }, [permissionsKnown, can])
 
   // Longest matching prefix wins.
   const activeTo = useMemo(() => {
@@ -146,8 +162,8 @@ export function AppShell() {
       <aside className={navOpen ? 'app-shell__sidebar is-open' : 'app-shell__sidebar'}>
         <div className="app-shell__brand-row">
           <NavLink to="/dashboard/overview" className="app-shell__brand">
-            <span className="app-shell__brand-name">Aicountly</span>
-            <span className="app-shell__brand-product">Purchase</span>
+            <span className="app-shell__brand-name">AICOUNTLY</span>
+            <span className="app-shell__brand-product">Purchases</span>
           </NavLink>
 
           {/* Off-canvas, the panel covers the button that opened it, so the way
@@ -165,7 +181,13 @@ export function AppShell() {
 
         <nav className="app-shell__nav" aria-label="Purchases">
           {items.map((entry, index) => {
-            if (!isLink(entry)) return <div key={`rule-${index}`} className="app-shell__nav-rule" />
+            if (!isLink(entry)) {
+              return (
+                <p key={`group-${index}`} className="app-shell__nav-group">
+                  {entry.group}
+                </p>
+              )
+            }
             const Icon = entry.icon
             return (
               <NavLink

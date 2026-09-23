@@ -10,20 +10,22 @@
  */
 
 .app-shell {
-  --shell-width: 248px;
-  --shell-ink: #14181a;
-  --shell-muted: #6b7280;
-  --shell-faint: #9aa3a0;
-  --shell-border: #e6eae7;
+  /* The approved 2026 palette, so the frame and the dashboards inside it are
+     one product rather than two greens that nearly match. */
+  --shell-width: 228px;
+  --shell-ink: #0f172a;
+  --shell-muted: #64748b;
+  --shell-faint: #94a3b8;
+  --shell-border: #e2e8e5;
   --shell-surface: #ffffff;
-  --shell-tint: #eef8ec;
-  --shell-tint-strong: #dff1da;
-  --shell-brand: #25b003;
-  --shell-brand-strong: #187b12;
+  --shell-tint: #f0fdf4;
+  --shell-tint-strong: #dcfce7;
+  --shell-brand: #16a34a;
+  --shell-brand-strong: #087a45;
 
   display: flex;
   min-height: 100vh;
-  background: #fbfcfb;
+  background: #f5f8f6;
   color: var(--shell-ink);
 }
 
@@ -76,9 +78,9 @@
 
 .app-shell__brand-name {
   display: block;
-  font-size: 1.45rem;
-  font-weight: 700;
-  letter-spacing: -0.025em;
+  font-size: 1.28rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   line-height: 1.05;
   color: var(--shell-ink);
 }
@@ -88,8 +90,8 @@
   margin-top: 0.15rem;
   font-size: 0.7rem;
   font-weight: 600;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-transform: none;
   color: var(--shell-muted);
 }
 
@@ -101,6 +103,7 @@
 }
 
 .app-shell__nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.7rem;
@@ -121,8 +124,38 @@
 .app-shell__nav-item.is-active {
   background: var(--shell-tint);
   color: var(--shell-brand-strong);
-  font-weight: 600;
+  font-weight: 650;
 }
+
+/* A green rule down the left of the active entry. The tint alone is easy to
+   miss against a white sidebar at a glance, and this is the one thing on the
+   frame that answers "where am I?". */
+.app-shell__nav-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--shell-brand);
+}
+
+.app-shell__nav-item.is-active svg { color: var(--shell-brand-strong); }
+
+/* Section captions. The flat list said what existed; it did not say what kind
+   of thing each entry was, so eleven links read as one undifferentiated pile. */
+.app-shell__nav-group {
+  margin: 0.9rem 0 0.3rem;
+  padding: 0 0.75rem;
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--shell-faint);
+}
+
+.app-shell__nav-group:first-child { margin-top: 0.2rem; }
 
 .app-shell__nav-item svg { flex-shrink: 0; }
 
