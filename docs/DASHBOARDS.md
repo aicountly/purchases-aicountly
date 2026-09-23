@@ -275,6 +275,53 @@ It is not a user directory and must not become one; it is the difference
 between an administrator typing a uuid from memory and picking one that has
 demonstrably signed in.
 
+### The screen
+
+Four sections behind one route, with the open one in the URL (`/access?tab=…`)
+so a link to the activity log is a link to the activity log:
+
+| Tab | Backed by | Notes |
+| --- | --- | --- |
+| Profiles | `GET /v1/access/profiles` | Search, and filter by starter / custom / active / inactive — all of it read off fields the endpoint already returns |
+| People with access | `GET /v1/access/members` | Grouped by person, because "what can Priya do?" is the question an administrator has |
+| Access requests | `GET /v1/access/people` | **There is no request workflow.** See below |
+| Activity log | `GET /v1/access/activity` | The `access.*` rows of the append-only audit log |
+
+Two read-only endpoints were added to serve it, and neither stores anything new:
+
+`GET /v1/access/activity` reads back the `access.*` actions this product has
+been writing to `purchase_audit_log` since access administration existed. The
+rows were always there; until now the only way to read them was psql. The actor
+and the target are rendered from the state recorded **at the time**, never
+looked up now — a profile deleted last week still has to name itself in the row
+that deleted it.
+
+`GET /v1/access/starters` returns the same `STARTER_PROFILES` constant that
+`bootstrap()` writes from, with an `exists` flag per company. The confirmation
+dialog renders that rather than keeping its own copy: a dialog that previews
+four profiles and creates three different ones is worse than no dialog, and the
+flag is what stops a second press being offered as though it were the first.
+
+A count that has not arrived yet draws a skeleton and a count this product
+cannot answer draws an em dash. Neither draws a zero — "0 people with access"
+and "we have not been told yet" look identical as a zero, and only one of them
+means somebody needs to do something.
+
+### No request workflow
+
+There is no request table, no endpoint and no approval step. The Access requests
+tab says so in one sentence rather than staging a queue out of browser storage:
+a fake pending request is worse than an empty tab, because somebody would
+approve it and nothing would happen. The KPI card reads `—`, not `0`.
+
+What it shows instead is real — the uuids from `GET /v1/access/people` that have
+acted in this company and hold no profile, each with a button that carries them
+into the grant form. It is the nearest honest answer to "who is waiting on
+access" out of data this product already has.
+
+*What would close it:* a request table and `POST /v1/access/requests` plus
+approve/reject, at which point the tab renders the queue and the card counts it.
+
 ### Missing upstream capability
 
 Manage provisions members into **Books** and **Auditor** only

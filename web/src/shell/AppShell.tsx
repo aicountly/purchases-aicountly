@@ -20,6 +20,7 @@ import {
   ScrollText,
   Search,
   Settings as SettingsIcon,
+  SlidersHorizontal,
   ShieldCheck,
   Sparkles,
   Truck,
@@ -88,6 +89,11 @@ const NAV: NavEntry[] = [
   { group: 'Administration' },
   { to: '/access', label: 'Access', icon: KeyRound, permission: 'access.manage' },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
+  // Its own entry, not a child of Settings: the same choice this list already
+  // makes for Receipts alongside Dashboard. Always visible, like Settings
+  // itself — viewing needs no permission, and the page reads as a notice
+  // rather than breaking for anyone who cannot edit it.
+  { to: '/settings/new-profile', label: 'New Profile', icon: SlidersHorizontal },
 ]
 
 const isLink = (entry: NavEntry): entry is NavItem => 'to' in entry

@@ -6,6 +6,7 @@ namespace Aicountly\Api\Domain;
 
 use Aicountly\Api\Context;
 use Aicountly\Api\Db;
+use Aicountly\Api\Http;
 
 /**
  * Document numbers for the documents this product owns.
@@ -31,10 +32,30 @@ final class NumberSeries
             default       => throw new \InvalidArgumentException('Unknown document kind ' . $kind),
         };
 
-        $prefix = (string) (Db::scalar(
-            'SELECT ' . Db::quoteIdentifier($prefixColumn) . ' FROM purchase_settings WHERE cmp_id = :cmp',
+        // The prefix and the profile's status, in one read: this is the point
+        // every new requisition, RFQ, purchase order, return and claim passes
+        // through, so it is also the one place that has to ask whether the
+        // company's purchase profile is open for new documents at all.
+        $profile = Db::first(
+            'SELECT ' . Db::quoteIdentifier($prefixColumn) . ' AS prefix, is_active
+             FROM purchase_settings WHERE cmp_id = :cmp',
             ['cmp' => $ctx->cmpId],
-        ) ?? $default);
+        );
+
+        // Absent row means nobody has opened Settings yet, which is not the
+        // same as switched off. Defaults apply, and the profile is open.
+        if ($profile !== null && !self::isTrue($profile['is_active'] ?? true)) {
+            Http::conflict(
+                'The purchase profile for this company is inactive, so no new purchase documents can be raised. '
+                . 'Turn it back on in Settings → New Profile.',
+                ['field' => 'is_active', 'retryable' => false],
+            );
+        }
+
+        $prefix = (string) ($profile['prefix'] ?? $default);
+        if ($prefix === '') {
+            $prefix = $default;
+        }
 
         $stem = sprintf('%s/%d/', $prefix, $ctx->fyId);
 
@@ -54,5 +75,24 @@ final class NumberSeries
         }
 
         return $stem . str_pad((string) $sequence, 4, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * Read a PostgreSQL boolean whatever the driver hands back.
+     *
+     * pdo_pgsql has returned BOOLEAN as a PHP bool and as 't'/'f' depending on
+     * the build, and getting this wrong here would stop a company raising
+     * purchase orders. It is worth four lines to be sure.
+     */
+    private static function isTrue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_string($value)) {
+            return !in_array(strtolower($value), ['f', 'false', '0', 'no', ''], true);
+        }
+
+        return (bool) $value;
     }
 }

@@ -40,6 +40,7 @@ final class Routes
         $router->put('v1/settings', [SettingsController::class, 'update']);
         $router->get('v1/settings/match-policies', [SettingsController::class, 'matchPolicies']);
         $router->post('v1/settings/match-policies', [SettingsController::class, 'saveMatchPolicy']);
+        $router->delete('v1/settings/match-policies/{id}', [SettingsController::class, 'deleteMatchPolicy']);
 
         // Who may do what. Every route here needs `access.manage`, and the
         // escalation and self-lockout rules live in the controller, not the UI.
@@ -52,6 +53,10 @@ final class Routes
         $router->post('v1/access/members', [AccessController::class, 'assign']);
         $router->delete('v1/access/members/{id}', [AccessController::class, 'unassign']);
         $router->get('v1/access/people', [AccessController::class, 'people']);
+        $router->get('v1/access/starters', [AccessController::class, 'starters']);
+        // The access trail, read back out of the append-only audit log this
+        // product already writes. Read-only: nothing new is stored for it.
+        $router->get('v1/access/activity', [AccessController::class, 'activity']);
 
         // Read-through to the products that own the data. Pass-throughs:
         // nothing they return is stored.
