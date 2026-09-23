@@ -1,25 +1,206 @@
-/*
- * The application frame.
+/**
+ * The application frame: sidebar, top bar, content column.
  *
- * A fixed 15rem sidebar beside the content works from about 900px up. Below
- * that it leaves 150px for a dashboard, which is why the sidebar becomes an
- * off-canvas drawer instead of shrinking — a squeezed sidebar and a squeezed
- * table are both unusable, and only one of them has to be on screen.
+ * Follows the supplied designs rather than the scaffold this product started
+ * from. Three things changed and each was a real complaint about the old one:
+ * the navigation is a flat list instead of six collapsing groups (you can see
+ * where everything is without opening anything), the scope lives in the top bar
+ * as three pills you can read at a glance instead of "Company 30 · FY 61", and
+ * the sidebar ends with what the product promises rather than in empty space.
  */
 
 .app-shell {
+  --shell-width: 248px;
+  --shell-ink: #14181a;
+  --shell-muted: #6b7280;
+  --shell-faint: #9aa3a0;
+  --shell-border: #e6eae7;
+  --shell-surface: #ffffff;
+  --shell-tint: #eef8ec;
+  --shell-tint-strong: #dff1da;
+  --shell-brand: #25b003;
+  --shell-brand-strong: #187b12;
+
   display: flex;
   min-height: 100vh;
+  background: #fbfcfb;
+  color: var(--shell-ink);
 }
 
+/* ------------------------------------------------------------------ *
+ * Sidebar
+ * ------------------------------------------------------------------ */
+
 .app-shell__sidebar {
-  width: var(--sidebar-w);
+  width: var(--shell-width);
   flex-shrink: 0;
+  background: var(--shell-surface);
+  border-right: 1px solid var(--shell-border);
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border);
-  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  height: 100vh;
 }
+
+.app-shell__brand-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.app-shell__close {
+  appearance: none;
+  display: none;
+  border: 1px solid var(--shell-border);
+  background: var(--shell-surface);
+  border-radius: 9px;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  color: var(--shell-muted);
+  cursor: pointer;
+  margin: 1.35rem 1rem 0 0;
+  flex-shrink: 0;
+}
+
+.app-shell__close:hover { background: #f5f7f5; color: var(--shell-ink); }
+
+.app-shell__brand {
+  padding: 1.35rem 1.25rem 1.1rem;
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.app-shell__brand-name {
+  display: block;
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  color: var(--shell-ink);
+}
+
+.app-shell__brand-product {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--shell-muted);
+}
+
+.app-shell__nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.25rem 0.75rem 1rem;
+  scrollbar-width: thin;
+}
+
+.app-shell__nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.15rem;
+  border-radius: 10px;
+  font-size: 0.91rem;
+  color: var(--shell-muted);
+  text-decoration: none;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.app-shell__nav-item:hover {
+  background: #f5f7f5;
+  color: var(--shell-ink);
+}
+
+.app-shell__nav-item.is-active {
+  background: var(--shell-tint);
+  color: var(--shell-brand-strong);
+  font-weight: 600;
+}
+
+.app-shell__nav-item svg { flex-shrink: 0; }
+
+/* A quiet rule between the everyday screens and the administrative ones.
+   A heading there would be a seventh thing to read; a line is enough. */
+.app-shell__nav-rule {
+  height: 1px;
+  background: var(--shell-border);
+  margin: 0.6rem 0.75rem;
+}
+
+.app-shell__foot {
+  padding: 0.85rem 1rem 1.1rem;
+  border-top: 1px solid var(--shell-border);
+}
+
+.app-shell__assurance {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  background: var(--shell-tint);
+  border: 1px solid var(--shell-tint-strong);
+  border-radius: 10px;
+  padding: 0.6rem 0.7rem;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  color: #2f5c2a;
+  margin-bottom: 0.85rem;
+}
+
+.app-shell__assurance svg { flex-shrink: 0; margin-top: 1px; color: var(--shell-brand-strong); }
+
+.app-shell__signature {
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.app-shell__signature strong { display: block; color: var(--shell-ink); font-weight: 600; }
+.app-shell__signature span { color: var(--shell-faint); }
+
+.app-shell__user {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--shell-border);
+  min-width: 0;
+}
+
+.app-shell__user-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-shell__signout {
+  appearance: none;
+  border: 1px solid var(--shell-border);
+  background: transparent;
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  color: var(--shell-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.app-shell__signout:hover { background: #f5f7f5; color: var(--shell-ink); }
+
+/* ------------------------------------------------------------------ *
+ * Main column and top bar
+ * ------------------------------------------------------------------ */
 
 .app-shell__main {
   flex: 1;
@@ -29,94 +210,229 @@
 }
 
 .app-shell__header {
-  min-height: var(--header-h);
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  padding: 0.6rem 1.25rem;
+  background: var(--shell-surface);
+  border-bottom: 1px solid var(--shell-border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  min-height: 60px;
+}
+
+.app-shell__scope {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+/* The three scope pills. Borderless until hovered: they are a statement of
+   where you are first and a control second. */
+.app-shell__pill {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 9px;
+  padding: 0.4rem 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font: inherit;
+  font-size: 0.89rem;
+  font-weight: 600;
+  color: var(--shell-ink);
+  cursor: pointer;
+  max-width: 17rem;
+  min-width: 0;
+}
+
+.app-shell__pill:hover { background: #f5f7f5; border-color: var(--shell-border); }
+
+.app-shell__pill span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.app-shell__pill--quiet { font-weight: 500; color: var(--shell-ink); }
+.app-shell__pill svg { color: var(--shell-muted); flex-shrink: 0; }
+.app-shell__pill .app-shell__pill-caret { color: var(--shell-faint); }
+
+.app-shell__pill-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--shell-tint);
+  color: var(--shell-brand-strong);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.app-shell__search {
+  flex: 1;
+  min-width: 0;
+  max-width: 30rem;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--shell-border);
+  border-radius: 999px;
+  padding: 0 0.9rem;
+  height: 38px;
+  background: #fbfcfb;
+  color: var(--shell-muted);
+}
+
+.app-shell__search:focus-within {
+  border-color: var(--shell-brand-strong);
+  background: var(--shell-surface);
+}
+
+.app-shell__search input[type='search'] {
+  flex: 1;
+  min-width: 0;
+  /* The global stylesheet borders every input; inside a pill-shaped field that
+     would draw a second box around the first. */
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 0;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--shell-ink);
+  outline: none;
+  height: 100%;
+  padding: 0;
+}
+
+.app-shell__search input::placeholder { color: var(--shell-faint); }
+
+.app-shell__header-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.app-shell__bell {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  border-radius: 9px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  color: var(--shell-muted);
+  cursor: pointer;
+  position: relative;
+}
+
+.app-shell__bell:hover { background: #f5f7f5; color: var(--shell-ink); }
+
+.app-shell__bell-dot {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--shell-brand);
+  border: 1.5px solid var(--shell-surface);
+}
+
+.app-shell__avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #eceeed;
+  color: #40484a;
+  display: grid;
+  place-items: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  text-transform: uppercase;
 }
 
 .app-shell__content {
   flex: 1;
   min-width: 0;
-  background: var(--bg);
 }
 
 /*
- * Page padding, except for the dashboards.
+ * Page padding, except for the dashboards and the profile workspace.
  *
  * `.purchase-workspace` and `.purchase-profile-page` paint their own
  * background to the edges and bring their own padding, so padding here would
  * leave a border of the wrong colour around them. Every other page gets the
- * spacing it has always had.
+ * spacing this redesign gives it.
  */
-.app-shell__content > *:not(.purchase-workspace):not(.purchase-profile-page) {
-  padding: 1.25rem;
+.app-shell__content > :not(.purchase-workspace):not(.purchase-profile-page) {
+  padding: 1.5rem 1.25rem 3rem;
 }
 
-/* The menu button only exists on small screens. */
+/* ------------------------------------------------------------------ *
+ * Off-canvas below 980px
+ * ------------------------------------------------------------------ */
+
 .app-shell__menu {
+  appearance: none;
   display: none;
-  align-items: center;
-  justify-content: center;
+  border: 1px solid var(--shell-border);
+  background: var(--shell-surface);
+  border-radius: 9px;
   width: 38px;
   height: 38px;
-  flex-shrink: 0;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--fg);
+  place-items: center;
+  color: var(--shell-ink);
   cursor: pointer;
+  flex-shrink: 0;
 }
 
-.app-shell__scrim { display: none; }
-
-/* Only on a phone, where the sidebar is a drawer that has to be dismissed. */
-.app-shell__close {
+.app-shell__scrim {
   display: none;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--muted);
-  cursor: pointer;
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 20, 0.35);
+  z-index: 40;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 980px) {
+  .app-shell__menu { display: grid; }
+  .app-shell__close { display: grid; }
+  .app-shell__scrim.is-open { display: block; }
+
   .app-shell__sidebar {
     position: fixed;
-    inset: 0 auto 0 0;
-    z-index: 70;
-    width: min(17rem, 82vw);
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
     transform: translateX(-100%);
-    transition: transform 0.18s ease;
-    box-shadow: 6px 0 28px rgb(15 35 18 / 14%);
+    transition: transform 0.22s ease;
+    box-shadow: 4px 0 24px rgba(16, 24, 20, 0.12);
   }
 
   .app-shell__sidebar.is-open { transform: translateX(0); }
 
-  .app-shell__menu,
-  .app-shell__close { display: inline-flex; }
+  .app-shell__search { display: none; }
+  .app-shell__pill { max-width: 11rem; }
+}
 
-  .app-shell__scrim {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 65;
-    background: rgb(12 30 16 / 34%);
-  }
-
-  /* The context strip wraps rather than pushing the header wider than the
-     screen, which is what was forcing a horizontal scrollbar. */
-  .app-shell__header { flex-wrap: wrap; row-gap: 0.5rem; }
-  .app-shell__context { min-width: 0; flex: 1 1 100%; order: 2; }
+@media (max-width: 620px) {
+  .app-shell__header { flex-wrap: wrap; padding: 0.55rem 0.85rem; }
+  .app-shell__scope { order: 3; width: 100%; }
+  .app-shell__pill { max-width: 100%; padding-inline: 0.4rem; }
+  .app-shell__content > :not(.purchase-workspace) { padding: 1.1rem 0.85rem 3rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

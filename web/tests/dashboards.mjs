@@ -69,6 +69,56 @@ try {
 const today = new Date()
 const iso = (offsetDays) => new Date(today.getTime() + offsetDays * 86400000).toISOString().slice(0, 10)
 
+/**
+ * Four suppliers, four months, three deliveries each.
+ *
+ * Not decoration: the charts refuse to draw on thin data, correctly. A donut
+ * needs more than one supplier to divide anything up, a price path needs the
+ * same item ordered in several months, and the product will not rate a month
+ * with fewer than three deliveries — so a single seeded order proves nothing
+ * about any of them, and a check written against it would pass on an empty
+ * chart.
+ */
+const SUPPLIERS = [
+  [601, 'Shree Cement Ltd.'],
+  [602, 'Tata Steel'],
+  [603, 'Ujala Electricals'],
+  [604, 'Hindustan Petroleum'],
+]
+
+// Nothing needs approval while the history is built, so every order reaches
+// ISSUED and can be received.
+await apiPut('v1/settings', { po_approval_above_amount: 0 })
+
+let month = 0
+for (const mm of ['04', '05', '06', '07']) {
+  month += 1
+  let sIndex = 0
+  for (const [supplierId, supplierName] of SUPPLIERS) {
+    sIndex += 1
+    const body = {
+      supplier_account_id: supplierId,
+      supplier_name: supplierName,
+      po_date: `2026-${mm}-05`,
+      promised_date: `2026-${mm}-20`,
+      delivery_warehouse_id: 3,
+      lines: [
+        { item_id: 201, unit_id: 1, ordered_qty: 40 + sIndex * 10, agreed_rate: 250 + month * 12 + sIndex * 3, estimated_tax_pc: 18, warehouse_id: 3 },
+        { item_id: 202, unit_id: 1, ordered_qty: 20 + sIndex * 5, agreed_rate: 900 + month * 25 - sIndex * 7, estimated_tax_pc: 18, warehouse_id: 3 },
+      ],
+    }
+    for (let n = 1; n <= 3; n++) {
+      const po = await apiPost('v1/purchase-orders', body)
+      await apiPost(`v1/purchase-orders/${po.po_id}/submit`)
+      await apiPost(`v1/purchase-orders/${po.po_id}/issue`)
+      // The last supplier slips from month three on. A sparkline that only ever
+      // draws a flat line is not evidence that gaps and declines render.
+      const late = sIndex === SUPPLIERS.length && month > 2 && n !== 3
+      await apiPost(`v1/purchase-orders/${po.po_id}/receive`, { received_at: `2026-${mm}-${late ? 27 : 18}` })
+    }
+  }
+}
+
 // An approval threshold below the order below, or submitting it approves it on
 // the spot and there is no approval to open a drawer on. This is the product's
 // own rule, not a test switch: an order under the threshold does not need one.
@@ -92,7 +142,7 @@ await apiPost(`v1/purchase-orders/${seeded.po_id}/submit`, {}, BUYER)
 // back to whatever `npx playwright install chromium` put in place.
 const executablePath = process.env.PURCHASE_CHROMIUM_PATH || undefined
 const browser = await chromium.launch(executablePath ? { executablePath } : {})
-const ctx = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+const ctx = await browser.newContext({ viewport: { width: 1440, height: 950 }, acceptDownloads: true })
 await ctx.addInitScript(() => {
   try {
     localStorage.setItem('auth_token', 'preview-auth-token')
@@ -138,7 +188,7 @@ await check('a filter is a query parameter and Back undoes exactly one', async (
 await check('a shared link reproduces the same filtered screen', async () => {
   await page.goto(`${BASE}/dashboard/procurement?view=delayed&preset=this_year`, { waitUntil: 'networkidle' })
   await settle()
-  const active = await page.locator('.purchase-segment.is-active').first().textContent()
+  const active = await page.locator('.purchase-chip.is-active').first().textContent()
   eq((active || '').trim(), 'Delayed', 'the saved view is applied from the URL')
   eq(await page.locator('select').first().inputValue(), 'this_year', 'the period is applied from the URL')
 })
@@ -151,7 +201,7 @@ await check('the period control changes the figures and the URL together', async
   eq(new URL(page.url()).searchParams.get('preset'), 'last_7_days', 'preset in the URL')
   // The server resolves the preset into dates and echoes them back, so the
   // screen can never disagree with the range its figures were computed for.
-  ok((await page.locator('.purchase-context').textContent())?.includes('–'), 'the resolved range is shown')
+  ok((await page.locator('.purchase-scope-line').textContent())?.includes('–'), 'the resolved range is shown')
 })
 
 await check('an unknown view redirects rather than erroring', async () => {
@@ -295,10 +345,96 @@ await check('the mobile menu opens and closes without trapping the page', async 
   await menu.click()
   await small.waitForTimeout(300)
   ok(await small.locator('.app-shell__sidebar.is-open').isVisible(), 'the sidebar slid in')
-  await small.locator('.app-shell__close').click()
+  // The same button closes it — it swaps its icon and its label rather than
+  // hiding a second control inside the panel.
+  await small.getByRole('button', { name: 'Close the menu' }).click()
   await small.waitForTimeout(300)
   ok((await small.locator('.app-shell__sidebar.is-open').count()) === 0, 'and slid out again')
   await mobile.close()
+})
+
+await check('purchase intelligence leads with six figures and three zones', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  eq((await page.locator('h1').first().textContent())?.trim(), 'Purchase intelligence', 'the heading')
+  eq(await page.locator('.purchase-metric').count(), 6, 'six cards')
+  ok(await page.locator('.purchase-intel-opportunities').isVisible(), 'the opportunities table')
+  ok(await page.locator('.purchase-intel-risks').isVisible(), 'the risk list')
+  ok(await page.locator('.purchase-intel-insights').isVisible(), 'the insight list')
+
+  // The row must fit the viewport. A KPI row somebody has to drag sideways is
+  // a KPI row they read half of.
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  ok(overflow <= 1, `no horizontal page scroll, got ${overflow}px`)
+})
+
+await check('a KPI carries its shape and the previous period under it', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const card = page.locator('.purchase-metric', { hasText: 'Purchase value' }).first()
+  ok(await card.locator('.purchase-metric__spark').isVisible(), 'the sparkline drew')
+  ok(((await card.locator('.purchase-metric__footer').textContent()) || '').length > 0, 'the footer states the comparison')
+
+  // The short form is on the card; the exact figure is the tooltip, so nothing
+  // rounded is ever the only figure on the screen.
+  const exact = await card.locator('.purchase-metric__value').getAttribute('title')
+  ok((exact || '').includes('₹'), 'the exact figure travels with the short one')
+})
+
+await check('an opportunity opens a drawer rather than navigating away', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const rows = page.locator('.purchase-intel-opportunities tbody tr')
+  if ((await rows.count()) === 0) return
+
+  const before = page.url()
+  await rows.first().locator('button').first().click()
+  await page.waitForTimeout(400)
+
+  const dialog = page.getByRole('dialog')
+  ok(await dialog.isVisible(), 'the drawer opened')
+  eq(page.url(), before, 'and the page did not navigate')
+  ok(((await dialog.textContent()) || '').includes('Why this was detected'), 'it states why the rule fired')
+  ok(((await dialog.textContent()) || '').includes('assumes'), 'and what the estimate assumes')
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  ok((await page.getByRole('dialog').count()) === 0, 'Escape closed it')
+})
+
+await check('Ask Aicountly AI is a drawer, and its state is in the URL', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  await page.locator('.purchase-intel-insights').getByRole('button', { name: 'Ask AI' }).click()
+  await page.waitForTimeout(400)
+  eq(new URL(page.url()).searchParams.get('ask'), '1', 'the drawer is in the URL')
+
+  const dialog = page.getByRole('dialog')
+  ok(await dialog.isVisible(), 'the drawer opened')
+  ok(((await dialog.textContent()) || '').includes('never writes a query'), 'the security position is on the screen')
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  eq(new URL(page.url()).searchParams.get('ask'), null, 'and closing takes it out again')
+})
+
+await check('the monitoring pill reports what actually answered', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const pill = page.locator('.purchase-monitor__pill')
+  const label = ((await pill.textContent()) || '').trim()
+  ok(/AI monitoring live|Limited ai monitoring|AI monitoring unavailable/.test(label), `a real state, got "${label}"`)
+
+  await pill.click()
+  await page.waitForTimeout(250)
+  const popover = page.locator('.purchase-monitor__popover')
+  ok(await popover.isVisible(), 'the sources are one click away')
+  ok(((await popover.textContent()) || '').includes('Purchases'), 'and this product is named among them')
 })
 
 await check('access administration bootstraps, assigns and shows its own rules', async () => {
@@ -361,15 +497,14 @@ await check('the owner gets the whole product', async () => {
   await page.goto(`${BASE}/dashboard/overview`, { waitUntil: 'networkidle' })
   await settle()
 
-  // Groups, not links: the sidebar collapses a group you are not in, so what a
-  // permission decides is whether the GROUP appears at all. Three of the six
-  // contain nothing that is ungated, and those three are precisely the ones
-  // that vanished — which is the screenshot this bug was reported with.
+  // The navigation is flat now, so what a permission decides is whether an
+  // ENTRY appears. Most of them are gated, and they are exactly what vanished
+  // in the screenshot this bug was reported with.
   const navText = (await page.locator('nav[aria-label="Purchases"]').textContent()) || ''
-  for (const group of ['Procurement', 'Purchase processing', 'Relationships & finance']) {
-    ok(navText.includes(group), `the ${group} group is there`)
+  for (const entry of ['Requisitions', 'Purchase orders', 'Purchase bills', 'Suppliers', 'Reports', 'Access']) {
+    ok(navText.includes(entry), `${entry} is in the navigation`)
   }
-  ok(navText.includes('Workspace') && navText.includes('Administration'), 'and the ungated ones too')
+  ok(navText.includes('Dashboard') && navText.includes('Settings'), 'and the ungated ones too')
 
   // No banner: there is nothing to explain.
   eq(await page.locator('text=You have no permissions in Aicountly Purchases yet').count(), 0, 'no notice for the owner')
@@ -402,11 +537,202 @@ await check('a delegate is told why the app is empty, not left to guess', async 
   )
 
   const navText = (await delegate.locator('nav[aria-label="Purchases"]').textContent()) || ''
-  for (const group of ['Procurement', 'Purchase processing', 'Relationships & finance']) {
-    ok(!navText.includes(group), `the ${group} group is correctly hidden`)
+  for (const entry of ['Requisitions', 'Purchase orders', 'Purchase bills', 'Reports', 'Access']) {
+    ok(!navText.includes(entry), `${entry} is correctly hidden`)
   }
+  ok(navText.includes('Dashboard'), 'but what needs no permission stays')
 
   await delegateCtx.close()
+})
+
+await check('with no company chosen the launcher is what you get, not a broken shell', async () => {
+  const fresh = await browser.newContext({ viewport: { width: 1440, height: 950 } })
+  await fresh.addInitScript(() => {
+    try {
+      localStorage.setItem('auth_token', 'preview-auth-token')
+      localStorage.removeItem('purchases:scope')
+    } catch {}
+  })
+  const first = await fresh.newPage()
+  await first.goto(`${BASE}/`, { waitUntil: 'networkidle' })
+  await first.waitForTimeout(900)
+
+  ok(
+    await first.getByRole('heading', { name: /Which company are you buying for/ }).isVisible(),
+    'the launcher is the page',
+  )
+  // Not the application frame: a sidebar of links that all refuse to load is
+  // exactly what this replaced.
+  eq(await first.locator('.app-shell__sidebar').count(), 0, 'no application frame behind it')
+
+  const cards = first.locator('.launcher__card')
+  ok((await cards.count()) >= 2, 'the companies Manage listed are offered')
+
+  // Search narrows, and the count beside the heading agrees with what is drawn.
+  await first.locator('.launcher__search input').fill('deccan')
+  await first.waitForTimeout(350)
+  eq(await first.locator('.launcher__card').count(), 1, 'search narrows the list')
+  await first.locator('.launcher__search input').fill('')
+  await first.waitForTimeout(350)
+
+  // Choosing one asks for the year before opening anything: every document
+  // here is filed against a year, so it cannot be skipped.
+  await cards.first().locator('.launcher__card-text').click()
+  await first.waitForTimeout(800)
+  ok(await first.locator('.launcher__confirm').isVisible(), 'the year and branch step appears')
+  ok(await first.locator('#launcher-fy').isVisible(), 'with a financial year to pick')
+
+  await first.getByRole('button', { name: /^Open/ }).click()
+  await first.waitForTimeout(1200)
+  ok(
+    await first.getByRole('heading', { name: 'Purchase overview' }).isVisible(),
+    'and opening it lands on the dashboard',
+  )
+  ok((await first.locator('.app-shell__sidebar').count()) === 1, 'now the frame is there')
+
+  await fresh.close()
+})
+
+await check('the launcher and the shell hold together on a phone', async () => {
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  await phone.addInitScript(() => {
+    try {
+      localStorage.setItem('auth_token', 'preview-auth-token')
+      localStorage.removeItem('purchases:scope')
+    } catch {}
+  })
+  const small = await phone.newPage()
+  await small.goto(`${BASE}/`, { waitUntil: 'networkidle' })
+  await small.waitForTimeout(900)
+  const overflow = await small.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  )
+  eq(overflow, 0, 'the launcher does not scroll sideways at 390px')
+  await phone.close()
+})
+
+await check('the supplier charts are drawn from the data, with the figures behind them', async () => {
+  await page.goto(`${BASE}/dashboard/suppliers?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  // The donut: one arc per named supplier plus, when there are more than four,
+  // one neutral slice for the tail. Never a generated fifth hue.
+  const arcs = page.locator('.purchase-donut svg path')
+  const arcCount = await arcs.count()
+  ok(arcCount >= 2 && arcCount <= 6, `donut has ${arcCount} slices — between 2 and 6`)
+
+  // Identity is never colour alone: every slice is named and shares are stated.
+  const legend = (await page.locator('.purchase-donut__legend').textContent()) || ''
+  ok(/%/.test(legend), 'the legend carries each share')
+
+  // And the same figures exist as a table, which is what a screen reader and a
+  // printout get.
+  const donutPanel = page.locator('section.purchase-panel').filter({ hasText: 'Concentration exposure' }).first()
+  await donutPanel.locator('.purchase-chart__toggle button').first().click()
+  await page.waitForTimeout(300)
+  ok((await donutPanel.locator('table').count()) > 0, 'the donut has a table view')
+
+  // The price path: one line per item on ONE axis, indexed so items priced per
+  // tonne and per coil can share it.
+  const pricePanel = page.locator('section.purchase-panel').filter({ hasText: 'Price movement' }).first()
+  await pricePanel.scrollIntoViewIfNeeded()
+  const lines = pricePanel.locator('.purchase-chart--line path[stroke]')
+  ok((await lines.count()) >= 1, 'at least one price path is drawn')
+  const axisLabels = await pricePanel.locator('.purchase-chart--line .purchase-chart__tick').count()
+  ok(axisLabels > 0, 'the index axis is labelled')
+  ok(
+    (await pricePanel.locator('text=/indexed to 100/i').count()) > 0,
+    'and the page says what the index is against',
+  )
+})
+
+await check('a sparkline breaks at months it cannot rate rather than drawing zero', async () => {
+  await page.goto(`${BASE}/dashboard/suppliers?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const sparks = page.locator('.purchase-spark')
+  ok((await sparks.count()) >= 1, 'the scorecard carries a trend column')
+
+  // Every sparkline states its own figures for a screen reader, and a month
+  // with too few deliveries is absent from that list rather than present as 0%.
+  const label = (await sparks.first().getAttribute('aria-label')) || ''
+  ok(/On-time delivery for/.test(label), `the sparkline names its supplier: ${label.slice(0, 60)}`)
+  ok(!/\b0%/.test(label) || /\d+%/.test(label), 'rated months carry a percentage')
+})
+
+await check('a supplier statement is read, checked, then reconciled', async () => {
+  const fs = await import('node:fs/promises')
+  const os = await import('node:os')
+  const pathMod = await import('node:path')
+
+  // A statement shaped like the ones that actually arrive: a letterhead above
+  // the table, Indian lakh grouping, and the same invoice written two ways.
+  const csv = [
+    'Shree Cement Ltd.,,,',
+    'Statement of account,,,',
+    '01 Aug 2026 to 31 Aug 2026,,,',
+    'Bill Date,Invoice No,Particulars,Amount',
+    '01/08/2026,INV-0001,Cement OPC,"2,00,000.00"',
+    '10/08/2026,INV/0002,Freight,"45,000.25"',
+    '15/08/2026,INV-0003,Admixture,"11,000.00"',
+    '22/08/2026,INV-9999,Unknown charge,"7,500.00"',
+  ].join('\n')
+  const file = pathMod.join(os.tmpdir(), 'purchases-browser-statement.csv')
+  await fs.writeFile(file, csv, 'utf8')
+
+  await page.goto(`${BASE}/statements`, { waitUntil: 'networkidle' })
+  await settle()
+
+  await page.locator('input[type="file"]').setInputFiles(file)
+  await page.waitForTimeout(1500)
+
+  // Step two must show what it decided BEFORE anything is compared.
+  ok(
+    (await page.locator('text=/read as a letterhead and skipped/').count()) > 0,
+    'it says it skipped the letterhead',
+  )
+  const mapped = await page.locator('select').first().inputValue()
+  eq(mapped, '0', 'the date column was found')
+
+  await page.locator('input[placeholder="Account id"]').fill('601')
+  await page.locator('input[type="date"]').first().fill('2026-08-01')
+  await page.locator('input[type="date"]').nth(1).fill('2026-08-31')
+  await page.getByRole('button', { name: /Reconcile/ }).click()
+  await page.waitForTimeout(1800)
+
+  const body = (await page.locator('.purchase-dashboard-content').textContent()) || ''
+
+  // All four answers, and the one that proves the matching works: INV/0002 on
+  // the statement is INV/0002 in Books, and INV-0001 is INV/0001 — punctuation
+  // must not create two false exceptions.
+  ok(/Agreed/.test(body), 'the agreed bucket is shown')
+  ok(/Same bill, different amount/.test(body), 'so is the disagreement bucket')
+  ok(/On the statement only/.test(body), 'and what the supplier billed that we have not')
+  ok(/In Smart Books only/.test(body), 'and what we hold that they did not list')
+  ok(/INV-9999/.test(body), 'the unknown invoice is named')
+
+  // Nothing is kept. That claim is on the screen because it is a promise.
+  ok(/read and discarded/.test(body), 'and it says the file was not kept')
+
+  await fs.unlink(file).catch(() => {})
+})
+
+await check('a report downloads as a real PDF, not a renamed CSV', async () => {
+  await page.goto(`${BASE}/reports`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: /PDF/ }).first().click(),
+  ])
+
+  const path = await download.path()
+  ok(path !== null, 'the browser received a file')
+
+  const fs = await import('node:fs/promises')
+  const head = (await fs.readFile(path)).subarray(0, 8).toString('latin1')
+  ok(head.startsWith('%PDF-'), `and its first bytes are a PDF header, got ${JSON.stringify(head)}`)
+  ok(download.suggestedFilename().endsWith('.pdf'), 'named as a PDF')
 })
 
 await browser.close()

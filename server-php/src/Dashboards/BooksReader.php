@@ -137,6 +137,55 @@ final class BooksReader
     }
 
     /**
+     * Every bill Books holds for one supplier, settled ones included.
+     *
+     * openItems() drops anything with nothing left to pay, which is right for a
+     * payables screen and wrong for a reconciliation. The most common thing a
+     * supplier statement disagrees about is a bill they still show as open and
+     * we have already paid — and a reader that filtered those out would report
+     * it as "not in Books at all", sending somebody to look for a missing
+     * invoice that was never missing.
+     *
+     * @return array{ok: bool, error: ?string, rows: list<array<string, mixed>>}
+     */
+    public function supplierLedger(int $supplierAccountId, string $from, string $to): array
+    {
+        $result = $this->client()->billByBill($this->ctx, [
+            'acc_id' => $supplierAccountId,
+            'from'   => $from,
+            'to'     => $to,
+        ]);
+
+        if (!($result['ok'] ?? false)) {
+            return ['ok' => false, 'error' => self::reason($result, 'the bill history for this supplier'), 'rows' => []];
+        }
+
+        $data = (array) ($result['body']['data'] ?? []);
+        $rows = $data['rows'] ?? $data['bills'] ?? $data['data'] ?? [];
+
+        $out = [];
+        foreach ((array) $rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $original = Decimal::parse($row['amount'] ?? $row['bill_amount'] ?? null);
+            $pending = Decimal::of($row['pending_amount'] ?? $row['balance'] ?? $row['outstanding'] ?? null);
+
+            $out[] = [
+                'bill_ref'        => self::stringOrNull($row['bill_ref'] ?? $row['reference'] ?? $row['vch_no'] ?? null),
+                'bill_date'       => self::dateOrNull($row['bill_date'] ?? $row['vch_date'] ?? null),
+                'due_date'        => self::dateOrNull($row['due_date'] ?? null),
+                'original_amount' => $original,
+                'pending_amount'  => $pending,
+                'settled'         => Decimal::isZero($pending),
+            ];
+        }
+
+        return ['ok' => true, 'error' => null, 'rows' => $out];
+    }
+
+    /**
      * The posted purchase register — the rows behind "net posted purchases".
      *
      * @return array{ok: bool, error: ?string, rows: list<array<string, mixed>>}
