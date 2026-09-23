@@ -369,14 +369,14 @@
 }
 
 /*
- * Page padding, except for the dashboards and the profile workspace.
+ * Page padding, except for the screens that paint their own.
  *
- * `.purchase-workspace` and `.purchase-profile-page` paint their own
- * background to the edges and bring their own padding, so padding here would
- * leave a border of the wrong colour around them. Every other page gets the
- * spacing this redesign gives it.
+ * `.purchase-workspace`, `.access-workspace` and `.purchase-profile-page`
+ * paint their own background to the edges and bring their own padding, so
+ * padding here would leave a border of the wrong colour around them. Every
+ * other page gets the spacing this redesign gives it.
  */
-.app-shell__content > :not(.purchase-workspace):not(.purchase-profile-page) {
+.app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page) {
   padding: 1.5rem 1.25rem 3rem;
 }
 
@@ -432,7 +432,7 @@
   .app-shell__header { flex-wrap: wrap; padding: 0.55rem 0.85rem; }
   .app-shell__scope { order: 3; width: 100%; }
   .app-shell__pill { max-width: 100%; padding-inline: 0.4rem; }
-  .app-shell__content > :not(.purchase-workspace) { padding: 1.1rem 0.85rem 3rem; }
+  .app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page) { padding: 1.1rem 0.85rem 3rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

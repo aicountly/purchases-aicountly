@@ -53,6 +53,10 @@ final class Routes
         $router->post('v1/access/members', [AccessController::class, 'assign']);
         $router->delete('v1/access/members/{id}', [AccessController::class, 'unassign']);
         $router->get('v1/access/people', [AccessController::class, 'people']);
+        $router->get('v1/access/starters', [AccessController::class, 'starters']);
+        // The access trail, read back out of the append-only audit log this
+        // product already writes. Read-only: nothing new is stored for it.
+        $router->get('v1/access/activity', [AccessController::class, 'activity']);
 
         // Read-through to the products that own the data. Pass-throughs:
         // nothing they return is stored.
