@@ -29,6 +29,7 @@ use Aicountly\Api\Domain\ThreeWayMatchService;
 use Aicountly\Api\Ai\AskEngine;
 use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\DashboardsController;
+use Aicountly\Api\Controllers\ReturnsController;
 use Aicountly\Api\Dashboards\BillsDashboard;
 use Aicountly\Api\Dashboards\BooksReader;
 use Aicountly\Api\Dashboards\Decimal;
@@ -42,6 +43,7 @@ use Aicountly\Api\Import\ColumnMap;
 use Aicountly\Api\Import\CsvReader;
 use Aicountly\Api\Import\DocumentReader;
 use Aicountly\Api\Import\PdfTextReader;
+use Aicountly\Api\Import\ReturnImport;
 use Aicountly\Api\Import\StatementReconciler;
 use Aicountly\Api\Import\Values;
 use Aicountly\Api\Import\XlsxReader;
@@ -817,6 +819,403 @@ check('an unknown claim kind is refused', function () use ($ctx, $auth) {
         'Claim kind must be',
         'unknown claim kind',
     );
+});
+
+/**
+ * Call a ReturnsController action the way the router would.
+ *
+ * Same shape as callAccess() above, for the same reason: what a test should
+ * assert on is what a real endpoint produced, not what a service method the
+ * endpoint happens to call returned.
+ *
+ * @param array<string, mixed> $query
+ * @return array{status:int, data:mixed, meta:mixed, message:?string}
+ */
+function callReturns(string $action, Context $ctx, Auth $auth, array $query = [], array $args = []): array
+{
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => (string) $ctx->boId] + $query;
+
+    $reflection = new \ReflectionClass(Http::class);
+    $cached = $reflection->getProperty('body');
+    $cached->setAccessible(true);
+    $cached->setValue(null, $query);
+
+    Auth::adopt($auth);
+    Permissions::forget();
+
+    try {
+        ReturnsController::$action(...$args);
+    } catch (ResponseSent $sent) {
+        return [
+            'status'  => $sent->status,
+            'data'    => $sent->payload['data'] ?? null,
+            'meta'    => $sent->payload['meta'] ?? null,
+            'message' => $sent->payload['message'] ?? null,
+        ];
+    } finally {
+        Auth::adopt(null);
+        $cached->setValue(null, null);
+    }
+
+    throw new \RuntimeException("ReturnsController::{$action} returned without responding");
+}
+
+/**
+ * A return, raised directly, for the register and analytics checks.
+ *
+ * @param array<string, mixed> $overrides
+ */
+function seedReturn(Context $ctx, Auth $auth, array $overrides = []): array
+{
+    return (new ReturnClaimService($ctx, $auth))->createReturn($overrides + [
+        'supplier_account_id' => 601,
+        'supplier_name'       => 'Deccan Steel Traders',
+        'return_date'         => '2026-09-10',
+        'reason_code'         => 'damaged',
+        'lines' => [['item_id' => 201, 'warehouse_id' => 3, 'return_qty' => 4, 'rate' => 250]],
+    ]);
+}
+
+check('the register carries the value and the item count it is read for', function () use ($ctx, $auth) {
+    resetDatabase();
+    seedReturn($ctx, $auth);
+    seedReturn($ctx, $auth, [
+        'return_date' => '2026-08-02',
+        'reason_code' => 'quality',
+        'lines' => [
+            ['item_id' => 201, 'warehouse_id' => 3, 'return_qty' => 2, 'rate' => 100],
+            ['item_id' => 202, 'warehouse_id' => 3, 'return_qty' => 1, 'rate' => 900],
+        ],
+    ]);
+
+    $response = callReturns('index', $ctx, $auth);
+    assertSame(2, $response['meta']['total'], 'both returns are counted');
+
+    $rows = $response['data'];
+    // Newest first, which is what the register defaults to.
+    assertSame('2026-09-10', $rows[0]['return_date'], 'sorted by date, newest first');
+    assertSame(1, $rows[0]['item_count'], 'one line on the September return');
+    assertSame('1000.0000', $rows[0]['total_value'], 'four at 250');
+    assertSame(2, $rows[1]['item_count'], 'two lines on the August return');
+    assertSame('1100.0000', $rows[1]['total_value'], 'two at 100 plus one at 900');
+    assertSame('Deccan Steel Traders', $rows[0]['supplier_name'], 'the supplier reads as a name');
+});
+
+check('every register filter narrows the whole table, not the page', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new ReturnClaimService($ctx, $auth);
+    seedReturn($ctx, $auth);
+    $august = seedReturn($ctx, $auth, ['return_date' => '2026-08-02', 'reason_code' => 'quality']);
+    $service->approveReturn((int) $august['return_id'], []);
+
+    $cases = [
+        ['what' => 'date range',   'query' => ['from' => '2026-09-01', 'to' => '2026-09-30'], 'expect' => 1],
+        ['what' => 'status',       'query' => ['status' => 'APPROVED'],                       'expect' => 1],
+        ['what' => 'status list',  'query' => ['status' => 'DRAFT,APPROVED'],                 'expect' => 2],
+        ['what' => 'reason',       'query' => ['reason' => 'quality'],                        'expect' => 1],
+        ['what' => 'supplier',     'query' => ['supplier_account_id' => '601'],               'expect' => 2],
+        ['what' => 'other supplier', 'query' => ['supplier_account_id' => '999'],             'expect' => 0],
+        ['what' => 'value floor',  'query' => ['min_value' => '900'],                         'expect' => 2],
+        ['what' => 'value ceiling', 'query' => ['max_value' => '10'],                         'expect' => 0],
+        ['what' => 'credit status', 'query' => ['supplier_credit' => 'RECEIVED'],             'expect' => 0],
+        ['what' => 'search',       'query' => ['q' => 'Deccan'],                              'expect' => 2],
+        ['what' => 'search miss',  'query' => ['q' => 'nobody'],                              'expect' => 0],
+        ['what' => 'books pending', 'query' => ['books' => 'PENDING'],                        'expect' => 2],
+        ['what' => 'books posted',  'query' => ['books' => 'POSTED'],                         'expect' => 0],
+    ];
+
+    foreach ($cases as $case) {
+        $response = callReturns('index', $ctx, $auth, $case['query']);
+        assertSame($case['expect'], $response['meta']['total'], 'filtering by ' . $case['what']);
+    }
+
+    // Two filters together are an AND, not whichever was applied last.
+    $both = callReturns('index', $ctx, $auth, ['status' => 'APPROVED', 'reason' => 'damaged']);
+    assertSame(0, $both['meta']['total'], 'two filters intersect');
+});
+
+check('the summary totals the same set the register lists', function () use ($ctx, $auth) {
+    resetDatabase();
+    seedReturn($ctx, $auth);
+    seedReturn($ctx, $auth, ['return_date' => '2026-08-02', 'lines' => [['item_id' => 201, 'return_qty' => 1, 'rate' => 500]]]);
+
+    $filtered = ['from' => '2026-09-01', 'to' => '2026-09-30'];
+    $register = callReturns('index', $ctx, $auth, $filtered);
+    $summary = callReturns('summary', $ctx, $auth, $filtered);
+
+    assertSame($register['meta']['total'], $summary['data']['totals']['returns'], 'the cards and the list agree');
+    assertSame('1000', $summary['data']['totals']['return_value'], 'the value is the sum of the lines');
+    assertSame('₹1,000.00', $summary['data']['totals']['return_value_formatted'], 'formatted once, on the server');
+});
+
+check('the comparison is the window before, and is absent when there is none', function () use ($ctx, $auth) {
+    resetDatabase();
+    // Two in September, one in the 30 days before it.
+    seedReturn($ctx, $auth, ['return_date' => '2026-09-05']);
+    seedReturn($ctx, $auth, ['return_date' => '2026-09-20']);
+    seedReturn($ctx, $auth, ['return_date' => '2026-08-20']);
+
+    $summary = callReturns('summary', $ctx, $auth, ['from' => '2026-09-01', 'to' => '2026-09-30']);
+    assertSame(true, $summary['data']['period']['comparable'], 'a dated window has one before it');
+    // September is 30 days, so the window before it is the 30 days ending
+    // 31 August — not "last calendar month", which would be 31 days long and
+    // would make every comparison between an unequal pair of periods.
+    assertSame('2026-08-02', $summary['data']['period']['previous']['from'], 'the previous window is the same length');
+    assertSame('2026-08-31', $summary['data']['period']['previous']['to'], 'and ends the day before this one starts');
+    assertSame(2, $summary['data']['totals']['returns'], 'two in the window');
+    assertSame(1, $summary['data']['previous']['returns'], 'one in the window before');
+    assertSame('up', $summary['data']['deltas']['returns']['direction'], 'which is a rise');
+    assertSame('100', $summary['data']['deltas']['returns']['percent'], 'of one hundred per cent');
+
+    // No dates means no previous period, and a card that invented one would be
+    // making a comparison the data cannot support.
+    $all = callReturns('summary', $ctx, $auth);
+    assertSame(false, $all['data']['period']['comparable'], 'all time has nothing before it');
+    assertSame(null, $all['data']['deltas'], 'so no change is reported');
+});
+
+check('the trend emits every month in the window, quiet ones included', function () use ($ctx, $auth) {
+    resetDatabase();
+    seedReturn($ctx, $auth, ['return_date' => '2026-09-10']);
+    seedReturn($ctx, $auth, ['return_date' => '2026-07-04']);
+
+    $summary = callReturns('summary', $ctx, $auth, ['from' => '2026-09-01', 'to' => '2026-09-30']);
+    $trend = $summary['data']['trend'];
+
+    assertSame(6, count($trend), 'six months');
+    assertSame('2026-04', $trend[0]['month'], 'ending at the filtered month');
+    assertSame('2026-09', $trend[5]['month'], 'and including it');
+    assertSame(0, $trend[1]['count'], 'a month with no returns is a zero, not a gap');
+    assertSame(1, $trend[3]['count'], 'July');
+    assertSame(1, $trend[5]['count'], 'September');
+});
+
+check('the reason split is a share of the filtered set', function () use ($ctx, $auth) {
+    resetDatabase();
+    seedReturn($ctx, $auth, ['reason_code' => 'damaged']);
+    seedReturn($ctx, $auth, ['reason_code' => 'damaged']);
+    seedReturn($ctx, $auth, ['reason_code' => 'short_supply']);
+    seedReturn($ctx, $auth, ['reason_code' => null]);
+
+    $reasons = callReturns('summary', $ctx, $auth)['data']['reasons'];
+
+    assertSame('damaged', $reasons[0]['reason_code'], 'the commonest reason leads');
+    assertSame('Damaged goods', $reasons[0]['label'], 'read out of the vocabulary');
+    assertSame('50.0', $reasons[0]['percentage'], 'two of four');
+    assertSame('unspecified', $reasons[2]['reason_code'], 'a return with no reason is still counted');
+    assertSame('Not stated', $reasons[2]['label'], 'and says so');
+
+    $total = 0.0;
+    foreach ($reasons as $reason) {
+        $total += (float) $reason['percentage'];
+    }
+    assertSame(100.0, round($total, 1), 'the shares add up');
+});
+
+check('a return reason outside the vocabulary is refused', function () use ($ctx, $auth) {
+    resetDatabase();
+    assertThrows(
+        static fn () => seedReturn($ctx, $auth, ['reason_code' => 'because_i_said_so']),
+        'Return reason must be one of',
+        'unknown reason code',
+    );
+});
+
+check('a draft cancels with its reason; a dispatched return does not cancel here', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new ReturnClaimService($ctx, $auth);
+
+    $draft = seedReturn($ctx, $auth);
+    assertThrows(
+        static fn () => $service->cancelReturn((int) $draft['return_id'], []),
+        'Say why',
+        'cancelling without a reason',
+    );
+
+    $cancelled = $service->cancelReturn((int) $draft['return_id'], ['reason' => 'Supplier collected it against the next order instead.']);
+    assertSame('CANCELLED', $cancelled['status'], 'status');
+    assertSame('Supplier collected it against the next order instead.', $cancelled['cancel_reason'], 'and the reason is kept');
+
+    // Once Inventory holds the movement, cancelling here would leave this
+    // product saying a return never happened while Inventory says it did.
+    $po = receivedOrder($ctx, $auth);
+    $live = seedReturn($ctx, $auth, ['po_id' => (int) $po['po_id'], 'lines' => [[
+        'po_line_id' => (int) $po['lines'][0]['line_id'], 'item_id' => 201, 'warehouse_id' => 3, 'return_qty' => 5, 'rate' => 250,
+    ]]]);
+    $service->approveReturn((int) $live['return_id'], []);
+    $service->dispatchReturn((int) $live['return_id']);
+
+    assertThrows(
+        static fn () => $service->cancelReturn((int) $live['return_id'], ['reason' => 'changed our mind']),
+        'cannot be cancelled here',
+        'cancelling a dispatched return',
+    );
+});
+
+check('the supplier credit is tracked without pretending to be the debit note', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new ReturnClaimService($ctx, $auth);
+    $return = seedReturn($ctx, $auth);
+    $returnId = (int) $return['return_id'];
+
+    assertSame('PENDING', $return['supplier_credit_status'], 'a new return is awaiting the credit');
+
+    assertThrows(
+        static fn () => $service->recordSupplierCredit($returnId, ['supplier_credit_status' => 'RECEIVED']),
+        'credit note reference',
+        'recording a credit with no reference',
+    );
+
+    $credited = $service->recordSupplierCredit($returnId, [
+        'supplier_credit_status' => 'RECEIVED',
+        'supplier_credit_ref'    => 'CN-4433',
+        'supplier_credit_date'   => '2026-09-21',
+        'supplier_credit_amount' => 1000,
+    ]);
+
+    assertSame('RECEIVED', $credited['supplier_credit_status'], 'the supplier has credited us');
+    assertSame('CN-4433', $credited['supplier_credit_ref'], 'under their reference');
+    // The supplier's document is not ours. Recording theirs must not invent one
+    // of ours, and the accounting stays Books' until Books is asked.
+    assertSame(null, $credited['books_debit_note_uuid'], 'no debit note was invented');
+    assertSame('DRAFT', $credited['status'], 'and the return did not move itself along');
+
+    $withdrawn = $service->recordSupplierCredit($returnId, ['supplier_credit_status' => 'PENDING']);
+    assertSame(null, $withdrawn['supplier_credit_ref'], 'withdrawing the credit clears the reference it was under');
+});
+
+check('the export carries the register, under the same filters', function () use ($ctx, $auth) {
+    resetDatabase();
+    seedReturn($ctx, $auth, ['return_date' => '2026-09-10']);
+    seedReturn($ctx, $auth, ['return_date' => '2026-08-02']);
+
+    $export = callReturns('export', $ctx, $auth, ['from' => '2026-09-01', 'to' => '2026-09-30']);
+    assertSame(1, $export['data']['rows'], 'the filter applied to the export too');
+
+    $csv = $export['data']['csv'];
+    assertTrue(str_contains($csv, '"Return No.","Date","Supplier"'), 'the header names the columns');
+    assertTrue(str_contains($csv, '"Deccan Steel Traders"'), 'and the supplier reads as a name');
+    assertTrue(!str_contains($csv, '2026-08-02'), 'the August return is not in a September export');
+});
+
+check('an unreachable Inventory reads as unavailable, never as nothing posted', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $service = new ReturnClaimService($ctx, $auth);
+
+    $return = seedReturn($ctx, $auth, ['po_id' => (int) $po['po_id'], 'lines' => [[
+        'po_line_id' => (int) $po['lines'][0]['line_id'], 'item_id' => 201, 'warehouse_id' => 3, 'return_qty' => 5, 'rate' => 250,
+    ]]]);
+    $returnId = (int) $return['return_id'];
+
+    // Before anything is sent, the honest answer is that nothing was sent.
+    $before = callReturns('integration', $ctx, $auth, [], [(string) $returnId]);
+    assertSame('NOT_SENT', $before['data']['inventory']['status'], 'nothing has gone to Inventory yet');
+    assertSame(true, $before['data']['inventory']['available'], 'and Inventory was not asked');
+
+    $service->approveReturn($returnId, []);
+    $service->dispatchReturn($returnId);
+
+    $posted = callReturns('integration', $ctx, $auth, [], [(string) $returnId]);
+    assertSame('POSTED', $posted['data']['inventory']['status'], 'Inventory holds the movement');
+    assertTrue($posted['data']['inventory']['document'] !== null, 'read live from Inventory');
+
+    // With Inventory down the reference is still ours and still shown — what is
+    // NOT shown is a status we cannot know.
+    stubFail('inventory-documents/by-uuid', 503);
+    try {
+        $down = callReturns('integration', $ctx, $auth, [], [(string) $returnId]);
+        assertSame('UNKNOWN', $down['data']['inventory']['status'], 'an unreachable Inventory is unknown');
+        assertSame(false, $down['data']['inventory']['available'], 'and says it is unavailable');
+        assertTrue($down['data']['inventory']['reason'] !== null, 'with the reason it gave');
+        assertTrue($down['data']['inventory']['reference'] !== null, 'the reference we hold is still ours to show');
+    } finally {
+        stubRecover();
+    }
+});
+
+check('the options endpoint serves the vocabularies the filters are built from', function () use ($ctx, $auth) {
+    resetDatabase();
+    seedReturn($ctx, $auth, ['reason_code' => 'damaged']);
+
+    $options = callReturns('options', $ctx, $auth)['data'];
+
+    assertSame('DRAFT', $options['statuses'][0]['value'], 'statuses in workflow order');
+    assertSame('Goods returned', $options['statuses'][2]['label'], 'labelled for a person');
+    assertTrue(count($options['reasons']) >= count(ReturnClaimService::REASONS), 'every reason is offered');
+    assertSame(true, $options['can']['create'], 'and what this user may do travels with them');
+});
+
+check('a file of returns is read, checked and grouped, and nothing is written', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $poNo = (string) $po['po_no'];
+
+    $csv = "Aicountly Purchases — returns to raise\n"
+        . "Return date,Supplier account,Supplier name,Source document,Item,Quantity,Rate,Reason,Warehouse\n"
+        . "10/09/2026,601,Deccan Steel Traders,{$poNo},201,4,250,Damaged goods,3\n"
+        . "10/09/2026,601,Deccan Steel Traders,{$poNo},202,1,900,Damaged goods,3\n"
+        . "11/09/2026,601,Deccan Steel Traders,,201,2,250,quality,3\n"
+        . "11/09/2026,,Missing Supplier Ltd,,201,2,250,quality,3\n"
+        . "11/09/2026,601,Deccan Steel Traders,,201,zero,250,quality,3\n"
+        . "11/09/2026,601,Deccan Steel Traders,PO/NOPE/1,201,2,250,quality,3\n"
+        . "11/09/2026,601,Deccan Steel Traders,,201,2,250,because I said so,3\n";
+
+    $table = CsvReader::read($csv);
+    $read = ReturnImport::detect($table)->read($table, $ctx);
+
+    assertSame(2, $read['mapping']['header_row'], 'the header was found under the letterhead');
+    assertSame(7, $read['summary']['rows'], 'every non-blank row was read');
+    assertSame(3, $read['summary']['valid'], 'three rows survive');
+    assertSame(4, $read['summary']['errors'], 'and four are reported rather than guessed at');
+
+    // Two lines against one order on one day are ONE return with two lines.
+    assertSame(2, $read['summary']['returns'], 'lines grouped into returns');
+    assertSame(2, count($read['returns'][0]['lines']), 'the first return carries both its lines');
+    assertSame('damaged', $read['returns'][0]['reason_code'], 'the reason label was read as its code');
+    assertSame((int) $po['po_id'], $read['returns'][0]['po_id'], 'the source document resolved to an order');
+
+    $messages = [];
+    foreach ($read['rows'] as $row) {
+        foreach ($row['errors'] as $error) {
+            $messages[] = $error;
+        }
+    }
+    $joined = implode(' | ', $messages);
+    assertTrue(str_contains($joined, 'No supplier account'), 'a missing supplier is an error on that row');
+    assertTrue(str_contains($joined, 'Quantity "zero"'), 'and the cell is quoted back');
+    assertTrue(str_contains($joined, 'No purchase order "PO/NOPE/1"'), 'an unknown order is not invented');
+    assertTrue(str_contains($joined, 'is not one of'), 'and neither is a reason');
+
+    assertSame(0, (int) Db::scalar('SELECT COUNT(*) FROM purchase_returns'), 'reading the file wrote nothing');
+});
+
+check('importing creates drafts, and one bad row does not lose the good ones', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    $response = callReturns('importCommit', $ctx, $auth, ['returns' => [
+        [
+            'supplier_account_id' => 601,
+            'supplier_name'       => 'Deccan Steel Traders',
+            'return_date'         => '2026-09-10',
+            'reason_code'         => 'damaged',
+            'lines' => [['item_id' => 201, 'warehouse_id' => 3, 'return_qty' => 4, 'rate' => 250]],
+        ],
+        // No supplier: reported, and the others still land.
+        ['supplier_account_id' => 0, 'lines' => [['item_id' => 201, 'return_qty' => 1, 'rate' => 10]]],
+        [
+            'supplier_account_id' => 602,
+            'return_date'         => '2026-09-11',
+            'lines' => [['item_id' => 202, 'return_qty' => 1, 'rate' => 900]],
+        ],
+    ]]);
+
+    assertSame(201, $response['status'], 'created');
+    assertSame(2, $response['data']['created_count'], 'two returns created');
+    assertSame(1, count($response['data']['failed']), 'one row reported');
+    assertSame(1, $response['data']['failed'][0]['index'], 'by its position in the file');
+    assertSame('DRAFT', $response['data']['created'][0]['status'], 'every import is a draft');
+    assertSame(2, (int) Db::scalar('SELECT COUNT(*) FROM purchase_returns'), 'and only those two exist');
 });
 
 echo "\nData ownership (release-blocking)\n";

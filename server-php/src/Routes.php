@@ -112,12 +112,29 @@ final class Routes
         $router->post('v1/match-exceptions/{id}/reject', [BillsController::class, 'rejectException']);
 
         // Returns and claims.
+        //
+        // The three fixed paths are declared BEFORE `{id}`: the router matches
+        // in declaration order, and `v1/returns/summary` is the same shape as
+        // `v1/returns/{id}`. Registered the other way round, the summary would
+        // be looked up as a return numbered "summary".
         $router->get('v1/returns', [ReturnsController::class, 'index']);
         $router->post('v1/returns', [ReturnsController::class, 'create']);
+        $router->get('v1/returns/summary', [ReturnsController::class, 'summary']);
+        // Reading a file of returns, then creating what was reviewed. Both are
+        // POST because both take an upload or a body; `import/preview` has no
+        // side effects at all, so a mapping can be checked before it is acted on.
+        $router->post('v1/returns/import/preview', [ReturnsController::class, 'importPreview']);
+        $router->post('v1/returns/import', [ReturnsController::class, 'importCommit']);
+        $router->get('v1/returns/options', [ReturnsController::class, 'options']);
+        $router->get('v1/returns/export', [ReturnsController::class, 'export']);
         $router->get('v1/returns/{id}', [ReturnsController::class, 'show']);
+        // Read live from Inventory and Books. Nothing about either is stored.
+        $router->get('v1/returns/{id}/integration', [ReturnsController::class, 'integration']);
         $router->post('v1/returns/{id}/approve', [ReturnsController::class, 'approve']);
         $router->post('v1/returns/{id}/dispatch', [ReturnsController::class, 'dispatch']);
         $router->post('v1/returns/{id}/debit-note', [ReturnsController::class, 'debitNote']);
+        $router->post('v1/returns/{id}/cancel', [ReturnsController::class, 'cancel']);
+        $router->post('v1/returns/{id}/supplier-credit', [ReturnsController::class, 'supplierCredit']);
 
         $router->get('v1/claims', [ClaimsController::class, 'index']);
         $router->post('v1/claims', [ClaimsController::class, 'create']);

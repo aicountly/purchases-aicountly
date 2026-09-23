@@ -203,6 +203,18 @@ if (str_contains($path, '/v1/inventory-documents/by-source')) {
     exit;
 }
 
+if (str_contains($path, '/v1/inventory-documents/by-uuid/')) {
+    $uuid = rawurldecode(basename($path));
+    echo json_encode(['data' => [
+        'document_uuid' => $uuid,
+        'document_no'   => 'SO/' . substr($uuid, -4),
+        'document_type' => 'PURCHASE_RETURN',
+        'status'        => 'POSTED',
+        'posted_at'     => gmdate('c'),
+    ]]);
+    exit;
+}
+
 if (str_contains($path, '/v1/inventory-documents/post')) {
     $payload = [
         'document_id'   => 7000 + $n,
@@ -321,6 +333,17 @@ if (str_contains($path, '/dashboard/purchase')) {
     ]]);
     exit;
 }
+if (preg_match('#/vouchers/(\d+)$#', $path, $m) === 1 && $method === 'GET') {
+    echo json_encode(['data' => [
+        'vch_txn_id' => (int) $m[1],
+        'vch_uuid'   => 'vch-' . $m[1],
+        'vch_no'     => 'DN/' . str_pad($m[1], 4, '0', STR_PAD_LEFT),
+        'vch_type'   => 'DEBIT_NOTE',
+        'status'     => 'POSTED',
+    ]]);
+    exit;
+}
+
 if (str_contains($path, '/vouchers/drafts') && str_contains($path, '/post')) {
     $payload = ['vch_txn_id' => 4000 + $n, 'vch_uuid' => 'vch-' . $n, 'vch_no' => 'INV/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT), 'status' => 'POSTED'];
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);

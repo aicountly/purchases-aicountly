@@ -9,6 +9,7 @@ use Aicountly\Api\Dashboards\BooksReader;
 use Aicountly\Api\Http;
 use Aicountly\Api\Import\ColumnMap;
 use Aicountly\Api\Import\DocumentReader;
+use Aicountly\Api\Import\Upload;
 use Aicountly\Api\Import\StatementReconciler;
 use Aicountly\Api\Permissions;
 
@@ -177,44 +178,13 @@ final class ImportController extends Controller
     /**
      * The uploaded file, or a refusal.
      *
+     * The checks live in Import\Upload, which the returns importer uses too.
+     *
      * @return array{0: string, 1: string, 2: callable(): void}
      */
     private static function uploadedFile(): array
     {
-        $file = $_FILES['file'] ?? null;
-
-        if (!is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-            Http::validationFailed(self::uploadError(is_array($file) ? (int) ($file['error'] ?? 0) : UPLOAD_ERR_NO_FILE), ['field' => 'file']);
-        }
-
-        $path = (string) ($file['tmp_name'] ?? '');
-        // Under a web SAPI this is the guarantee that the path is one PHP wrote
-        // and not one a caller named.
-        if (PHP_SAPI !== 'cli' && !is_uploaded_file($path)) {
-            Http::validationFailed('That upload could not be verified.', ['field' => 'file']);
-        }
-
-        // The name is used for DISPLAY ONLY — never to decide the format, never
-        // to build a path. basename() strips any directory a caller put in it.
-        $name = basename((string) ($file['name'] ?? 'upload'));
-        $name = (string) preg_replace('/[^\w.\- ]/u', '', $name);
-
-        return [$path, $name === '' ? 'upload' : $name, static function () use ($path): void {
-            if ($path !== '' && is_file($path)) {
-                @unlink($path);
-            }
-        }];
-    }
-
-    private static function uploadError(int $code): string
-    {
-        return match ($code) {
-            UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'That file is larger than this server accepts. Export a narrower date range.',
-            UPLOAD_ERR_PARTIAL => 'The upload did not finish. Try again.',
-            UPLOAD_ERR_NO_FILE => 'Choose a file to upload.',
-            UPLOAD_ERR_NO_TMP_DIR, UPLOAD_ERR_CANT_WRITE => 'This server could not store the upload while reading it. This is a server fault, not a problem with your file.',
-            default => 'That file could not be uploaded.',
-        };
+        return Upload::file();
     }
 
     /**

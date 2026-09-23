@@ -9,6 +9,7 @@ use Aicountly\Api\Auth;
 use Aicountly\Api\Clients\BooksClient;
 use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Context;
+use Aicountly\Api\Dashboards\Decimal;
 use Aicountly\Api\Db;
 use Aicountly\Api\Http;
 use Aicountly\Api\IntegrationCommand;
@@ -32,6 +33,36 @@ final class ReturnClaimService
 {
     public const COMMAND_RETURN_DISPATCH = 'purchases.return.dispatch';
     public const COMMAND_DEBIT_NOTE      = 'purchases.return.debit_note';
+
+    /**
+     * Every state a purchase return can be in, in the order it passes through
+     * them. The migration comments the same list on the column; this is the one
+     * the code filters and validates against.
+     */
+    public const STATUSES = ['DRAFT', 'APPROVED', 'DISPATCHED', 'DEBITED', 'CLOSED', 'CANCELLED'];
+
+    /** The supplier's own credit note against a return — never our accounting. */
+    public const CREDIT_STATUSES = ['PENDING', 'RECEIVED', 'NOT_REQUIRED'];
+
+    /**
+     * Why goods go back.
+     *
+     * A fixed vocabulary rather than free text, because the reason is what the
+     * analytics group by: "damaged", "Damaged" and "dmgd" are three columns on
+     * a chart that should have one. `reason_note` carries the detail.
+     *
+     * @var array<string, string>
+     */
+    public const REASONS = [
+        'damaged'          => 'Damaged goods',
+        'wrong_item'       => 'Wrong item',
+        'quality'          => 'Quality issue',
+        'short_supply'     => 'Short supply',
+        'price_difference' => 'Price difference',
+        'expired'          => 'Expired or near expiry',
+        'excess'           => 'Excess delivery',
+        'other'            => 'Other',
+    ];
 
     public function __construct(
         private readonly Context $ctx,
@@ -58,6 +89,16 @@ final class ReturnClaimService
             Http::validationFailed('A return needs at least one line.', ['field' => 'lines']);
         }
 
+        // The reason is what every chart on the workspace groups by, so it is a
+        // vocabulary rather than free text. The detail goes in `reason_note`.
+        $reason = self::text($input['reason_code'] ?? null);
+        if ($reason !== null && !isset(self::REASONS[$reason])) {
+            Http::validationFailed(
+                'Return reason must be one of: ' . implode(', ', array_keys(self::REASONS)) . '.',
+                ['field' => 'reason_code'],
+            );
+        }
+
         return Db::transaction(function () use ($input, $supplierId, $lines) {
             $no = NumberSeries::next($this->ctx, 'return');
 
@@ -69,9 +110,15 @@ final class ReturnClaimService
                 'return_date'         => self::date($input['return_date'] ?? null),
                 'po_id'               => self::id($input['po_id'] ?? null),
                 'supplier_account_id' => $supplierId,
+                // The supplier's name as it reads today. A label kept beside the
+                // id so a register can list five hundred returns without asking
+                // Books for five hundred ledger names; the account itself is
+                // still Books', and is still read from Books wherever it matters.
+                'supplier_name_snapshot' => self::text($input['supplier_name'] ?? null),
                 'status'              => 'DRAFT',
                 'reason_code'         => self::text($input['reason_code'] ?? null),
                 'reason_note'         => self::text($input['reason_note'] ?? null),
+                'expected_pickup_date' => self::optionalDate($input['expected_pickup_date'] ?? null),
                 'created_by'          => $this->auth->uuid,
             ], 'return_id');
 
@@ -279,45 +326,299 @@ final class ReturnClaimService
         return $this->findReturn($returnId);
     }
 
+    /**
+     * Record the supplier's own credit note against a return.
+     *
+     * THIS IS NOT AN ACCOUNTING ENTRY. It is the buyer's note of a document the
+     * supplier issued — the reference, the date, the amount they agreed to —
+     * which is the same class of fact as the return reason and belongs to the
+     * procurement workflow. What that credit does to the payable is Smart Books'
+     * and is posted there, by Books, through the debit note above.
+     *
+     * @param array<string, mixed> $input
+     */
+    public function recordSupplierCredit(int $returnId, array $input): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'return.approve');
+
+        $return = $this->findReturn($returnId);
+        if ($return === []) {
+            Http::notFound('That return does not exist.');
+        }
+
+        $status = strtoupper((string) ($input['supplier_credit_status'] ?? 'RECEIVED'));
+        if (!in_array($status, self::CREDIT_STATUSES, true)) {
+            Http::validationFailed(
+                'Supplier credit status must be one of: ' . implode(', ', self::CREDIT_STATUSES) . '.',
+                ['field' => 'supplier_credit_status'],
+            );
+        }
+
+        $reference = self::text($input['supplier_credit_ref'] ?? null);
+        if ($status === 'RECEIVED' && $reference === null) {
+            Http::validationFailed('Give the credit note reference the supplier issued.', ['field' => 'supplier_credit_ref']);
+        }
+
+        $amount = $input['supplier_credit_amount'] ?? null;
+        $amount = ($amount === null || $amount === '') ? null : round((float) $amount, 4);
+        if ($amount !== null && $amount < 0) {
+            Http::validationFailed('A supplier credit cannot be negative.', ['field' => 'supplier_credit_amount']);
+        }
+
+        Db::update('purchase_returns', [
+            'supplier_credit_status' => $status,
+            // Cleared rather than kept when the credit is withdrawn: a reference
+            // left behind on a PENDING return reads as though it arrived.
+            'supplier_credit_ref'    => $status === 'RECEIVED' ? $reference : null,
+            'supplier_credit_date'   => $status === 'RECEIVED' ? self::optionalDate($input['supplier_credit_date'] ?? null) ?? gmdate('Y-m-d') : null,
+            'supplier_credit_amount' => $status === 'RECEIVED' ? $amount : null,
+            'updated_at'             => self::now(),
+        ], ['return_id' => $returnId, 'cmp_id' => $this->ctx->cmpId]);
+
+        Audit::record($this->ctx, $this->auth, 'return.supplier_credit', 'purchase_return', $returnId, [
+            'supplier_credit_status' => $return['supplier_credit_status'] ?? null,
+        ], ['supplier_credit_status' => $status, 'supplier_credit_ref' => $reference]);
+
+        return $this->findReturn($returnId);
+    }
+
+    /**
+     * Abandon a return that has not moved anything yet.
+     *
+     * Deliberately refused once Inventory has taken the goods out or Books has
+     * raised the debit note: cancelling here would leave this product saying a
+     * return never happened while two others hold documents that say it did.
+     * Reversing one of those is their operation, not a status change here.
+     *
+     * @param array<string, mixed> $input
+     */
+    public function cancelReturn(int $returnId, array $input): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'return.approve');
+
+        $return = $this->findReturn($returnId);
+        if ($return === []) {
+            Http::notFound('That return does not exist.');
+        }
+        if (!in_array($return['status'], ['DRAFT', 'APPROVED'], true)) {
+            Http::conflict('A return that is ' . strtolower(str_replace('_', ' ', (string) $return['status'])) . ' cannot be cancelled here. Reverse it in the product that holds the document.');
+        }
+
+        $reason = self::text($input['reason'] ?? $input['cancel_reason'] ?? null);
+        if ($reason === null) {
+            Http::validationFailed('Say why this return is being cancelled.', ['field' => 'reason']);
+        }
+
+        Db::update('purchase_returns', [
+            'status'        => 'CANCELLED',
+            'cancel_reason' => $reason,
+            'updated_at'    => self::now(),
+        ], ['return_id' => $returnId, 'cmp_id' => $this->ctx->cmpId]);
+
+        Audit::record($this->ctx, $this->auth, 'return.cancelled', 'purchase_return', $returnId, ['status' => $return['status']], ['status' => 'CANCELLED'], $reason);
+
+        return $this->findReturn($returnId);
+    }
+
     /** @return array<string, mixed> */
     public function findReturn(int $returnId): array
     {
-        $row = Db::first('SELECT * FROM purchase_returns WHERE return_id = :id AND cmp_id = :cmp', ['id' => $returnId, 'cmp' => $this->ctx->cmpId]);
+        $row = Db::first(
+            'SELECT r.*, p.po_no, p.currency_code
+               FROM purchase_returns r
+               LEFT JOIN purchase_orders p ON p.po_id = r.po_id
+              WHERE r.return_id = :id AND r.cmp_id = :cmp',
+            ['id' => $returnId, 'cmp' => $this->ctx->cmpId],
+        );
         if ($row === null) {
             return [];
         }
         $row['lines'] = Db::all('SELECT * FROM purchase_return_lines WHERE return_id = :id ORDER BY line_no', ['id' => $returnId]);
         $row['commands'] = IntegrationCommand::forEntity($this->ctx, 'purchase_return', $returnId);
+        $row += self::totals($row['lines']);
 
         return $row;
     }
 
-    /** @return array{rows:list<array<string, mixed>>, total:int} */
+    /**
+     * The register query.
+     *
+     * Every filter the workspace offers is applied HERE, in SQL, against the
+     * whole table — never to the page that happened to be fetched. A screen that
+     * filters its own current page tells the user there are three matching
+     * returns when there are ninety.
+     *
+     * @param array<string, mixed> $filters
+     * @return array{rows:list<array<string, mixed>>, total:int}
+     */
     public function searchReturns(array $filters, int $limit, int $offset, string $sort, string $order): array
+    {
+        [$clause, $params] = $this->registerClause($filters);
+
+        // The line aggregate is lateral rather than a grouped subquery: grouping
+        // the whole table to draw twenty-five rows is a sort of every return
+        // line in the company on every page turn.
+        $from = 'FROM purchase_returns r
+                 LEFT JOIN purchase_orders p ON p.po_id = r.po_id
+                 LEFT JOIN LATERAL (
+                     SELECT COUNT(*) AS line_count, COALESCE(SUM(l.line_amount), 0) AS return_value
+                     FROM purchase_return_lines l WHERE l.return_id = r.return_id
+                 ) agg ON TRUE';
+
+        $sortable = [
+            'return_date'  => 'r.return_date',
+            'return_no'    => 'r.return_no',
+            'status'       => 'r.status',
+            'created_at'   => 'r.created_at',
+            'return_value' => 'agg.return_value',
+            'supplier'     => 'supplier_name',
+        ];
+        $sortColumn = $sortable[$sort] ?? 'r.return_date';
+
+        $select = "SELECT r.*,
+                          agg.line_count::int AS line_count,
+                          agg.return_value::text AS return_value,
+                          p.po_no,
+                          p.currency_code,
+                          COALESCE(r.supplier_name_snapshot, p.supplier_name_snapshot) AS supplier_name";
+
+        return [
+            'rows'  => Db::all("{$select} {$from} WHERE {$clause} ORDER BY {$sortColumn} {$order}, r.return_id {$order} LIMIT {$limit} OFFSET {$offset}", $params),
+            'total' => (int) Db::scalar("SELECT COUNT(*) {$from} WHERE {$clause}", $params),
+        ];
+    }
+
+    /**
+     * The WHERE clause the register, its export and its totals all share.
+     *
+     * One clause, three callers. An export built from a second set of
+     * conditions is an export that disagrees with the screen the first time
+     * either one changes.
+     *
+     * @param array<string, mixed> $filters
+     * @return array{0:string, 1:array<string, mixed>}
+     */
+    public function registerClause(array $filters): array
     {
         [$scope, $params] = $this->ctx->scopeClause('r');
         $where = [$scope];
 
-        if (!empty($filters['status'])) {
-            $where[] = 'r.status = :status';
-            $params['status'] = (string) $filters['status'];
+        // A comma-separated list, because the workspace filters by "everything
+        // still open" as readily as by one status.
+        $statuses = self::statusList($filters['status'] ?? null);
+        if ($statuses !== []) {
+            $names = [];
+            foreach ($statuses as $index => $status) {
+                $names[] = ':status' . $index;
+                $params['status' . $index] = $status;
+            }
+            $where[] = 'r.status IN (' . implode(', ', $names) . ')';
         }
+
         if (!empty($filters['supplier_account_id'])) {
             $where[] = 'r.supplier_account_id = :supplier';
             $params['supplier'] = (int) $filters['supplier_account_id'];
         }
+        if (!empty($filters['po_id'])) {
+            $where[] = 'r.po_id = :po_id';
+            $params['po_id'] = (int) $filters['po_id'];
+        }
+        if (!empty($filters['reason_code'])) {
+            $where[] = 'r.reason_code = :reason';
+            $params['reason'] = (string) $filters['reason_code'];
+        }
+        if (!empty($filters['created_by'])) {
+            $where[] = 'r.created_by = :created_by';
+            $params['created_by'] = (string) $filters['created_by'];
+        }
+        if (!empty($filters['from'])) {
+            $where[] = 'r.return_date >= :from_date';
+            $params['from_date'] = (string) $filters['from'];
+        }
+        if (!empty($filters['to'])) {
+            $where[] = 'r.return_date <= :to_date';
+            $params['to_date'] = (string) $filters['to'];
+        }
+
+        $credit = strtoupper((string) ($filters['supplier_credit'] ?? ''));
+        if (in_array($credit, self::CREDIT_STATUSES, true)) {
+            $where[] = 'r.supplier_credit_status = :credit';
+            $params['credit'] = $credit;
+        }
+
+        // Inventory and Books are asked whether the document EXISTS, which is
+        // what this product knows. What state it is in over there is read from
+        // them, live, on the return itself.
+        $inventory = strtoupper((string) ($filters['inventory'] ?? ''));
+        if ($inventory === 'POSTED') {
+            $where[] = 'r.inventory_document_uuid IS NOT NULL';
+        } elseif ($inventory === 'PENDING') {
+            $where[] = 'r.inventory_document_uuid IS NULL';
+        }
+
+        $books = strtoupper((string) ($filters['books'] ?? ''));
+        if ($books === 'POSTED') {
+            $where[] = 'r.books_debit_note_uuid IS NOT NULL';
+        } elseif ($books === 'PENDING') {
+            $where[] = 'r.books_debit_note_uuid IS NULL';
+        }
+
+        if (isset($filters['min_value']) && $filters['min_value'] !== '' && $filters['min_value'] !== null) {
+            $where[] = 'agg.return_value >= :min_value';
+            $params['min_value'] = round((float) $filters['min_value'], 4);
+        }
+        if (isset($filters['max_value']) && $filters['max_value'] !== '' && $filters['max_value'] !== null) {
+            $where[] = 'agg.return_value <= :max_value';
+            $params['max_value'] = round((float) $filters['max_value'], 4);
+        }
+
         if (!empty($filters['q'])) {
-            $where[] = '(r.return_no ILIKE :term OR r.reason_note ILIKE :term)';
+            $where[] = '(r.return_no ILIKE :term
+                         OR r.reason_note ILIKE :term
+                         OR r.supplier_name_snapshot ILIKE :term
+                         OR r.supplier_credit_ref ILIKE :term
+                         OR p.po_no ILIKE :term
+                         OR p.supplier_name_snapshot ILIKE :term)';
             $params['term'] = '%' . $filters['q'] . '%';
         }
 
-        $clause = implode(' AND ', $where);
-        $sortColumn = in_array($sort, ['return_date', 'return_no', 'status', 'created_at'], true) ? $sort : 'return_date';
+        return [implode(' AND ', $where), $params];
+    }
 
-        return [
-            'rows'  => Db::all("SELECT r.* FROM purchase_returns r WHERE {$clause} ORDER BY r.{$sortColumn} {$order}, r.return_id {$order} LIMIT {$limit} OFFSET {$offset}", $params),
-            'total' => (int) Db::scalar("SELECT COUNT(*) FROM purchase_returns r WHERE {$clause}", $params),
-        ];
+    /**
+     * Line count and value, added up from the lines themselves.
+     *
+     * @param list<array<string, mixed>> $lines
+     * @return array{line_count:int, return_value:string}
+     */
+    private static function totals(array $lines): array
+    {
+        $total = '0';
+        foreach ($lines as $line) {
+            $total = Decimal::add($total, Decimal::of($line['line_amount'] ?? '0'));
+        }
+
+        return ['line_count' => count($lines), 'return_value' => $total];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function statusList(mixed $raw): array
+    {
+        if (!is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        $statuses = [];
+        foreach (explode(',', $raw) as $candidate) {
+            $status = strtoupper(trim($candidate));
+            if ($status !== '' && in_array($status, self::STATUSES, true)) {
+                $statuses[] = $status;
+            }
+        }
+
+        return array_values(array_unique($statuses));
     }
 
     // -----------------------------------------------------------------------
@@ -507,6 +808,12 @@ final class ReturnClaimService
         $trimmed = trim($value);
 
         return $trimmed === '' ? null : $trimmed;
+    }
+
+    /** A date the caller may legitimately leave unset, unlike the return date. */
+    private static function optionalDate(mixed $value): ?string
+    {
+        return (is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim($value)) === 1) ? trim($value) : null;
     }
 
     private static function date(mixed $value): string
