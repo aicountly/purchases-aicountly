@@ -508,7 +508,7 @@ await check('access administration bootstraps, assigns and shows its own rules',
   await page.goto(`${BASE}/access`, { waitUntil: 'networkidle' })
   await settle()
 
-  eq((await page.locator('h1').first().textContent())?.trim(), 'Access', 'the access screen opened')
+  eq((await page.locator('h1').first().textContent())?.trim(), 'Access & Permissions', 'the access screen opened')
 
   // A company with no profiles says so, rather than looking merely empty: only
   // the owner can do anything until one exists.
