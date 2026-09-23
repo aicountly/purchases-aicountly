@@ -105,7 +105,7 @@
 }
 
 /* ------------------------------------------------------------------ *
- * Page header
+ * Page header — heading, actions, and the one green card
  * ------------------------------------------------------------------ */
 
 .purchase-page-header {
@@ -163,6 +163,77 @@
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  padding-top: 0.25rem;
+}
+
+.purchase-scope-line {
+  margin: 0 0 0.9rem;
+  color: var(--purchase-muted);
+  font-size: 0.8rem;
+}
+
+/* The green card. Decoration, but it carries one real action: an arrow that
+   opens something, never an arrow that opens nothing. */
+.purchase-feature {
+  position: relative;
+  min-height: 150px;
+  overflow: hidden;
+  padding: 1.1rem 1.05rem;
+  border: 1px solid #e3eee7;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f0fbf4 100%);
+}
+
+.purchase-feature strong {
+  position: relative;
+  z-index: 2;
+  display: block;
+  max-width: 8.5rem;
+  color: #075f32;
+  font-size: 0.88rem;
+  line-height: 1.25;
+}
+
+.purchase-feature p {
+  position: relative;
+  z-index: 2;
+  max-width: 9.5rem;
+  margin: 0.45rem 0 0;
+  color: var(--purchase-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.purchase-feature > button {
+  position: absolute;
+  z-index: 3;
+  top: 1rem;
+  right: 1rem;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--purchase-brand-strong);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.purchase-feature > button:hover { transform: translateY(-1px); }
+
+.purchase-feature__wave {
+  position: absolute;
+  right: -12px;
+  bottom: -16px;
+  width: 200px;
+  height: 92px;
+  opacity: 0.78;
+  background:
+    radial-gradient(ellipse at 22% 95%, rgba(143, 229, 175, 0.38) 0 44%, transparent 45%),
+    radial-gradient(ellipse at 61% 94%, rgba(75, 205, 124, 0.42) 0 45%, transparent 46%),
+    radial-gradient(ellipse at 92% 100%, rgba(37, 176, 3, 0.5) 0 50%, transparent 51%);
 }
 
 /* The one decorative card on the page, and the first thing to go when the
@@ -566,7 +637,11 @@
 .purchase-status-dot--unavailable { background: var(--purchase-bad); }
 
 /* ------------------------------------------------------------------ *
- * KPI cards
+ * KPI cards — six across, one row
+ *
+ * Every slot on the card is present whether or not it has something in it, so
+ * a figure with no monthly series and a figure with one are the same height and
+ * the row never goes ragged.
  * ------------------------------------------------------------------ */
 
 .purchase-metrics {
@@ -582,7 +657,8 @@
   min-width: 0;
   background: var(--purchase-surface);
   border: 1px solid var(--purchase-border);
-  border-radius: var(--purchase-radius);
+  border-radius: 12px;
+  background: var(--purchase-surface);
   box-shadow: var(--purchase-shadow);
   overflow: hidden;
   display: flex;
@@ -605,8 +681,7 @@
   padding: 16px;
   font: inherit;
   color: inherit;
-  background: none;
-  border: 0;
+  text-align: left;
 }
 
 .purchase-metric__link { cursor: pointer; }
@@ -655,6 +730,8 @@
   -webkit-box-orient: vertical;
 }
 
+.purchase-metric__info { flex-shrink: 0; opacity: 0.45; }
+
 .purchase-metric__value {
   margin-top: 10px;
   font-size: clamp(24px, 1.9vw, 31px);
@@ -663,6 +740,7 @@
   line-height: 1;
   color: var(--purchase-ink);
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 /* An unavailable figure keeps the card, the tile and the footprint. It shows
@@ -681,6 +759,8 @@
   font-weight: 650;
   color: var(--purchase-muted);
 }
+
+.purchase-metric__change svg { flex-shrink: 0; }
 
 /* The tone is the API's, and it is about the BUSINESS not the arithmetic:
    payment terms stretching out is red even though the number grew. */
@@ -797,6 +877,9 @@
   min-height: 62px;
   padding: 15px 17px 10px;
 }
+
+.purchase-intel-risks .purchase-panel__header,
+.purchase-intel-insights .purchase-panel__header { flex-wrap: nowrap; }
 
 .purchase-panel__header h2 {
   margin: 0;
@@ -915,6 +998,10 @@
  * Tables
  * ------------------------------------------------------------------ */
 
+/* Relative, so it is the containing block for the visually-hidden captions
+   and column labels inside it. Left static, those are positioned against the
+   viewport, escape this box's clipping and widen the whole page by the width
+   of the table's horizontal scroll. */
 .purchase-table-scroll {
   position: relative;
   overflow-x: auto;
@@ -1408,7 +1495,11 @@
 }
 
 .purchase-drawer__header h2 { margin: 0; font-size: 1.05rem; font-weight: 650; }
-.purchase-drawer__body { padding: 1.1rem 1.25rem; overflow-y: auto; flex: 1; }
+.purchase-drawer.is-wide { width: min(540px, 100vw); }
+
+/* Nothing in a drawer scrolls sideways. A 440px panel is narrow enough that
+   one long chip would otherwise paint over the page behind it. */
+.purchase-drawer__body { padding: 1.1rem 1.25rem; overflow-y: auto; overflow-x: hidden; flex: 1; }
 
 .purchase-drawer__close {
   appearance: none;
@@ -1635,6 +1726,16 @@
 @media (max-width: 1320px) {
   .purchase-commandbar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .purchase-commandbar > .purchase-live { grid-column: span 3; justify-self: start; }
+
+  /* The three-zone intelligence layout, from the parallel Purchase-intelligence
+     rebuild on main: two columns, with the narrow right column folding into a
+     pair beneath the wider two. */
+  .purchase-intel-grid { grid-template-columns: minmax(0, 1.4fr) minmax(19rem, 1fr); }
+  .purchase-intel-grid > .purchase-intel-column:last-child {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 @media (max-width: 1180px) {
@@ -1644,6 +1745,13 @@
     grid-column: auto;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .purchase-intel-grid { grid-template-columns: minmax(0, 1fr); }
+  .purchase-intel-grid > .purchase-intel-column:last-child { grid-column: auto; }
+}
+
+@media (max-width: 860px) {
+  .purchase-intel-grid > .purchase-intel-column:last-child { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 820px) {
@@ -1674,6 +1782,7 @@
   .purchase-header-actions { width: 100%; }
   .purchase-header-actions .purchase-button { flex: 1; }
   .purchase-source-list { margin-left: 0; }
+  .purchase-intel-categories .purchase-donut { justify-content: center; }
 }
 
 /* ------------------------------------------------------------------ *
@@ -1951,6 +2060,65 @@
    moving thing on the page, and it stops the moment the data lands. */
 .purchase-spin { animation: purchase-rotate 900ms linear infinite; }
 
+/* ------------------------------------------------------------------ *
+ * Panel furniture the intelligence screen adds
+ *
+ * Kept from the parallel Purchase-intelligence rebuild on main: used by the
+ * intelligence/*.tsx components (panel action links, tags, the basis note
+ * under a panel, and the inline range select on a panel header).
+ * ------------------------------------------------------------------ */
+
+.purchase-panel__action {
+  flex-shrink: 0;
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--purchase-brand-strong);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.purchase-panel__action:hover { text-decoration: underline; }
+
+.purchase-panel__tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--purchase-border);
+  border-radius: 999px;
+  background: var(--purchase-canvas);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--purchase-muted);
+  white-space: nowrap;
+}
+
+.purchase-panel__tag--quiet { border-style: dashed; }
+
+/* The basis line under a panel. Small, but never absent: a figure with no
+   stated basis is a figure nobody can defend in a meeting. */
+.purchase-panel__note {
+  margin: 0.7rem 0 0;
+  padding: 0 1.25rem 0.1rem;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  color: var(--purchase-faint);
+}
+
+.purchase-panel__body .purchase-panel__note { padding-inline: 0; }
+
+.purchase-inline-select { margin: 0; }
+
+.purchase-inline-select select {
+  min-height: 32px;
+  padding: 0 1.8rem 0 0.6rem;
+  font-size: 0.76rem;
+  border-radius: 8px;
+}
+
 @keyframes purchase-rotate {
   to { transform: rotate(360deg); }
 }
@@ -1964,3 +2132,255 @@
   align-items: center;
   gap: 10px;
 }
+
+/* ------------------------------------------------------------------ *
+ * The three zones -- Purchase intelligence (AI Insights)
+ *
+ * Kept from the parallel Purchase-intelligence rebuild on main: the panels
+ * below are what the intelligence/*.tsx components render into, and none of
+ * their class names overlap with the Suppliers-screen system above.
+ *
+ * Opportunities on the left because they are what somebody acts on, the
+ * analytics in the middle because they are what somebody checks them against,
+ * and the two lists on the right because they are what somebody scans.
+ * ------------------------------------------------------------------ */
+
+.purchase-intel-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(19rem, 1.13fr) minmax(18rem, 1.05fr);
+  gap: 0.75rem;
+  align-items: start;
+  margin-bottom: 0.75rem;
+}
+
+.purchase-intel-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.purchase-intel-grid > .purchase-panel,
+.purchase-intel-column > .purchase-panel { margin: 0; }
+
+.purchase-intel-opportunities .purchase-table { font-size: 0.69rem; min-width: 24rem; }
+.purchase-table--compact th { padding-block: 0.5rem; padding-inline: 0.3rem; font-size: 0.63rem; }
+.purchase-table--compact td { padding-block: 0.5rem; padding-inline: 0.3rem; vertical-align: middle; }
+.purchase-table__rank { color: var(--purchase-faint); font-variant-numeric: tabular-nums; }
+
+/* The title column takes the space; the badge columns take what they need and
+   nothing more, so a six-word opportunity is not set one word to a line. */
+.purchase-intel-opportunities th:nth-child(2),
+.purchase-intel-opportunities td:nth-child(2) { width: 40%; min-width: 7.5rem; }
+
+.purchase-intel-opportunities .purchase-badge { min-height: 20px; padding-inline: 0.3rem; font-size: 0.6rem; }
+
+.purchase-intel-opportunities th:nth-child(n + 3),
+.purchase-intel-opportunities td:nth-child(n + 3) { white-space: nowrap; }
+
+.purchase-intel-opportunities .purchase-table__link {
+  display: block;
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: left;
+}
+
+/* Two lines of detail, then an ellipsis. The whole sentence is in the drawer. */
+.purchase-intel-opportunities .purchase-table__sub {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ------------------------------------------------------------------ *
+ * Risk and insight lists
+ * ------------------------------------------------------------------ */
+
+.purchase-intel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.purchase-intel-list li + li { border-top: 1px solid var(--purchase-divider, #edf1ef); }
+
+.purchase-intel-list button {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.55rem 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.purchase-intel-list button:hover .purchase-intel-list__copy strong { color: var(--purchase-brand-strong); }
+
+.purchase-intel-list__icon {
+  display: grid;
+  place-items: center;
+  width: 31px;
+  height: 31px;
+  border-radius: 50%;
+}
+
+.purchase-intel-list__icon.is-success { background: var(--purchase-good-tint); color: var(--purchase-good); }
+.purchase-intel-list__icon.is-warning { background: var(--purchase-warn-tint); color: var(--purchase-warn); }
+.purchase-intel-list__icon.is-danger { background: var(--purchase-bad-tint); color: var(--purchase-bad); }
+.purchase-intel-list__icon.is-info { background: var(--purchase-info-tint); color: var(--purchase-info); }
+
+.purchase-intel-list__copy { min-width: 0; }
+
+.purchase-intel-list__copy strong {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--purchase-ink);
+}
+
+/* Two lines, then an ellipsis. The whole sentence is in the tooltip and the
+   row opens the records, so nothing is lost by not printing all of it here. */
+.purchase-intel-list__copy span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 0.15rem;
+  font-size: 0.71rem;
+  line-height: 1.4;
+  color: var(--purchase-muted);
+}
+
+.purchase-intel-list__chevron { color: var(--purchase-faint); }
+
+/* What KIND of statement a row is. Never a decoration: it is the difference
+   between a fact and an extrapolation. */
+.purchase-kind {
+  flex-shrink: 0;
+  padding: 0.1rem 0.36rem;
+  border-radius: 999px;
+  font-size: 0.6rem;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.purchase-kind--observation { background: var(--purchase-neutral-tint); color: var(--purchase-muted); }
+.purchase-kind--estimate { background: var(--purchase-warn-tint); color: var(--purchase-warn); }
+.purchase-kind--projection { background: var(--purchase-info-tint); color: var(--purchase-info); }
+
+/* ------------------------------------------------------------------ *
+ * Charts added for this screen
+ * ------------------------------------------------------------------ */
+
+.purchase-chart__plot { height: 190px; width: 100%; }
+.purchase-chart > div > svg { max-width: 100%; }
+.purchase-chart__line--count { stroke: #2a78d6; stroke-dasharray: none; }
+
+.purchase-chart__axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.3rem;
+  font-size: 0.65rem;
+  color: var(--purchase-faint);
+}
+
+.purchase-chart__axis .is-hidden { visibility: hidden; }
+
+.purchase-intel-categories .purchase-donut { gap: 0.9rem; justify-content: flex-start; }
+.purchase-intel-categories .purchase-donut svg { width: 152px; height: 152px; }
+
+/* ------------------------------------------------------------------ *
+ * Drawers
+ * ------------------------------------------------------------------ */
+
+.purchase-intel-drawer { display: grid; gap: 1.1rem; }
+.purchase-intel-drawer section { display: grid; gap: 0.35rem; }
+
+.purchase-intel-drawer h3 {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--purchase-muted);
+}
+
+.purchase-intel-drawer p { margin: 0; font-size: 0.85rem; line-height: 1.55; }
+
+.purchase-intel-drawer__actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+
+.purchase-intel-drawer__note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.purchase-intel-drawer__note svg { flex-shrink: 0; margin-top: 0.15rem; }
+
+.purchase-ask-drawer { display: grid; gap: 0.9rem; }
+
+/* The suggested questions are sentences, so they wrap rather than run off. */
+.purchase-ask-drawer .purchase-chips button {
+  white-space: normal;
+  text-align: left;
+  line-height: 1.35;
+  font-size: 0.78rem;
+}
+
+.purchase-ask-drawer__state { display: grid; gap: 0.4rem; }
+.purchase-ask-drawer__state p { margin: 0; font-size: 0.78rem; line-height: 1.5; }
+
+/* A footer bar, not a pill floating over the answer: it is pinned to the foot
+   of the drawer and the conversation scrolls under an opaque edge. */
+.purchase-ask-drawer .purchase-ask {
+  position: sticky;
+  z-index: 2;
+  bottom: -1.1rem;
+  margin: 0.2rem -1.25rem -1.1rem;
+  padding: 0.85rem 1.25rem;
+  border: 0;
+  border-top: 1px solid var(--purchase-border);
+  border-radius: 0;
+  background: var(--purchase-surface);
+}
+
+
+.purchase-ask-drawer__security { font-size: 0.72rem; line-height: 1.5; margin: 0; }
+
+.purchase-answer { display: grid; gap: 1rem; }
+
+.purchase-answer h3 {
+  margin: 0 0 0.3rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--purchase-muted);
+}
+
+.purchase-answer p { margin: 0 0 0.25rem; font-size: 0.86rem; line-height: 1.55; }
+
+/* The answer itself, set apart from the evidence under it. */
+.purchase-answer__summary {
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--purchase-brand-tint-strong);
+  border-radius: 10px;
+  background: var(--purchase-brand-tint);
+}
+
+.purchase-answer__summary p:first-of-type { font-weight: 600; color: var(--purchase-ink); }

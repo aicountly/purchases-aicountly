@@ -57,7 +57,7 @@ const TITLES: Record<PurchaseViewId, { title: string; subtitle: string }> = {
   },
   'ai-insights': {
     title: 'Purchase intelligence',
-    subtitle: 'Evidence-backed suggestions. You stay in control.',
+    subtitle: 'Understand spend, pricing, anomalies, savings and purchase risk.',
   },
 }
 
@@ -216,6 +216,7 @@ export default function PurchaseDashboards() {
           <>
             {data.period.label} · {data.scope.branch_label}
             {data.scope.reporting_currency === null && ' · mixed currencies'}
+            {data.period.comparison_mode === 'previous_period' && ` · ${data.period.comparison_label}`}
           </>
         )
       }
@@ -462,7 +463,7 @@ export default function PurchaseDashboards() {
       {data && resolved === 'procurement' && <ProcurementDashboard data={data} filters={filters} onChanged={refresh} />}
       {data && resolved === 'suppliers' && <SuppliersDashboard data={data} filters={filters} />}
       {data && resolved === 'bills-payables' && <BillsPayablesDashboard data={data} filters={filters} onChanged={refresh} />}
-      {data && resolved === 'ai-insights' && <AiInsightsDashboard data={data} />}
+      {data && resolved === 'ai-insights' && <AiInsightsDashboard data={data} filters={filters} onRefresh={refresh} />}
     </PurchaseDashboardShell>
   )
 }

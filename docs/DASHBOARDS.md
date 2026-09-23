@@ -19,9 +19,20 @@ Filters are query parameters for the same reason.
 Not a number. A contract, built by `Dashboards\Metric`:
 
 ```
-id, label, status, raw_value, formatted_value, format, currency, unit,
-basis, explanation, direction, comparison{…}, footnote, drilldown{route, filters}
+id, label, status, raw_value, formatted_value, exact_value, format, currency,
+unit, basis, explanation, direction, comparison{…}, trend[], footer, footnote,
+drilldown{route, filters}
 ```
+
+`formatted_value` may be a short form — ₹28.45L, ₹1.20Cr — where the card asked
+for one; `exact_value` is always the full figure and is what the tooltip, the
+table and the export show. Nothing rounded is ever the only figure on screen.
+
+`trend` is the card's sparkline: points formatted on the server, with `value`
+null for a month that cannot be rated. A null is a GAP in the line, never a
+zero. A figure with no honest monthly series behind it — a count of open risks
+is a position as at now, not a series — carries an empty `trend` and the card
+says so in words instead of drawing a flat line.
 
 `basis` says what it counts and over what period. `direction` says whether a
 bigger number is good news — overdue payables going up is a red line even
@@ -137,6 +148,39 @@ With no key configured the rules engine answers instead, every panel says it is
 rules-based, and the screen reads "AI insights are currently unavailable". Set
 `PURCHASES_AI_API_KEY` on the server to enable commentary; the hint naming that
 variable is shown only to somebody holding `settings.manage`.
+
+## Purchase intelligence
+
+The fifth dashboard is a control tower rather than a chat window. Six figures
+across the top — purchase value, purchase orders, average PO value, price
+anomalies, potential savings and open purchase risks — then three zones: the
+opportunities somebody acts on, the analytics they check those against, and the
+two lists they scan.
+
+**Nothing on it carries a confidence percentage.** Opportunities come from fixed
+rules over the company's own orders, and a rule does not have a confidence
+interval. Each card carries an *evidence strength* instead — Strong, Moderate or
+Indicative — which is a COUNT of observations with the count stated beside it.
+"94% confident" would be the only number on the screen nobody could reproduce.
+
+Three panels are worth stating in full:
+
+- **Price anomalies** compare the latest agreed rate against the MEDIAN of the
+  same item's earlier rates in the same period and the same unit, not against
+  the previous rate: one unusual order would otherwise make the next ordinary
+  one look like a correction. Three observations is the floor — a pair of rates
+  is not a distribution. Rates are compared before discount, freight and tax, so
+  a change in quantity break or delivery terms can show here legitimately.
+- **Spend concentration by category** groups by Inventory's item groups, read
+  live on the request. With Inventory unavailable the panel says so rather than
+  grouping the spend by something else and calling the result a category.
+- **AI Insights** labels every row as an observation, an estimate or a
+  projection. Where a model is configured it can comment on these figures in Ask
+  Aicountly AI; it writes none of them.
+
+Opportunities and risks are recomputed from the records on every load. There is
+nowhere to record that one was reviewed or dismissed, and the drawer says so
+rather than offering a Dismiss button that forgets itself on the next refresh.
 
 ## Exports
 

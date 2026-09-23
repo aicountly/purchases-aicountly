@@ -25,12 +25,15 @@ export function Drawer({
   open,
   title,
   subtitle,
+  /** Wider, for a drawer that holds a conversation rather than a record. */
+  wide = false,
   onClose,
   children,
 }: {
   open: boolean
   title: string
   subtitle?: ReactNode
+  wide?: boolean
   onClose: () => void
   children: ReactNode
 }) {
@@ -105,7 +108,7 @@ export function Drawer({
     >
       <div
         ref={panel}
-        className="purchase-drawer"
+        className={wide ? 'purchase-drawer is-wide' : 'purchase-drawer'}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

@@ -13,8 +13,10 @@ import {
   AlertTriangle,
   ArrowRight,
   Banknote,
+  BadgeIndianRupee,
   Boxes,
   CalendarClock,
+  ChartNoAxesCombined,
   CheckCircle2,
   ChevronRight,
   ClipboardList,
@@ -153,6 +155,11 @@ const METRIC_FACE: Record<string, { icon: LucideIcon; tone: 'good' | 'warn' | 'b
   anomalies_open: { icon: AlertTriangle, tone: 'warn' },
   duplicate_candidates: { icon: PauseCircle, tone: 'warn' },
   stock_out_risk: { icon: Boxes, tone: 'bad' },
+  purchase_value: { icon: BadgeIndianRupee, tone: 'good' },
+  purchase_orders: { icon: ShoppingCart, tone: 'good' },
+  avg_po_value: { icon: ChartNoAxesCombined, tone: 'info' },
+  price_anomalies: { icon: AlertTriangle, tone: 'bad' },
+  purchase_risks_open: { icon: Boxes, tone: 'warn' },
 }
 
 /**
@@ -192,13 +199,18 @@ export function MetricCard({
   const Trend = metric.change_tone === 'is-positive' ? TrendingUp : metric.change_tone === 'is-negative' ? TrendingDown : Minus
 
   // The line under the value, in order of what a reader most needs: the reason
-  // a figure is missing, then the reason it has no comparison, then the
-  // sample the figure came from.
+  // a figure is missing, the backend's own "X in the previous period" footer
+  // (which folds in a footnote where there is no numeric comparison to state),
+  // then the reason there is no comparison at all.
   const caption = !available
     ? (metric.unavailable_reason ?? null)
-    : comparison
-      ? metric.footnote
-      : (metric.comparison?.reason ?? null)
+    : (metric.footer ?? metric.comparison?.reason ?? null)
+
+  // Explicit per-card data (Suppliers, matched against its own delivery-trend
+  // panel) wins when supplied; otherwise the backend's own `metric.trend` is
+  // used, which is how the AI Insights cards get a shape now that Metric::ready
+  // accepts a `trend` option directly.
+  const points = spark ?? (metric.trend && metric.trend.length > 0 ? metric.trend.map((point) => ({ period: point.period, value: point.value })) : undefined)
 
   const body = (
     <>
@@ -211,7 +223,11 @@ export function MetricCard({
         </span>
       </span>
 
-      <strong className={available ? 'purchase-metric__value' : 'purchase-metric__value is-unavailable'}>
+      <strong
+        className={available ? 'purchase-metric__value' : 'purchase-metric__value is-unavailable'}
+        // The short form is what fits; the exact figure is what reconciles.
+        title={available ? (metric.exact_value ?? undefined) : undefined}
+      >
         {available ? metric.formatted_value : '—'}
       </strong>
 
@@ -234,11 +250,11 @@ export function MetricCard({
         </span>
       )}
 
-      <span className="purchase-metric__spark" aria-hidden={spark === undefined}>
-        {spark !== undefined && (
+      <span className="purchase-metric__spark" aria-hidden={points === undefined}>
+        {points !== undefined && (
           <MetricSparkline
-            points={spark}
-            tone={sparkTone(metric, spark)}
+            points={points}
+            tone={sparkTone(metric, points)}
             label={`${metric.label} by month`}
           />
         )}
@@ -535,6 +551,13 @@ export function DataTable<T>({
 // The shell
 // ---------------------------------------------------------------------------
 
+/**
+ * Which products answered, and when.
+ *
+ * Kept as a list rather than a badge, because "Inventory: Unavailable" and the
+ * sentence saying why are the whole point — a green dot alone teaches a reader
+ * to stop looking.
+ */
 export function SourceList({ sources, fetchedAt }: { sources: SourceStatus[]; fetchedAt: Date | null }) {
   return (
     <ul className="purchase-source-list" aria-label="Data source status">

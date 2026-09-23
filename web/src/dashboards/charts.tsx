@@ -244,7 +244,7 @@ export function TrendChart({
         </table>
       }
     >
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="presentation" style={{ height: 220 }}>
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="presentation" style={{ height: 220, width: '100%' }}>
         {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
           <line
             key={fraction}
@@ -1153,6 +1153,146 @@ export function RateLineChart({
           {note}
         </p>
       )}
+    </ChartFrame>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Two series, two axes — money against a count
+//
+// Kept from the parallel Purchase-intelligence rebuild on main: the
+// intelligence/SpendTrend panel plots purchase value against order count and
+// needs a dual-axis line, which is a different job from RateLineChart's
+// single 0–100 axis of comparable percentages above.
+// ---------------------------------------------------------------------------
+
+export interface DualPoint {
+  label: string
+  /** Money, as an exact decimal string. */
+  value: string
+  formatted: string
+  /** A count, on its own axis. */
+  count: number
+  projected?: boolean
+}
+
+/**
+ * Purchase value and order count on one plot.
+ *
+ * They are NOT indexed onto a shared scale. An index of rupees drawn against an
+ * index of orders looks like a comparison and is not one — the two axes are
+ * labelled, each series names its own, and the figures table carries both in
+ * their own units.
+ */
+export function DualTrendChart({
+  title,
+  moneyLabel,
+  countLabel,
+  points,
+}: {
+  title: string
+  moneyLabel: string
+  countLabel: string
+  points: DualPoint[]
+}) {
+  const width = 100
+  const height = 40
+  const top = 3
+  const usable = height - top - 6
+
+  const moneyMax = Math.max(...points.map((point) => px(point.value)), 0) || 1
+  const countMax = Math.max(...points.map((point) => point.count), 0) || 1
+
+  const x = (index: number) => (points.length === 1 ? width / 2 : (index / (points.length - 1)) * width)
+  const moneyY = (value: number) => top + usable - (value / moneyMax) * usable
+  const countY = (value: number) => top + usable - (value / countMax) * usable
+
+  const line = (list: { x: number; y: number }[]) =>
+    list.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')
+
+  const actual = points.filter((point) => point.projected !== true)
+  const moneyActual = actual.map((point, index) => ({ x: x(index), y: moneyY(px(point.value)) }))
+  const projectedIndex = points.findIndex((point) => point.projected === true)
+  const moneyProjected =
+    projectedIndex === -1
+      ? []
+      : [moneyActual[moneyActual.length - 1], { x: x(projectedIndex), y: moneyY(px(points[projectedIndex].value)) }].filter(Boolean)
+
+  const countLine = actual.map((point, index) => ({ x: x(index), y: countY(point.count) }))
+  const moneyArea =
+    moneyActual.length > 1
+      ? `${line(moneyActual)} L${moneyActual[moneyActual.length - 1].x.toFixed(2)},${height} L${moneyActual[0].x.toFixed(2)},${height} Z`
+      : ''
+
+  return (
+    <ChartFrame
+      title={title}
+      summary={`${title}. ${points
+        .map((point) => `${point.label}: ${point.formatted} across ${point.count} orders${point.projected ? ' (projected)' : ''}`)
+        .join('. ')}.`}
+      table={
+        <table className="purchase-table">
+          <caption className="purchase-sr-only">{title}, as figures</caption>
+          <thead>
+            <tr>
+              <th scope="col">Month</th>
+              <th scope="col" className="is-numeric">{moneyLabel}</th>
+              <th scope="col" className="is-numeric">{countLabel}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {points.map((point) => (
+              <tr key={point.label}>
+                <th scope="row" style={{ fontWeight: 500 }}>
+                  {point.label}
+                  {point.projected && <span className="purchase-table__sub">Projected</span>}
+                </th>
+                <td className="is-numeric">{point.formatted}</td>
+                <td className="is-numeric">{point.projected ? '—' : point.count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      }
+    >
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="presentation" className="purchase-chart__plot">
+        {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
+          <line
+            key={fraction}
+            x1={0}
+            x2={width}
+            y1={top + usable * fraction}
+            y2={top + usable * fraction}
+            className="purchase-chart__grid"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+        {moneyArea !== '' && <path d={moneyArea} className="purchase-chart__area" />}
+        {moneyActual.length > 1 && <path d={line(moneyActual)} className="purchase-chart__line" vectorEffect="non-scaling-stroke" />}
+        {moneyProjected.length > 1 && (
+          <path d={line(moneyProjected)} className="purchase-chart__line purchase-chart__line--forecast" vectorEffect="non-scaling-stroke" />
+        )}
+        {countLine.length > 1 && <path d={line(countLine)} className="purchase-chart__line purchase-chart__line--count" vectorEffect="non-scaling-stroke" />}
+      </svg>
+
+      <div className="purchase-chart__axis">
+        {points.map((point, index) => (
+          // Every third label on a twelve-month plot: the rest would overlap,
+          // and an overlapping axis is worse than a sparser one.
+          <span key={point.label} className={index % (points.length > 8 ? 3 : 1) === 0 ? '' : 'is-hidden'}>
+            {point.label}
+          </span>
+        ))}
+      </div>
+
+      <div className="purchase-legend">
+        <span>
+          <i style={{ background: 'var(--purchase-brand-strong)' }} aria-hidden /> {moneyLabel}
+        </span>
+        <span>
+          <i style={{ background: '#2a78d6' }} aria-hidden /> {countLabel}
+        </span>
+      </div>
     </ChartFrame>
   )
 }

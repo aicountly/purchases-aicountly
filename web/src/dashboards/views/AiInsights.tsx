@@ -1,29 +1,38 @@
 /**
- * Dashboard 5 — AI Insights.
+ * Dashboard 5 — Purchase intelligence.
  *
  * Three kinds of statement, never mixed: obligations that already exist,
  * arithmetic over history, and — only where a model is configured — commentary.
  * Each is labelled on the screen, because a reader who cannot tell them apart
  * will treat the weakest as if it were the strongest.
+ *
+ * The layout is the one the rest of the product uses: the opportunities on the
+ * left because they are what somebody acts on, the analytics in the middle
+ * because they are what somebody checks the opportunities against, and the two
+ * intelligence lists on the right because they are what somebody scans.
  */
 
-import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, Sparkles } from 'lucide-react'
-import { api, ApiError } from '../../services/api'
-import { usePurchases } from '../../context/PurchasesContext'
 import { Badge, DashboardPanel, DataTable, EmptyState, PanelUnavailable } from '../shell'
 import { TrendChart } from '../charts'
-import type { AnomalyRow, AskAnswer, DashboardResponse, OpportunityCard, Panel } from '../types'
+import { OpportunityTable } from '../intelligence/OpportunityTable'
+import { SpendTrend } from '../intelligence/SpendTrend'
+import { CategoryConcentration } from '../intelligence/CategoryConcentration'
+import { RisksPanel } from '../intelligence/RisksPanel'
+import { InsightsPanel } from '../intelligence/InsightsPanel'
+import { AskDrawer, type AskPanel } from '../intelligence/AskDrawer'
+import type { DashboardFilters } from '../filters'
+import type {
+  AnomalyRow,
+  CategoryPanel,
+  DashboardResponse,
+  InsightPanel,
+  OpportunityPanel,
+  Panel,
+  RiskPanel,
+  SpendTrendPanel,
+} from '../types'
 
-type AskPanel = Panel<{
-  ai: { available: boolean; reason: string | null; model: string | null; admin_hint: string | null }
-  questions: { id: string; question: string; description: string; permission: string | null }[]
-  withheld_count: number
-  notice: string
-  security: string
-}>
-type OpportunityPanel = Panel<{ method_label: string; cards: OpportunityCard[]; basis: string }>
 type AnomalyPanel = Panel<{ method_label: string; rows: AnomalyRow[]; disclaimer: string; basis: string }>
 type ForecastPanel = Panel<{
   currency: string
@@ -37,82 +46,66 @@ type ForecastPanel = Panel<{
         observation_period: string
         months_observed: number
         projection: string
+        projection_formatted: string
         range: { low: string; high: string }
+        range_formatted: { low: string; high: string }
         range_label: string
         basis: string
         caveat: string
-        history: { month: string; amount: string; orders: number }[]
+        history: { month: string; amount: string; formatted: string; orders: number }[]
       }
   commentary: { available: boolean; note: string }
   payables_note: string
 }>
 type ActionsPanel = Panel<{ actions: { id: string; label: string; route: string; filters: Record<string, string>; effect: string }[]; notice: string }>
 
-export function AiInsightsDashboard({ data }: { data: DashboardResponse }) {
+export function AiInsightsDashboard({
+  data,
+  filters,
+}: {
+  data: DashboardResponse
+  filters: DashboardFilters
+  onRefresh: () => void
+}) {
   const navigate = useNavigate()
-  const open = (route: string, filters: Record<string, string> = {}) => {
-    const query = new URLSearchParams(filters).toString()
+  const open = (route: string, params: Record<string, string> = {}) => {
+    const query = new URLSearchParams(params).toString()
     navigate(query === '' ? route : `${route}?${query}`)
   }
 
   const ask = data.panels.ask as AskPanel
   const opportunities = data.panels.opportunities as OpportunityPanel
+  const spendTrend = data.panels.spend_trend as SpendTrendPanel
+  const categories = data.panels.categories as CategoryPanel
+  const risks = data.panels.risks as RiskPanel
+  const insights = data.panels.insights as InsightPanel
   const anomalies = data.panels.anomalies as AnomalyPanel
   const forecast = data.panels.forecast as ForecastPanel
   const actions = data.panels.actions as ActionsPanel
 
+  // The drawer's open state lives in the URL, so the green card at the top of
+  // the page, a link somebody sent and the Back button all agree about it.
+  const askOpen = filters.get('ask') === '1'
+
   return (
     <>
-      <AskPurchases panel={ask} onOpen={open} />
+      <div className="purchase-intel-grid">
+        <OpportunityTable panel={opportunities} onViewAll={() => open('/purchase-orders')} />
 
+        <div className="purchase-intel-column">
+          <SpendTrend panel={spendTrend} />
+          <CategoryConcentration panel={categories} />
+        </div>
+
+        <div className="purchase-intel-column">
+          <RisksPanel panel={risks} onViewAll={() => open('/dashboard/procurement')} />
+          <InsightsPanel panel={insights} onAsk={() => filters.set({ ask: '1' })} />
+        </div>
+      </div>
+
+      {/* Below the fold: the detail behind the four panels above. Nothing here
+          is new information, and nothing above depends on scrolling to it. */}
       <div className="purchase-dashboard-grid">
-        <DashboardPanel
-          title="Opportunities"
-          description={opportunities.available ? opportunities.method_label : undefined}
-        >
-          {!opportunities.available ? (
-            <PanelUnavailable reason={opportunities.reason} kind={opportunities.kind} />
-          ) : opportunities.cards.length === 0 ? (
-            <EmptyState title="Nothing stands out in this period.">
-              These rules look for fragmented buying, rate rises and repeated small orders.
-            </EmptyState>
-          ) : (
-            <div style={{ display: 'grid', gap: 12 }}>
-              {opportunities.cards.map((card) => (
-                <article key={card.id} className="purchase-priority">
-                  <div className="purchase-priority__top">
-                    <Badge tone="info">{card.kind.replace(/_/g, ' ')}</Badge>
-                    {card.estimate_formatted && (
-                      <strong style={{ fontVariantNumeric: 'tabular-nums' }}>{card.estimate_formatted}</strong>
-                    )}
-                  </div>
-                  <h3>{card.title}</h3>
-                  <p>{card.detail}</p>
-                  <dl className="purchase-dl" style={{ marginBottom: 14 }}>
-                    <dt>Baseline</dt>
-                    <dd>{card.baseline_formatted}</dd>
-                    <dt>Estimate</dt>
-                    <dd>{card.estimate_formatted ?? 'Not quantified'}</dd>
-                  </dl>
-                  <p className="purchase-muted" style={{ fontSize: 12, margin: '0 0 12px' }}>
-                    <strong>Assumption:</strong> {card.assumption}
-                  </p>
-                  <div className="purchase-priority__footer">
-                    <span />
-                    <button
-                      type="button"
-                      className="purchase-button purchase-button--secondary"
-                      onClick={() => open(card.route, card.filters)}
-                    >
-                      See the evidence
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </DashboardPanel>
-
         <DashboardPanel
           title="Anomalies to review"
           description={anomalies.available ? anomalies.method_label : undefined}
@@ -208,23 +201,27 @@ export function AiInsightsDashboard({ data }: { data: DashboardResponse }) {
                         ...forecast.spend_forecast.history.map((point) => ({
                           label: point.month,
                           value: point.amount,
-                          formatted: point.amount,
+                          formatted: point.formatted,
                         })),
                         {
                           label: 'Next',
                           value: forecast.spend_forecast.projection,
-                          formatted: forecast.spend_forecast.projection,
+                          formatted: forecast.spend_forecast.projection_formatted,
                           projected: true,
                         },
                       ]}
                     />
                     <dl className="purchase-dl" style={{ marginTop: 14 }}>
-                      <dt>Projection</dt>
-                      <dd>{forecast.spend_forecast.projection}</dd>
-                      <dt>Observed range</dt>
-                      <dd>
-                        {forecast.spend_forecast.range.low} – {forecast.spend_forecast.range.high}
-                      </dd>
+                      <div>
+                        <dt>Projection</dt>
+                        <dd>{forecast.spend_forecast.projection_formatted}</dd>
+                      </div>
+                      <div>
+                        <dt>Observed range</dt>
+                        <dd>
+                          {forecast.spend_forecast.range_formatted.low} – {forecast.spend_forecast.range_formatted.high}
+                        </dd>
+                      </div>
                     </dl>
                     <p className="purchase-muted" style={{ fontSize: 12 }}>
                       {forecast.spend_forecast.range_label} {forecast.spend_forecast.caveat}
@@ -270,222 +267,8 @@ export function AiInsightsDashboard({ data }: { data: DashboardResponse }) {
           )}
         </DashboardPanel>
       </div>
+
+      <AskDrawer open={askOpen} panel={ask} onClose={() => filters.set({ ask: null })} />
     </>
-  )
-}
-
-// ---------------------------------------------------------------------------
-
-function AskPurchases({
-  panel,
-  onOpen,
-}: {
-  panel: AskPanel
-  onOpen: (route: string, filters?: Record<string, string>) => void
-}) {
-  const { scope } = usePurchases()
-  const [question, setQuestion] = useState('')
-  const [answer, setAnswer] = useState<AskAnswer | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  if (!panel.available) {
-    return (
-      <DashboardPanel title="Ask Purchases" className="purchase-span-all">
-        <PanelUnavailable reason={panel.reason} kind={panel.kind} />
-      </DashboardPanel>
-    )
-  }
-
-  const submit = async (text: string, intent?: string) => {
-    if (text.trim() === '' && intent === undefined) return
-    setBusy(true)
-    setError(null)
-    try {
-      const response = await api.post<AskAnswer>('v1/insights/ask', { question: text, intent, ...(scope ?? {}) })
-      setAnswer(response.data)
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'That question could not be answered.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <DashboardPanel
-      title="Ask Purchases"
-      description={panel.notice}
-      className="purchase-span-all"
-      action={
-        <Badge tone={panel.ai.available ? 'success' : 'neutral'}>
-          {panel.ai.available ? 'Model configured' : 'Rules only'}
-        </Badge>
-      }
-    >
-      <form
-        className="purchase-ask"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void submit(question)
-        }}
-      >
-        <Search size={17} aria-hidden style={{ color: 'var(--purchase-muted)', flexShrink: 0 }} />
-        <input
-          type="search"
-          value={question}
-          onChange={(event) => setQuestion(event.target.value)}
-          placeholder="Which orders are delayed this week?"
-          aria-label="Ask a question about your purchases"
-        />
-        <button type="submit" className="purchase-button purchase-button--primary" disabled={busy}>
-          {busy ? 'Asking…' : 'Ask'}
-        </button>
-      </form>
-
-      <div className="purchase-chips">
-        {panel.questions.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className="purchase-segment"
-            title={item.description}
-            onClick={() => {
-              setQuestion(item.question)
-              void submit(item.question, item.id)
-            }}
-          >
-            <Sparkles size={12} aria-hidden style={{ marginRight: 4 }} />
-            {item.question}
-          </button>
-        ))}
-      </div>
-
-      {panel.ai.admin_hint && (
-        <p className="purchase-muted" style={{ fontSize: 12, marginTop: 10 }}>
-          <strong>For an administrator:</strong> {panel.ai.admin_hint}
-        </p>
-      )}
-
-      {panel.withheld_count > 0 && (
-        <p className="purchase-muted" style={{ fontSize: 12, marginTop: 10 }}>
-          {panel.withheld_count} further question{panel.withheld_count === 1 ? ' is' : 's are'} not shown because your
-          permissions do not cover the data behind {panel.withheld_count === 1 ? 'it' : 'them'}.
-        </p>
-      )}
-
-      {error && (
-        <div className="purchase-notice purchase-notice--danger" style={{ marginTop: 16 }}>
-          <div>
-            <strong>Could not answer</strong>
-            <p>{error}</p>
-          </div>
-        </div>
-      )}
-
-      {answer && <Answer answer={answer} onOpen={onOpen} />}
-
-      <p className="purchase-muted" style={{ fontSize: 12, marginTop: 16 }}>
-        <strong>How this works.</strong> {panel.security}
-      </p>
-    </DashboardPanel>
-  )
-}
-
-function Answer({
-  answer,
-  onOpen,
-}: {
-  answer: AskAnswer
-  onOpen: (route: string, filters?: Record<string, string>) => void
-}) {
-  const columns =
-    answer.records.length === 0
-      ? []
-      : Object.keys(answer.records[0])
-          .filter((key) => key !== 'route')
-          .map((key) => ({
-            key,
-            header: key.replace(/_/g, ' ').replace(/^./, (character) => character.toUpperCase()),
-            numeric: ['value', 'amount', 'remaining', 'change_pc', 'share_pc', 'days_late', 'waiting_days', 'lead_days', 'observations'].includes(key),
-            render: (row: Record<string, unknown>) => {
-              const value = row[key]
-              if (value === null || value === undefined) return <span className="purchase-muted">—</span>
-              if (typeof value === 'boolean') return value ? 'Yes' : 'No'
-              return String(value)
-            },
-          }))
-
-  return (
-    <div style={{ marginTop: 18, display: 'grid', gap: 14 }}>
-      <div className="purchase-notice purchase-notice--success">
-        <div style={{ minWidth: 0 }}>
-          <strong>{answer.answer}</strong>
-          <p className="purchase-muted" style={{ fontSize: 12 }}>{answer.method_label}</p>
-        </div>
-      </div>
-
-      {answer.suggestions && (
-        <div className="purchase-chips">
-          {answer.suggestions.map((suggestion) => (
-            <span key={suggestion.id} className="purchase-segment" style={{ cursor: 'default' }}>
-              {suggestion.question}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {columns.length > 0 && (
-        <DataTable
-          caption={answer.calculation ?? 'Supporting records'}
-          rows={answer.records}
-          rowKey={(row) => JSON.stringify(row).slice(0, 80)}
-          empty={<EmptyState title="No supporting records." />}
-          columns={columns}
-          onRowOpen={
-            answer.records[0]?.route === undefined ? undefined : (row) => onOpen(String(row.route))
-          }
-        />
-      )}
-
-      <dl className="purchase-dl">
-        <dt>Scope applied</dt>
-        <dd>
-          Company {String(answer.scope.company_id)} · FY {String(answer.scope.financial_year_id)} ·{' '}
-          {String(answer.scope.branch_label)} · {String(answer.scope.period_label)}
-        </dd>
-        <dt>Sources</dt>
-        <dd>
-          {answer.sources.length === 0
-            ? '—'
-            : answer.sources
-                .map((source) => `${source.label}${source.status === 'unavailable' ? ' (unavailable)' : ''}`)
-                .join(', ')}
-        </dd>
-      </dl>
-
-      {answer.calculation && (
-        <p className="purchase-muted" style={{ fontSize: 12, margin: 0 }}>
-          <strong>How it was calculated.</strong> {answer.calculation}
-        </p>
-      )}
-
-      {answer.uncertainty && (
-        <p className="purchase-muted" style={{ fontSize: 12, margin: 0 }}>
-          <strong>What might be missing.</strong> {answer.uncertainty}
-        </p>
-      )}
-
-      {answer.next_action?.route && (
-        <div>
-          <button
-            type="button"
-            className="purchase-button purchase-button--secondary"
-            onClick={() => onOpen(answer.next_action!.route as string, answer.next_action?.filters)}
-          >
-            {answer.next_action.label}
-          </button>
-        </div>
-      )}
-    </div>
   )
 }
