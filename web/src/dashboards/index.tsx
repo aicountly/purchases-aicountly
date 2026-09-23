@@ -18,8 +18,8 @@ import { useDashboard } from './useDashboard'
 import { OverviewDashboard } from './views/Overview'
 import { ProcurementDashboard } from './views/Procurement'
 import { SuppliersDashboard } from './views/Suppliers'
-import { BillsPayablesDashboard } from './views/BillsPayables'
 import { AiInsightsDashboard } from './views/AiInsights'
+import { PayablesPage } from './payables/PayablesPage'
 import './purchase.css'
 
 const TITLES: Record<PurchaseViewId, { title: string; subtitle: string }> = {
@@ -60,14 +60,47 @@ export default function PurchaseDashboards() {
     document.title = `${TITLES[resolved].title} · Aicountly Purchases`
   }, [resolved])
 
+  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  // Filters that only make sense on one dashboard do not follow it to the next
+  // one; the period and the supplier do.
+  const changeView = (next: PurchaseViewId) => {
+    const kept = new URLSearchParams()
+    for (const name of ['preset', 'from', 'to', 'compare', 'supplier_id', 'buyer', 'warehouse_id']) {
+      const value = filters.get(name)
+      if (value !== null) kept.set(name, value)
+    }
+    const query = kept.toString()
+    navigate(query === '' ? `/dashboard/${next}` : `/dashboard/${next}?${query}`)
+  }
+
   if (view !== undefined && !isPurchaseView(view)) {
     return <Navigate to="/dashboard/overview" replace />
   }
 
   const preset = filters.get('preset') ?? 'this_month'
   const canExport = can('reports.view')
-  const [exporting, setExporting] = useState<'csv' | 'pdf' | null>(null)
-  const [exportError, setExportError] = useState<string | null>(null)
+
+  // Bills & Payables draws its own furniture: a hero, its own filter bar and a
+  // KPI strip laid out for payables rather than the five-dashboard shell. It
+  // is rendered instead of that shell, not inside it, so the other four
+  // dashboards keep exactly the chrome they had.
+  if (resolved === 'bills-payables') {
+    return (
+      <PayablesPage
+        data={data}
+        filters={filters}
+        loading={loading}
+        refreshing={refreshing}
+        error={error}
+        retryable={retryable}
+        fetchedAt={fetchedAt}
+        onRefresh={refresh}
+        onViewChange={changeView}
+      />
+    )
+  }
 
   /**
    * Take the figures, in the format asked for.
@@ -97,17 +130,7 @@ export default function PurchaseDashboards() {
       activeView={resolved}
       title={TITLES[resolved].title}
       subtitle={TITLES[resolved].subtitle}
-      onViewChange={(next) => {
-        // Filters that only make sense on one dashboard do not follow it to the
-        // next one; the period and the supplier do.
-        const kept = new URLSearchParams()
-        for (const name of ['preset', 'from', 'to', 'compare', 'supplier_id', 'buyer', 'warehouse_id']) {
-          const value = filters.get(name)
-          if (value !== null) kept.set(name, value)
-        }
-        const query = kept.toString()
-        navigate(query === '' ? `/dashboard/${next}` : `/dashboard/${next}?${query}`)
-      }}
+      onViewChange={changeView}
       headerControls={
         <>
           <label className="purchase-header-period">
@@ -274,7 +297,6 @@ export default function PurchaseDashboards() {
       {data && resolved === 'overview' && <OverviewDashboard data={data} />}
       {data && resolved === 'procurement' && <ProcurementDashboard data={data} filters={filters} onChanged={refresh} />}
       {data && resolved === 'suppliers' && <SuppliersDashboard data={data} filters={filters} />}
-      {data && resolved === 'bills-payables' && <BillsPayablesDashboard data={data} filters={filters} onChanged={refresh} />}
       {data && resolved === 'ai-insights' && <AiInsightsDashboard data={data} />}
     </PurchaseDashboardShell>
   )

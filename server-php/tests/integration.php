@@ -1370,6 +1370,159 @@ check('payment planning reads real due dates and holds disputed bills back', fun
     assertTrue(str_contains($planning['scope_note'], 'NOT the whole creditors ledger'), 'the bounded scope is stated');
 });
 
+check('the payables list values a bill from its own lines and names its supplier', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    (new BillService($ctx, $auth))->enter([
+        'supplier_account_id' => 601,
+        'po_id' => (int) $po['po_id'],
+        'supplier_invoice_no' => 'DST/2026/2001',
+        'supplier_invoice_date' => '2026-09-18',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+
+    $result = (new BillService($ctx, $auth))->payables(['tab' => 'all'], 25, 0, 'invoice_date', 'DESC');
+
+    assertSame(1, $result['total'], 'the bill is counted once');
+    $row = $result['rows'][0];
+    assertSame('DST/2026/2001', $row['invoice_no'], 'the invoice number is carried through');
+    assertTrue(abs((float) $row['subtotal'] - 25000.0) < 0.0001, 'the value is summed from the lines, not stored');
+    assertTrue($row['supplier_name'] !== null, 'the account id is resolved to the name frozen on the order');
+    assertSame($po['po_no'], $row['po_no'], 'the order it is against travels with it');
+    assertTrue(str_contains($row['tax_basis'], 'exclusive'), 'the value states that tax is not in it');
+});
+
+check('a payables row never claims a tax figure this product cannot compute', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    (new BillService($ctx, $auth))->enter([
+        'supplier_account_id' => 601,
+        'po_id' => (int) $po['po_id'],
+        'supplier_invoice_no' => 'DST/2026/2002',
+        'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+
+    $row = (new BillService($ctx, $auth))->payables([], 25, 0, 'invoice_date', 'DESC')['rows'][0];
+
+    // Lines carry a tax CATEGORY, never a rate. A gross figure here would be a
+    // second tax engine, and it is Books that files the return.
+    assertTrue(!array_key_exists('tax_amount', $row), 'no tax amount is invented');
+    assertTrue(!array_key_exists('total_inclusive', $row), 'and no gross total either');
+    assertTrue(str_contains($row['tax_basis'], 'Books computes'), 'the row says who does compute it');
+});
+
+check('the payables tabs count what a click would produce, not what is on screen', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bills->enter([
+        'supplier_account_id' => 601,
+        'po_id' => (int) $po['po_id'],
+        'supplier_invoice_no' => 'DST/2026/2003',
+        'supplier_invoice_date' => '2026-09-20',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+
+    // Asking for one tab must not change the other tabs' numbers.
+    $all = $bills->payables(['tab' => 'all'], 25, 0, 'invoice_date', 'DESC');
+    $posted = $bills->payables(['tab' => 'posted'], 25, 0, 'invoice_date', 'DESC');
+
+    assertSame($all['counts'], $posted['counts'], 'the strip reads the same from either tab');
+    assertSame(1, $all['counts']['all'], 'one bill exists');
+    assertSame(0, $posted['total'], 'and none of them is posted');
+    assertSame('posted', $posted['tab'], 'the tab asked for is echoed back');
+});
+
+check('the payables list refuses a sort column it was not given', function () use ($ctx, $auth) {
+    resetDatabase();
+
+    // A sort key straight from a query string must never reach the SQL.
+    $result = (new BillService($ctx, $auth))->payables([], 25, 0, 'b.request_id; DROP TABLE purchase_bill_requests', 'DESC');
+
+    assertSame(0, $result['total'], 'the query ran against an unknown key without incident');
+    assertTrue(Db::scalar('SELECT COUNT(*) FROM purchase_bill_requests') !== null, 'and the table is still there');
+});
+
+check('supplier exposure ranks within the set it can see, and says so', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bill = (new BillService($ctx, $auth))->enter([
+        'supplier_account_id' => 601,
+        'po_id' => (int) $po['po_id'],
+        'supplier_invoice_no' => 'DST/2026/2004',
+        'supplier_invoice_date' => '2026-09-20',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    Db::run("UPDATE purchase_bill_requests SET status = 'POSTED' WHERE request_id = :id", ['id' => (int) $bill['request_id']]);
+
+    $exposure = dashboardFor('bills-payables', $ctx, $auth)['panels']['supplier_exposure'];
+
+    assertTrue($exposure['available'], 'the panel ran off the open items already read');
+    assertTrue($exposure['rows'] !== [], 'and ranked the supplier behind them');
+    assertTrue(str_contains($exposure['basis'], 'not the largest creditors in the ledger'), 'the bounded scope is stated');
+});
+
+check('the payables trend draws only the series this product owns', function () use ($ctx, $auth) {
+    resetDatabase();
+    $trend = dashboardFor('bills-payables', $ctx, $auth)['panels']['trend'];
+
+    assertTrue($trend['available'], 'the trend is built from our own tables');
+    assertSame(6, count($trend['points']), 'six months, including the empty ones');
+    assertSame(['booked', 'posted'], array_column($trend['series'], 'id'), 'bills booked and posted, and nothing else');
+    assertTrue(str_contains($trend['basis'], 'not drawn here'), 'payments and outstanding are declined explicitly');
+});
+
+check('the due-window card reports the windows planning actually read', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bill = (new BillService($ctx, $auth))->enter([
+        'supplier_account_id' => 601,
+        'po_id' => (int) $po['po_id'],
+        'supplier_invoice_no' => 'DST/2026/2005',
+        'supplier_invoice_date' => '2026-09-20',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    Db::run("UPDATE purchase_bill_requests SET status = 'POSTED' WHERE request_id = :id", ['id' => (int) $bill['request_id']]);
+
+    $payload = dashboardFor('bills-payables', $ctx, $auth);
+    $due = metric($payload, 'due_windows');
+    $windows = $payload['panels']['payment_planning']['windows'];
+
+    assertSame('ready', $due['status'], 'once real due dates are in hand the card carries them');
+    assertSame($windows['due_7']['amount'], $due['raw_value'], 'and carries exactly what the planner summed');
+    assertTrue(str_contains((string) $due['footnote'], '15 days'), 'the other two windows are on the card');
+    assertTrue(str_contains($due['basis'], 'supplier(s) with bills posted'), 'the card states whose bills it covers');
+    assertTrue(str_contains((string) $due['explanation'], 'acc_id'), 'and still explains why it is not company-wide');
+});
+
+check('the duplicates tab and the duplicates card count the same bills', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+
+    // Two bills, one supplier, one invoice date. Exactly one of them is the
+    // later of the pair, and that is the one either side should flag.
+    foreach (['DST/2026/3001', 'DST/2026/3002'] as $invoiceNo) {
+        $bills->enter([
+            'supplier_account_id' => 601,
+            'po_id' => (int) $po['po_id'],
+            'supplier_invoice_no' => $invoiceNo,
+            'supplier_invoice_date' => '2026-09-14',
+            'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+        ]);
+    }
+
+    $onCard = metric(dashboardFor('bills-payables', $ctx, $auth), 'duplicate_candidates')['raw_value'];
+    $result = $bills->payables(['tab' => 'duplicates'], 25, 0, 'invoice_date', 'DESC');
+
+    assertSame('1', $onCard, 'the card flags the later bill of the pair, once');
+    assertSame(1, $result['counts']['duplicates'], 'and the tab counts the same one');
+    assertSame(1, $result['total'], 'and lists exactly that one');
+    assertSame('DST/2026/3002', $result['rows'][0]['invoice_no'], 'which is the later bill');
+    assertSame('DST/2026/3001', $result['rows'][0]['duplicate_of_no'], 'named against the earlier one');
+});
+
 check('the matching workbench keeps service and non-PO purchases out of failure', function () use ($ctx, $auth) {
     resetDatabase();
     $matching = dashboardFor('bills-payables', $ctx, $auth)['panels']['matching'];

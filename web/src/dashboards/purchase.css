@@ -586,6 +586,11 @@
  * ------------------------------------------------------------------ */
 
 .purchase-table-scroll {
+  /* Positioned so this box is the containing block for the visually-hidden
+     labels inside it. Without that, an absolutely positioned .purchase-sr-only
+     in a wide table resolves against the viewport, escapes this scroller and
+     leaves the whole page scrolling sideways on a phone. */
+  position: relative;
   overflow-x: auto;
   scrollbar-width: thin;
 }
