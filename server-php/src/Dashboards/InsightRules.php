@@ -341,6 +341,175 @@ final class InsightRules
             ];
         }
 
+        return array_map(
+            static fn (array $card) => $card + self::triage($card, $currency),
+            $out,
+        );
+    }
+
+    /**
+     * The triage a purchase head does by eye, written down.
+     *
+     * Area, priority, evidence strength and the next step, all derived from the
+     * card's OWN counts. Nothing here is a model's opinion and nothing is a
+     * probability: "Strong" means many observations, not "94% likely to be
+     * true", and the basis sentence says which count produced it. A percentage
+     * would read as a confidence interval this data cannot support.
+     *
+     * @param array<string, mixed> $card
+     * @return array<string, mixed>
+     */
+    private static function triage(array $card, string $currency): array
+    {
+        $evidence = (array) ($card['evidence'] ?? []);
+        $kind = (string) $card['kind'];
+
+        [$area, $areaLabel] = match ($kind) {
+            'price'         => ['pricing', 'Pricing'],
+            'consolidation' => ['supplier', 'Supplier'],
+            'fragmentation' => ['process', 'Process'],
+            default         => ['other', 'Other'],
+        };
+
+        // Observations, named per rule, because "3 orders" and "3 order lines"
+        // are different facts and the basis sentence has to say which.
+        [$observations, $noun] = match ($kind) {
+            'price'         => [(int) ($evidence['observations'] ?? 0), 'orders of the same item and unit'],
+            'consolidation' => [(int) ($evidence['lines'] ?? 0), 'order lines for the same item'],
+            'fragmentation' => [(int) ($evidence['orders'] ?? 0), 'orders to the same supplier'],
+            default         => [0, 'records'],
+        };
+
+        [$strength, $strengthLabel] = match (true) {
+            $observations >= 8 => ['strong', 'Strong'],
+            $observations >= 5 => ['moderate', 'Moderate'],
+            $observations >= 3 => ['indicative', 'Indicative'],
+            default            => ['indicative', 'Indicative'],
+        };
+
+        // Priority follows the money where there is an estimate, and the weight
+        // of evidence where there is not. A card with no estimate never
+        // outranks one that quantifies itself.
+        $estimate = $card['estimate'] ?? null;
+        [$priority, $priorityLabel] = match (true) {
+            $estimate !== null && Decimal::cmp(Decimal::of($estimate), '100000') >= 0 => ['high', 'High'],
+            $estimate !== null && Decimal::cmp(Decimal::of($estimate), '25000') >= 0  => ['medium', 'Medium'],
+            $estimate !== null                                                         => ['low', 'Low'],
+            $strength === 'strong'                                                     => ['medium', 'Medium'],
+            default                                                                    => ['low', 'Low'],
+        };
+
+        [$status, $statusLabel, $action] = match ($kind) {
+            'consolidation' => ['compare', 'Compare', 'Compare the rates paid'],
+            'fragmentation' => ['review', 'Review', 'Review the order pattern'],
+            default         => ['review', 'Review', 'Review the rate history'],
+        };
+
+        return [
+            'area'            => $area,
+            'area_label'      => $areaLabel,
+            'priority'        => $priority,
+            'priority_label'  => $priorityLabel,
+            'status'          => $status,
+            'status_label'    => $statusLabel,
+            'action_label'    => $action,
+            'impact_formatted' => $estimate === null ? null : Format::money(Decimal::of($estimate), $currency),
+            // Deliberately not a percentage. See the docblock.
+            'evidence_strength' => [
+                'level' => $strength,
+                'label' => $strengthLabel,
+                'observations' => $observations,
+                'basis' => $observations === 0
+                    ? 'Strength is not rated for this rule.'
+                    : $observations . ' ' . $noun . ' in this period. This is a count of evidence, not a probability.',
+            ],
+            'priority_basis'  => $estimate === null
+                ? 'No estimate could be put on this one, so it is ranked by weight of evidence rather than by value.'
+                : 'Ranked by the estimated impact above: at or over ' . Format::money('100000', $currency) . ' is high, at or over '
+                    . Format::money('25000', $currency) . ' is medium.',
+        ];
+    }
+
+    /**
+     * Rates that stand out against their own recent history.
+     *
+     * The comparison is the MEDIAN of the earlier observations of the same item
+     * in the same unit, not the previous rate: one unusual order would
+     * otherwise make the next ordinary one look like a correction. A pair of
+     * rates is not a distribution, so three observations is the floor.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function priceAnomalies(Context $ctx, Period $period, string $currency, int $limit = 10): array
+    {
+        $rows = Db::all(
+            "WITH obs AS (
+                SELECT l.item_id, l.unit_id, l.agreed_rate, l.ordered_qty, l.line_id,
+                       p.po_id, p.po_no, p.po_date, p.supplier_account_id, p.supplier_name_snapshot,
+                       ROW_NUMBER() OVER (PARTITION BY l.item_id, l.unit_id ORDER BY p.po_date DESC, l.line_id DESC) AS recency,
+                       COUNT(*)     OVER (PARTITION BY l.item_id, l.unit_id) AS observations
+                FROM purchase_order_lines l
+                JOIN purchase_orders p ON p.po_id = l.po_id
+                WHERE p.cmp_id = :cmp AND p.fy_id = :fy
+                  AND p.po_date BETWEEN :from AND :to
+                  AND p.status <> 'CANCELLED'
+                  AND l.item_id IS NOT NULL AND l.agreed_rate > 0 AND l.ordered_qty > 0
+            ),
+            baseline AS (
+                SELECT item_id, unit_id,
+                       percentile_cont(0.5) WITHIN GROUP (ORDER BY agreed_rate) AS median_rate,
+                       COUNT(*) AS prior_count
+                FROM obs WHERE recency > 1 GROUP BY item_id, unit_id
+            )
+            SELECT o.item_id, o.unit_id, o.observations, b.prior_count,
+                   o.agreed_rate::text  AS latest_rate,
+                   b.median_rate::text  AS median_rate,
+                   o.po_date            AS latest_date,
+                   o.po_id, o.po_no, o.supplier_account_id, o.supplier_name_snapshot,
+                   (o.ordered_qty * o.agreed_rate)::text AS affected_value
+            FROM obs o
+            JOIN baseline b ON b.item_id = o.item_id AND b.unit_id IS NOT DISTINCT FROM o.unit_id
+            WHERE o.recency = 1 AND o.observations >= 3 AND b.median_rate > 0
+              AND o.agreed_rate > b.median_rate * 1.10
+            ORDER BY (o.agreed_rate - b.median_rate) / b.median_rate DESC
+            LIMIT " . max(1, $limit),
+            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $period->params(),
+        );
+
+        $out = [];
+        foreach ($rows as $row) {
+            $median = Decimal::of($row['median_rate']);
+            $latest = Decimal::of($row['latest_rate']);
+            $changePc = Decimal::percentChange($median, $latest, 1);
+            if ($changePc === null) {
+                continue;
+            }
+
+            $out[] = [
+                'id'          => 'price-anomaly-' . $row['item_id'] . '-' . ($row['unit_id'] ?? '0'),
+                'item_id'     => (int) $row['item_id'],
+                'po_id'       => (int) $row['po_id'],
+                'po_no'       => (string) $row['po_no'],
+                'supplier_account_id' => (int) $row['supplier_account_id'],
+                'supplier_name' => $row['supplier_name_snapshot'] === null ? null : (string) $row['supplier_name_snapshot'],
+                'observations' => (int) $row['observations'],
+                'latest_rate'  => $latest,
+                'latest_formatted' => Format::money($latest, $currency),
+                'latest_date'  => (string) $row['latest_date'],
+                'latest_date_label' => Format::date((string) $row['latest_date']),
+                'median_rate'  => $median,
+                'median_formatted' => Format::money($median, $currency),
+                'change_pc'    => $changePc,
+                'change_label' => Format::percent($changePc, 1),
+                'affected_value' => Decimal::of($row['affected_value']),
+                'affected_formatted' => Format::money(Decimal::of($row['affected_value']), $currency),
+                'basis'        => 'Latest agreed rate against the median of the ' . (int) $row['prior_count']
+                    . ' earlier rate' . (((int) $row['prior_count']) === 1 ? '' : 's') . ' for the same item and unit in this period. '
+                    . 'Rates are compared before discount, freight and tax.',
+                'route'        => '/purchase-orders/' . (int) $row['po_id'],
+            ];
+        }
+
         return $out;
     }
 

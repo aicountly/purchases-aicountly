@@ -201,7 +201,7 @@ await check('the period control changes the figures and the URL together', async
   eq(new URL(page.url()).searchParams.get('preset'), 'last_7_days', 'preset in the URL')
   // The server resolves the preset into dates and echoes them back, so the
   // screen can never disagree with the range its figures were computed for.
-  ok((await page.locator('.purchase-context').textContent())?.includes('–'), 'the resolved range is shown')
+  ok((await page.locator('.purchase-scope-line').textContent())?.includes('–'), 'the resolved range is shown')
 })
 
 await check('an unknown view redirects rather than erroring', async () => {
@@ -351,6 +351,90 @@ await check('the mobile menu opens and closes without trapping the page', async 
   await small.waitForTimeout(300)
   ok((await small.locator('.app-shell__sidebar.is-open').count()) === 0, 'and slid out again')
   await mobile.close()
+})
+
+await check('purchase intelligence leads with six figures and three zones', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  eq((await page.locator('h1').first().textContent())?.trim(), 'Purchase intelligence', 'the heading')
+  eq(await page.locator('.purchase-metric').count(), 6, 'six cards')
+  ok(await page.locator('.purchase-intel-opportunities').isVisible(), 'the opportunities table')
+  ok(await page.locator('.purchase-intel-risks').isVisible(), 'the risk list')
+  ok(await page.locator('.purchase-intel-insights').isVisible(), 'the insight list')
+
+  // The row must fit the viewport. A KPI row somebody has to drag sideways is
+  // a KPI row they read half of.
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+  ok(overflow <= 1, `no horizontal page scroll, got ${overflow}px`)
+})
+
+await check('a KPI carries its shape and the previous period under it', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const card = page.locator('.purchase-metric', { hasText: 'Purchase value' }).first()
+  ok(await card.locator('.purchase-metric__spark').isVisible(), 'the sparkline drew')
+  ok(((await card.locator('.purchase-metric__footer').textContent()) || '').length > 0, 'the footer states the comparison')
+
+  // The short form is on the card; the exact figure is the tooltip, so nothing
+  // rounded is ever the only figure on the screen.
+  const exact = await card.locator('.purchase-metric__value').getAttribute('title')
+  ok((exact || '').includes('₹'), 'the exact figure travels with the short one')
+})
+
+await check('an opportunity opens a drawer rather than navigating away', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const rows = page.locator('.purchase-intel-opportunities tbody tr')
+  if ((await rows.count()) === 0) return
+
+  const before = page.url()
+  await rows.first().locator('button').first().click()
+  await page.waitForTimeout(400)
+
+  const dialog = page.getByRole('dialog')
+  ok(await dialog.isVisible(), 'the drawer opened')
+  eq(page.url(), before, 'and the page did not navigate')
+  ok(((await dialog.textContent()) || '').includes('Why this was detected'), 'it states why the rule fired')
+  ok(((await dialog.textContent()) || '').includes('assumes'), 'and what the estimate assumes')
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  ok((await page.getByRole('dialog').count()) === 0, 'Escape closed it')
+})
+
+await check('Ask Aicountly AI is a drawer, and its state is in the URL', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  await page.locator('.purchase-intel-insights').getByRole('button', { name: 'Ask AI' }).click()
+  await page.waitForTimeout(400)
+  eq(new URL(page.url()).searchParams.get('ask'), '1', 'the drawer is in the URL')
+
+  const dialog = page.getByRole('dialog')
+  ok(await dialog.isVisible(), 'the drawer opened')
+  ok(((await dialog.textContent()) || '').includes('never writes a query'), 'the security position is on the screen')
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  eq(new URL(page.url()).searchParams.get('ask'), null, 'and closing takes it out again')
+})
+
+await check('the monitoring pill reports what actually answered', async () => {
+  await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const pill = page.locator('.purchase-monitor__pill')
+  const label = ((await pill.textContent()) || '').trim()
+  ok(/AI monitoring live|Limited ai monitoring|AI monitoring unavailable/.test(label), `a real state, got "${label}"`)
+
+  await pill.click()
+  await page.waitForTimeout(250)
+  const popover = page.locator('.purchase-monitor__popover')
+  ok(await popover.isVisible(), 'the sources are one click away')
+  ok(((await popover.textContent()) || '').includes('Purchases'), 'and this product is named among them')
 })
 
 await check('access administration bootstraps, assigns and shows its own rules', async () => {

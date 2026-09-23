@@ -1472,7 +1472,153 @@ check('a forecast is refused rather than extrapolated from too little history', 
     assertTrue(str_contains($forecast['reason'], 'at least 4 complete months'), 'and it says how much is needed');
     assertTrue(str_contains($forecast['reason'], 'Nothing is extrapolated'), 'and refuses to extrapolate');
 
-    assertSame('unavailable', metric(dashboardFor('ai-insights', $ctx, $auth), 'forecast_spend')['status'], 'the card agrees');
+    // The trend card carries the same refusal, in the same words, rather than
+    // drawing a projected point the panel has just declined to state.
+    $trend = dashboardFor('ai-insights', $ctx, $auth)['panels']['spend_trend'];
+    assertSame(false, $trend['projection']['available'], 'the trend card agrees');
+    assertTrue(str_contains($trend['projection']['reason'], 'at least 4 complete months'), 'and says the same thing');
+});
+
+check('the six figures at the top are the ones the screen is about', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+        'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 1000]],
+    ]));
+
+    $insights = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year']);
+    $ids = array_map(static fn (array $m) => $m['id'], $insights['metrics']);
+    assertSame(
+        ['purchase_value', 'purchase_orders', 'avg_po_value', 'price_anomalies', 'opportunity_value', 'purchase_risks_open'],
+        $ids,
+        'six cards, in the order the screen reads them',
+    );
+
+    $orders = metric($insights, 'purchase_orders');
+    assertSame('1', $orders['raw_value'], 'one order was raised');
+    // The mean of one order is that order, and the card says so exactly.
+    assertSame(metric($insights, 'purchase_value')['raw_value'], metric($insights, 'avg_po_value')['raw_value'], 'one order is its own average');
+});
+
+check('a card carries the short form and the exact figure, never only the short one', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+        'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 2845000]],
+    ]));
+
+    $value = metric(dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year']), 'purchase_value');
+    assertSame('₹28.45L', $value['formatted_value'], 'the card reads in lakhs');
+    assertSame('₹28,45,000.00', $value['exact_value'], 'and the exact figure travels with it');
+});
+
+check('the sparkline fills the months that had nothing, and never invents one', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput());
+
+    $trend = metric(dashboardFor('ai-insights', $ctx, $auth), 'purchase_orders')['trend'];
+    assertSame(6, count($trend), 'six months of shape');
+    foreach ($trend as $point) {
+        assertTrue($point['value'] !== null, 'a month with no orders is zero, not a gap, for a count');
+    }
+
+    // The figures the rules cannot produce a monthly series for carry none at
+    // all, rather than a flat line drawn from one number.
+    assertSame([], metric(dashboardFor('ai-insights', $ctx, $auth), 'purchase_risks_open')['trend'], 'no series is invented for a position');
+});
+
+check('an opportunity is triaged by its own counts, never by a confidence percentage', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $orders->create(poInput(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250]]]));
+    $orders->create(poInput(['supplier_account_id' => 602, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 300]]]));
+
+    $card = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year'])['panels']['opportunities']['cards'][0];
+    assertSame('supplier', $card['area'], 'fragmented buying is a supplier question');
+    assertSame('Compare', $card['status_label'], 'and the next step is to compare the rates');
+    assertTrue(in_array($card['priority'], ['low', 'medium', 'high'], true), 'priority is one of three');
+    assertTrue(str_contains($card['evidence_strength']['basis'], 'not a probability'), 'strength is a count of evidence, and says so');
+    assertTrue(!isset($card['confidence']), 'no confidence percentage is manufactured');
+});
+
+check('a rate is compared against its own median, not against the last one', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    // Three ordinary rates, then one well above the median of the others.
+    foreach ([['2026-09-01', 100], ['2026-09-02', 100], ['2026-09-03', 104], ['2026-09-10', 150]] as [$date, $rate]) {
+        $orders->create(poInput([
+            'po_date' => $date,
+            'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => $rate]],
+        ]));
+    }
+
+    $insights = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year']);
+    assertSame('1', metric($insights, 'price_anomalies')['raw_value'], 'one rate stands out');
+
+    $rows = $insights['panels']['risks']['rows'];
+    $found = null;
+    foreach ($rows as $row) {
+        if ($row['id'] === 'price-anomalies') {
+            $found = $row;
+        }
+    }
+    assertTrue($found !== null, 'and it reaches the risk list');
+    assertTrue(str_contains($found['basis'], 'median'), 'with the comparison named');
+});
+
+check('a risk row opens the records behind it', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    $rows = dashboardFor('ai-insights', $ctx, $auth)['panels']['risks']['rows'];
+    $late = null;
+    foreach ($rows as $row) {
+        if ($row['id'] === 'late-receipts') {
+            $late = $row;
+        }
+    }
+    assertTrue($late !== null, 'a promised date long past is a risk');
+    assertSame('critical', $late['severity'], 'and it needs attention');
+    assertSame('/dashboard/procurement', $late['route'], 'the row opens the delayed orders');
+    assertTrue($late['basis'] !== '', 'and states the rule behind it');
+});
+
+check('every insight row says what kind of statement it is', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $orders->create(poInput(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250]]]));
+    $orders->create(poInput(['supplier_account_id' => 602, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 300]]]));
+
+    $panel = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year'])['panels']['insights'];
+    assertTrue($panel['rows'] !== [], 'there is something to say');
+    foreach ($panel['rows'] as $row) {
+        assertTrue(in_array($row['kind'], ['observation', 'estimate', 'projection'], true), 'one of three kinds');
+        assertTrue($row['basis'] !== '', 'each states its basis');
+        assertTrue($row['route'] !== '', 'and each opens something');
+    }
+});
+
+check('the category split refuses rather than grouping the spend by something else', function () use ($ctx, $auth) {
+    resetDatabase();
+    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+        'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100]],
+    ]));
+
+    $panel = dashboardFor('ai-insights', $ctx, $auth, ['preset' => 'this_year'])['panels']['categories'];
+    if ($panel['available']) {
+        assertSame('inventory', $panel['source'], 'categories are Inventory\'s item groups');
+        assertTrue(str_contains($panel['basis'], 'item groups'), 'and the basis says so');
+        $shares = 0;
+        foreach ($panel['categories'] as $category) {
+            assertTrue($category['formatted'] !== '', 'each row carries its own value');
+            $shares++;
+        }
+        assertTrue($shares <= 6, 'five named categories and one tail at most');
+    } else {
+        assertSame('source', $panel['kind'], 'or it says Inventory did not answer');
+        assertTrue(str_contains($panel['reason'], 'Inventory'), 'and names the product that did not');
+    }
 });
 
 check('obligations and projections are never mixed together', function () use ($ctx, $auth) {

@@ -244,7 +244,7 @@ export function TrendChart({
         </table>
       }
     >
-      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="presentation" style={{ height: 220 }}>
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="presentation" style={{ height: 220, width: '100%' }}>
         {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
           <line
             key={fraction}
@@ -873,5 +873,235 @@ export function SegmentedBar({ segments, onOpen }: { segments: MatchSegment[]; o
         ))}
       </div>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// KPI sparkline — the shape behind a headline figure
+// ---------------------------------------------------------------------------
+
+export interface MetricSparkPoint {
+  period: string
+  /** Null is a gap in the line, never a zero. */
+  value: string | null
+  formatted: string
+}
+
+/**
+ * The line under a KPI.
+ *
+ * Scaled to its own values rather than to 0–100, because these are rupees and
+ * counts, not rates. The baseline is the lowest month rather than zero: on a
+ * 37px line, six months that differ by 4% would otherwise be a flat line, and a
+ * flat line says "nothing moved" when something did.
+ *
+ * It is decoration and is marked as such. The figure above it is the fact, the
+ * card's footer is the comparison, and the tooltip carries every month — none
+ * of which depends on anybody reading a 78px drawing.
+ */
+export function MetricSpark({
+  points,
+  tone = 'neutral',
+  label,
+}: {
+  points: MetricSparkPoint[]
+  tone?: 'positive' | 'negative' | 'neutral'
+  label: string
+}) {
+  const rated = points.filter((point) => point.value !== null)
+  if (rated.length < 2) return null
+
+  const width = 100
+  const height = 30
+  const values = rated.map((point) => px(point.value))
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  // A flat series still gets a line, drawn through the middle rather than
+  // pinned to an edge where it would read as a floor or a ceiling.
+  const span = max - min || Math.abs(max) || 1
+  const pad = 3
+
+  const x = (index: number) => (points.length === 1 ? width / 2 : (index / (points.length - 1)) * width)
+  const y = (value: number) => height - pad - ((value - min) / span) * (height - pad * 2)
+
+  const runs: string[] = []
+  let current: string[] = []
+  points.forEach((point, index) => {
+    if (point.value === null) {
+      if (current.length > 1) runs.push(current.join(' '))
+      current = []
+      return
+    }
+    current.push(`${current.length === 0 ? 'M' : 'L'}${x(index).toFixed(2)},${y(px(point.value)).toFixed(2)}`)
+  })
+  if (current.length > 1) runs.push(current.join(' '))
+  if (runs.length === 0) return null
+
+  const lastIndex = points.reduce((last, point, index) => (point.value === null ? last : index), 0)
+  const firstIndex = points.findIndex((point) => point.value !== null)
+  const stroke = tone === 'negative' ? '#c0392b' : tone === 'positive' ? '#187b12' : '#5b7a66'
+  const area =
+    runs.length === 1
+      ? `${runs[0]} L${x(lastIndex).toFixed(2)},${height} L${x(firstIndex).toFixed(2)},${height} Z`
+      : ''
+
+  return (
+    <svg
+      className="purchase-metric__spark"
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={`${label}: ${points.map((point) => `${point.period} ${point.formatted}`).join(', ')}`}
+    >
+      {area !== '' && <path d={area} fill={stroke} opacity={0.1} />}
+      {runs.map((run, index) => (
+        <path
+          key={index}
+          d={run}
+          fill="none"
+          stroke={stroke}
+          strokeWidth={2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      ))}
+      <circle cx={x(lastIndex)} cy={y(px(points[lastIndex].value))} r={2.4} fill={stroke} vectorEffect="non-scaling-stroke" />
+    </svg>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Two series, two axes — money against a count
+// ---------------------------------------------------------------------------
+
+export interface DualPoint {
+  label: string
+  /** Money, as an exact decimal string. */
+  value: string
+  formatted: string
+  /** A count, on its own axis. */
+  count: number
+  projected?: boolean
+}
+
+/**
+ * Purchase value and order count on one plot.
+ *
+ * They are NOT indexed onto a shared scale. An index of rupees drawn against an
+ * index of orders looks like a comparison and is not one — the two axes are
+ * labelled, each series names its own, and the figures table carries both in
+ * their own units.
+ */
+export function DualTrendChart({
+  title,
+  moneyLabel,
+  countLabel,
+  points,
+}: {
+  title: string
+  moneyLabel: string
+  countLabel: string
+  points: DualPoint[]
+}) {
+  const width = 100
+  const height = 40
+  const top = 3
+  const usable = height - top - 6
+
+  const moneyMax = Math.max(...points.map((point) => px(point.value)), 0) || 1
+  const countMax = Math.max(...points.map((point) => point.count), 0) || 1
+
+  const x = (index: number) => (points.length === 1 ? width / 2 : (index / (points.length - 1)) * width)
+  const moneyY = (value: number) => top + usable - (value / moneyMax) * usable
+  const countY = (value: number) => top + usable - (value / countMax) * usable
+
+  const line = (list: { x: number; y: number }[]) =>
+    list.map((point, index) => `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')
+
+  const actual = points.filter((point) => point.projected !== true)
+  const moneyActual = actual.map((point, index) => ({ x: x(index), y: moneyY(px(point.value)) }))
+  const projectedIndex = points.findIndex((point) => point.projected === true)
+  const moneyProjected =
+    projectedIndex === -1
+      ? []
+      : [moneyActual[moneyActual.length - 1], { x: x(projectedIndex), y: moneyY(px(points[projectedIndex].value)) }].filter(Boolean)
+
+  const countLine = actual.map((point, index) => ({ x: x(index), y: countY(point.count) }))
+  const moneyArea =
+    moneyActual.length > 1
+      ? `${line(moneyActual)} L${moneyActual[moneyActual.length - 1].x.toFixed(2)},${height} L${moneyActual[0].x.toFixed(2)},${height} Z`
+      : ''
+
+  return (
+    <ChartFrame
+      title={title}
+      summary={`${title}. ${points
+        .map((point) => `${point.label}: ${point.formatted} across ${point.count} orders${point.projected ? ' (projected)' : ''}`)
+        .join('. ')}.`}
+      table={
+        <table className="purchase-table">
+          <caption className="purchase-sr-only">{title}, as figures</caption>
+          <thead>
+            <tr>
+              <th scope="col">Month</th>
+              <th scope="col" className="is-numeric">{moneyLabel}</th>
+              <th scope="col" className="is-numeric">{countLabel}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {points.map((point) => (
+              <tr key={point.label}>
+                <th scope="row" style={{ fontWeight: 500 }}>
+                  {point.label}
+                  {point.projected && <span className="purchase-table__sub">Projected</span>}
+                </th>
+                <td className="is-numeric">{point.formatted}</td>
+                <td className="is-numeric">{point.projected ? '—' : point.count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      }
+    >
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="presentation" className="purchase-chart__plot">
+        {[0, 0.25, 0.5, 0.75, 1].map((fraction) => (
+          <line
+            key={fraction}
+            x1={0}
+            x2={width}
+            y1={top + usable * fraction}
+            y2={top + usable * fraction}
+            className="purchase-chart__grid"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+        {moneyArea !== '' && <path d={moneyArea} className="purchase-chart__area" />}
+        {moneyActual.length > 1 && <path d={line(moneyActual)} className="purchase-chart__line" vectorEffect="non-scaling-stroke" />}
+        {moneyProjected.length > 1 && (
+          <path d={line(moneyProjected)} className="purchase-chart__line purchase-chart__line--forecast" vectorEffect="non-scaling-stroke" />
+        )}
+        {countLine.length > 1 && <path d={line(countLine)} className="purchase-chart__line purchase-chart__line--count" vectorEffect="non-scaling-stroke" />}
+      </svg>
+
+      <div className="purchase-chart__axis">
+        {points.map((point, index) => (
+          // Every third label on a twelve-month plot: the rest would overlap,
+          // and an overlapping axis is worse than a sparser one.
+          <span key={point.label} className={index % (points.length > 8 ? 3 : 1) === 0 ? '' : 'is-hidden'}>
+            {point.label}
+          </span>
+        ))}
+      </div>
+
+      <div className="purchase-legend">
+        <span>
+          <i style={{ background: 'var(--purchase-brand-strong)' }} aria-hidden /> {moneyLabel}
+        </span>
+        <span>
+          <i style={{ background: '#2a78d6' }} aria-hidden /> {countLabel}
+        </span>
+      </div>
+    </ChartFrame>
   )
 }

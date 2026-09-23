@@ -52,6 +52,42 @@ final class Format
             : $symbol . $grouped;
     }
 
+    /**
+     * The short form a KPI card carries: ₹28.45L, ₹1.20Cr, ₹33,085.
+     *
+     * Lakh and crore, because these figures are read in India and a nine-digit
+     * rupee total on a card 180px wide is read by nobody. It is a DISPLAY form
+     * only: the exact value travels beside it in `raw_value` and the full
+     * grouping is what a tooltip, a table and an export show, so nothing here
+     * can become the number somebody reconciles against.
+     */
+    public static function compactMoney(string $value, string $currency = 'INR'): string
+    {
+        $symbols = ['INR' => '₹', 'USD' => '$', 'EUR' => '€', 'GBP' => '£', 'AED' => 'AED ', 'SGD' => 'S$'];
+        $symbol = $symbols[strtoupper($currency)] ?? (strtoupper($currency) . ' ');
+
+        $negative = Decimal::isNegative($value);
+        $magnitude = $negative ? Decimal::negate(Decimal::of($value)) : Decimal::of($value);
+
+        // Lakh and crore are Indian units. A dollar figure shortens in
+        // thousands and millions instead of pretending to be read in lakhs.
+        [$divisor, $suffix] = strtoupper($currency) === 'INR'
+            ? (Decimal::cmp($magnitude, '10000000') >= 0
+                ? ['10000000', 'Cr']
+                : (Decimal::cmp($magnitude, '100000') >= 0 ? ['100000', 'L'] : ['1', '']))
+            : (Decimal::cmp($magnitude, '1000000') >= 0
+                ? ['1000000', 'M']
+                : (Decimal::cmp($magnitude, '100000') >= 0 ? ['1000', 'K'] : ['1', '']));
+
+        if ($suffix === '') {
+            return ($negative ? '-' : '') . $symbol . self::grouped($magnitude, 0);
+        }
+
+        $scaled = Decimal::div($magnitude, $divisor, 4) ?? Decimal::ZERO;
+
+        return ($negative ? '-' : '') . $symbol . Decimal::fixed($scaled, 2) . $suffix;
+    }
+
     /** A whole count: 1,234. */
     public static function count(string|int $value): string
     {

@@ -33,7 +33,8 @@ final class Metric
      *   direction?: string, explanation?: string,
      *   previous?: string|null, comparison_label?: string, comparison_unavailable_reason?: string,
      *   drilldown?: array{route: string, filters: array<string, string>},
-     *   footnote?: string
+     *   footnote?: string, compact?: bool, footer?: string,
+     *   trend?: list<array{period: string, value: string|null, formatted?: string}>
      * } $options
      *
      * @return array<string, mixed>
@@ -45,9 +46,16 @@ final class Metric
         $unit = $options['unit'] ?? null;
         $direction = $options['direction'] ?? self::NEUTRAL;
 
+        $exact = $rawValue === null
+            ? null
+            : self::render($rawValue, $format, $currency, $unit, $options['scale'] ?? null);
+
+        // A card shows the short form; everything that can be reconciled against
+        // — the tooltip, the table, the export — shows `exact_value`.
+        $compact = ($options['compact'] ?? false) === true && $format === 'currency' && $rawValue !== null;
         $formatted = $rawValue === null
             ? 'Not applicable'
-            : self::render($rawValue, $format, $currency, $unit, $options['scale'] ?? null);
+            : ($compact ? Format::compactMoney($rawValue, $currency ?? 'INR') : (string) $exact);
 
         $metric = [
             'id'              => $id,
@@ -62,9 +70,24 @@ final class Metric
             'explanation'     => $options['explanation'] ?? $basis,
             'direction'       => $direction,
             'footnote'        => $options['footnote'] ?? null,
+            'exact_value'     => $exact,
+            // The shape behind the figure. Null entries are GAPS — a month with
+            // nothing to plot is not a month at zero.
+            'trend'           => self::trend($options['trend'] ?? [], $format, $currency, $unit, $options['scale'] ?? null),
         ];
 
-        $metric += self::comparison($rawValue, $options, $format, $currency, $unit, $direction);
+        $metric += self::comparison($rawValue, $options, $format, $currency, $unit, $direction, $compact);
+
+        // The line at the foot of the card: the previous period's own figure,
+        // because "+12.5%" without it is half a sentence. Only where a
+        // percentage was actually produced — with a zero baseline the delta
+        // line already says there was nothing, and saying it twice is noise.
+        $previousFormatted = ($metric['comparison']['change_pc'] ?? null) === null
+            ? null
+            : ($metric['comparison']['previous_formatted'] ?? null);
+        $metric['footer'] = $previousFormatted === null
+            ? ($options['footer'] ?? $options['footnote'] ?? null)
+            : $previousFormatted . ' in the previous period';
 
         if (isset($options['drilldown'])) {
             $metric['drilldown'] = $options['drilldown'];
@@ -106,6 +129,9 @@ final class Metric
             'comparison_text'    => 'Comparison unavailable',
             'change_tone'        => 'is-neutral',
             'footnote'           => $options['footnote'] ?? null,
+            'exact_value'        => null,
+            'trend'              => [],
+            'footer'             => $options['footer'] ?? $options['footnote'] ?? null,
         ];
     }
 
@@ -129,6 +155,7 @@ final class Metric
         ?string $currency,
         ?string $unit,
         string $direction,
+        bool $compact = false,
     ): array {
         $previous = $options['previous'] ?? null;
         $label = $options['comparison_label'] ?? 'vs previous period';
@@ -145,20 +172,25 @@ final class Metric
         }
 
         $previous = Decimal::of($previous);
+        $previousFormatted = $compact && $format === 'currency'
+            ? Format::compactMoney($previous, $currency ?? 'INR')
+            : self::render($previous, $format, $currency, $unit, $options['scale'] ?? null);
         $change = Decimal::sub($rawValue, $previous);
         $changePc = Decimal::percentChange($previous, $rawValue, 1);
 
         if (Decimal::isZero($change)) {
             $text = 'No change ' . $label;
             $tone = 'is-neutral';
+        } elseif ($changePc === null) {
+            // A zero baseline cannot produce a percentage, and the absolute
+            // change is the headline figure again — printing it twice tells a
+            // reader nothing. What they need is why there is no percentage.
+            $text = 'Nothing in the previous period';
+            $tone = 'is-neutral';
         } else {
             $up = !Decimal::isNegative($change);
             $arrow = $up ? '▲' : '▼';
-            $magnitude = $changePc === null
-                // A zero baseline cannot produce a percentage, so the absolute
-                // change is shown and the reason is stated rather than implied.
-                ? self::render($up ? $change : Decimal::negate($change), $format, $currency, $unit, $options['scale'] ?? null) . ' (no prior baseline)'
-                : Decimal::fixed(Decimal::isNegative($changePc) ? Decimal::negate($changePc) : $changePc, 1) . '%';
+            $magnitude = Decimal::fixed(Decimal::isNegative($changePc) ? Decimal::negate($changePc) : $changePc, 1) . '%';
 
             $text = $arrow . ' ' . $magnitude . ' ' . $label;
             $tone = match ($direction) {
@@ -174,6 +206,7 @@ final class Metric
                 'text'         => $text,
                 'tone'         => $tone,
                 'previous_raw' => $previous,
+                'previous_formatted' => $previousFormatted,
                 'change_raw'   => $change,
                 'change_pc'    => $changePc,
                 'label'        => $label,
@@ -181,6 +214,29 @@ final class Metric
             'comparison_text' => $text,
             'change_tone'     => $tone,
         ];
+    }
+
+    /**
+     * The sparkline series, formatted here so the card never formats a figure.
+     *
+     * @param list<array{period: string, value: string|null, formatted?: string}> $points
+     * @return list<array{period: string, value: string|null, formatted: string}>
+     */
+    private static function trend(array $points, string $format, ?string $currency, ?string $unit, ?int $scale): array
+    {
+        $out = [];
+        foreach ($points as $point) {
+            $value = $point['value'] ?? null;
+            $value = $value === null ? null : Decimal::of($value);
+            $out[] = [
+                'period'    => (string) $point['period'],
+                'value'     => $value,
+                'formatted' => $point['formatted']
+                    ?? ($value === null ? 'Not rated' : self::render($value, $format, $currency, $unit, $scale)),
+            ];
+        }
+
+        return $out;
     }
 
     private static function render(string $value, string $format, ?string $currency, ?string $unit, ?int $scale): string
