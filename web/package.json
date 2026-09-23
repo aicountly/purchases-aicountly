@@ -11,7 +11,8 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "preview": "vite preview",
-    "test:ui": "node tests/dashboards.mjs"
+    "test:ui": "node tests/dashboards.mjs",
+    "test:returns": "node tests/returns.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.562.0",

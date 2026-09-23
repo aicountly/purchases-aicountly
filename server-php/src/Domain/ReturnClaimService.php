@@ -433,7 +433,20 @@ final class ReturnClaimService
         if ($row === null) {
             return [];
         }
-        $row['lines'] = Db::all('SELECT * FROM purchase_return_lines WHERE return_id = :id ORDER BY line_no', ['id' => $returnId]);
+        // The description comes from the purchase order line this return was
+        // raised against, which is a field THIS product owns. The item itself is
+        // Inventory's and is still only an id here; a screen that needs its name
+        // asks Inventory for it rather than this table keeping a copy.
+        $row['lines'] = Db::all(
+            'SELECT l.*, pl.description AS source_description, pl.ordered_qty AS source_ordered_qty,
+                    pl.received_qty AS source_received_qty, pl.returned_qty AS source_returned_qty,
+                    pl.agreed_rate AS source_rate
+               FROM purchase_return_lines l
+               LEFT JOIN purchase_order_lines pl ON pl.line_id = l.po_line_id
+              WHERE l.return_id = :id
+              ORDER BY l.line_no',
+            ['id' => $returnId],
+        );
         $row['commands'] = IntegrationCommand::forEntity($this->ctx, 'purchase_return', $returnId);
         $row += self::totals($row['lines']);
 

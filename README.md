@@ -53,6 +53,8 @@ same-origin.
 | `npm run build` | Type-check, then build to `web/dist/` |
 | `npm run typecheck` | Type-check only |
 | `npm run preview` | Serve the production build locally |
+| `npm run test:ui` | Browser checks for the five dashboards (needs the stack running) |
+| `npm run test:returns` | Browser checks for the purchase returns workspace |
 
 The PHP API has no build step and no dependencies. To run it locally:
 

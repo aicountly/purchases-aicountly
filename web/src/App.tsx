@@ -11,7 +11,6 @@ import { RequisitionDetail, RequisitionEditor, RequisitionsList } from './pages/
 import { RfqDetail, RfqEditor, RfqList } from './pages/Sourcing'
 import { PurchaseOrderDetail, PurchaseOrderEditor, PurchaseOrderList } from './pages/PurchaseOrders'
 import { BillDetail, BillEditor, BillsList } from './pages/Bills'
-import { ReturnDetail, ReturnsList } from './pages/Returns'
 import Claims from './pages/Claims'
 import Suppliers from './pages/Suppliers'
 import Approvals from './pages/Approvals'
@@ -49,6 +48,19 @@ initAnalytics()
  * It is the only route split this way because it is the only one that earns it.
  */
 const Access = lazy(() => import('./pages/access'))
+
+/**
+ * Purchase returns is loaded on demand.
+ *
+ * It is a workspace rather than a list — four figures, two charts, three views
+ * of the register and its own stylesheet — and it is split for the same reason
+ * Access and the dashboards are: nobody signing in should pay for it before
+ * they have opened it.
+ */
+const PurchaseReturns = lazy(() => import('./pages/purchase-returns'))
+const PurchaseReturnPage = lazy(() =>
+  import('./pages/purchase-returns').then((module) => ({ default: module.PurchaseReturnPage })),
+)
 
 function PageViews() {
   const location = useLocation()
@@ -158,8 +170,26 @@ export default function App() {
             </Route>
 
             <Route path="returns">
-              <Route index element={<RequireScope><ReturnsList /></RequireScope>} />
-              <Route path=":id" element={<RequireScope><ReturnDetail /></RequireScope>} />
+              <Route
+                index
+                element={
+                  <RequireScope>
+                    <Suspense fallback={<p style={{ padding: '2rem', color: 'var(--muted)' }}>Opening…</p>}>
+                      <PurchaseReturns />
+                    </Suspense>
+                  </RequireScope>
+                }
+              />
+              <Route
+                path=":id"
+                element={
+                  <RequireScope>
+                    <Suspense fallback={<p style={{ padding: '2rem', color: 'var(--muted)' }}>Opening…</p>}>
+                      <PurchaseReturnPage />
+                    </Suspense>
+                  </RequireScope>
+                }
+              />
             </Route>
 
             <Route path="reports" element={<RequireScope><Reports /></RequireScope>} />

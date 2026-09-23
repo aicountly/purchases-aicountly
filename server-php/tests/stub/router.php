@@ -272,6 +272,32 @@ if (str_contains($path, '/v1/warehouses')) {
 }
 
 // --- Books ----------------------------------------------------------------
+
+/**
+ * The party ledger LIST, which is what every supplier picker in Purchases
+ * searches. Declared before the by-id route below, which matches on a trailing
+ * slash and would otherwise never see this path anyway.
+ *
+ * Filtered by `q` the way Books filters it, so a picker that searches for
+ * "Metro" gets Metro back and a picker that searches for nothing gets the lot.
+ */
+if (preg_match('#/masters/accounts/?$#', $path) === 1) {
+    $all = [
+        ['acc_id' => 601, 'acc_name' => 'Metro Electronics Pvt. Ltd.', 'gstin' => '27AABCM1234C1Z5'],
+        ['acc_id' => 602, 'acc_name' => 'Shree Traders',              'gstin' => '27AABCS5678D1Z2'],
+        ['acc_id' => 603, 'acc_name' => 'Global Tech Supplies',       'gstin' => '29AABCG9012E1Z8'],
+        ['acc_id' => 604, 'acc_name' => 'R.K. Enterprises',           'gstin' => '24AABCR3456F1Z1'],
+        ['acc_id' => 605, 'acc_name' => 'National Components',        'gstin' => '06AABCN7890G1Z4'],
+    ];
+    $term = trim((string) ($_GET['q'] ?? ''));
+    $rows = $term === ''
+        ? $all
+        : array_values(array_filter($all, static fn (array $a) => stripos($a['acc_name'], $term) !== false));
+
+    echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows), 'limit' => 50, 'offset' => 0]]);
+    exit;
+}
+
 if (str_contains($path, '/masters/accounts/')) {
     echo json_encode(['data' => ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30]]);
     exit;
