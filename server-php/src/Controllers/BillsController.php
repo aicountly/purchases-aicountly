@@ -26,6 +26,40 @@ final class BillsController extends Controller
         Http::list($result['rows'], $result['total'], $params['limit'], $params['offset']);
     }
 
+    /**
+     * The payables workspace list.
+     *
+     * A separate call from the dashboard payload on purpose: changing a tab or
+     * turning a page here must not re-run the Smart Books reads the panels
+     * above it need, and a table that fails must not take the whole screen
+     * down with it.
+     */
+    public static function payables(): void
+    {
+        [$auth, $ctx] = self::enter();
+        Permissions::assert($ctx, $auth, 'bill.enter');
+
+        $params = Http::listParams(
+            ['invoice_date', 'invoice_no', 'status', 'created_at', 'amount', 'supplier'],
+            'invoice_date',
+        );
+
+        $result = (new BillService($ctx, $auth))->payables([
+            'tab'                 => Http::param('tab'),
+            'status'              => Http::param('status'),
+            'supplier_account_id' => Http::intParam('supplier_account_id'),
+            'po_id'               => Http::intParam('po_id'),
+            'from'                => Http::param('from'),
+            'to'                  => Http::param('to'),
+            'q'                   => $params['q'],
+        ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
+
+        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset'], [
+            'tab'    => $result['tab'],
+            'counts' => $result['counts'],
+        ]);
+    }
+
     public static function show(string $id): void
     {
         [$auth, $ctx] = self::enter();

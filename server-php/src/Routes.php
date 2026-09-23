@@ -99,6 +99,7 @@ final class Routes
 
         // Vendor bills and the three-way match.
         $router->get('v1/bills', [BillsController::class, 'index']);
+        $router->get('v1/bills/payables', [BillsController::class, 'payables']);
         $router->post('v1/bills', [BillsController::class, 'create']);
         $router->get('v1/bills/{id}', [BillsController::class, 'show']);
         $router->post('v1/bills/{id}/rematch', [BillsController::class, 'rematch']);

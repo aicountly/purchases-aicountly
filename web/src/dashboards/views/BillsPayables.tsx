@@ -1,9 +1,14 @@
 /**
- * Dashboard 4 — Bills & Payables.
+ * Bills & Payables — the matching workbench, the payment planner and intake.
  *
  * What is held up and why, and what falls due next. The division of labour is
  * on the screen as well as in the code: the exceptions are ours, the money is
  * Smart Books', and neither is ever derived from the other.
+ *
+ * The ageing panel that used to live here has moved to the payables command
+ * centre's own card, which draws Books' buckets as a donut beside the figures
+ * they belong with. It is the same panel from the same API — it is not drawn
+ * twice on one screen.
  */
 
 import { useState } from 'react'
@@ -11,10 +16,10 @@ import { useNavigate } from 'react-router-dom'
 import { AlertOctagon, Ban, Check, X } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
 import { Badge, DashboardPanel, DataTable, EmptyState, PanelUnavailable } from '../shell'
-import { BarChart, SegmentedBar } from '../charts'
+import { SegmentedBar } from '../charts'
 import { Drawer } from '../Drawer'
 import type { DashboardFilters } from '../filters'
-import type { AgeingBucket, DashboardResponse, MatchRow, Panel, PaymentRow } from '../types'
+import type { DashboardResponse, MatchRow, Panel, PaymentRow } from '../types'
 
 type MatchingPanel = Panel<{
   category: string | null
@@ -32,14 +37,6 @@ type MatchingPanel = Panel<{
   } | null
   can_resolve: boolean
   basis: string
-}>
-type AgeingPanel = Panel<{
-  as_of_label: string
-  currency: string
-  buckets: AgeingBucket[]
-  total_formatted: string
-  basis: string
-  caveat: string
 }>
 type PlanningPanel = Panel<{
   rows: PaymentRow[]
@@ -93,7 +90,31 @@ function matchOutcome(
     : exceptions
 }
 
-export function BillsPayablesDashboard({
+/**
+ * Which of Books' ageing buckets one open item falls in.
+ *
+ * Derived from the SAME `days_overdue` Books returned on that item, so
+ * selecting a bucket on the ageing donut and reading the bills behind it here
+ * cannot disagree — both sides of that click are Books' own arithmetic, not
+ * this screen re-ageing anything against its own clock.
+ */
+function bucketOf(daysOverdue: number | null): string {
+  if (daysOverdue === null || daysOverdue <= 0) return 'not_due'
+  if (daysOverdue <= 30) return 'b_0_30'
+  if (daysOverdue <= 60) return 'b_31_60'
+  if (daysOverdue <= 90) return 'b_61_90'
+  return 'b_90_plus'
+}
+
+const BUCKET_LABELS: Record<string, string> = {
+  not_due: 'Not due',
+  b_0_30: '1 – 30 days overdue',
+  b_31_60: '31 – 60 days',
+  b_61_90: '61 – 90 days',
+  b_90_plus: 'Over 90 days',
+}
+
+export function BillsPayablesWorkbench({
   data,
   filters,
   onChanged,
@@ -106,9 +127,18 @@ export function BillsPayablesDashboard({
   const [resolving, setResolving] = useState<MatchRow | null>(null)
 
   const matching = data.panels.matching as MatchingPanel
-  const ageing = data.panels.ageing as AgeingPanel
   const planning = data.panels.payment_planning as PlanningPanel
   const intake = data.panels.intake as IntakePanel
+
+  // The ageing card is a filter as well as a picture: picking a bucket there
+  // narrows the bills listed here to the ones Books put in it.
+  const bucket = filters.get('bucket')
+  const planningRows =
+    planning.available && bucket !== null
+      ? planning.rows.filter((row) => bucketOf(row.days_overdue) === bucket)
+      : planning.available
+        ? planning.rows
+        : []
 
   return (
     <>
@@ -222,51 +252,6 @@ export function BillsPayablesDashboard({
       </DashboardPanel>
 
       <div className="purchase-dashboard-grid">
-        <DashboardPanel
-          title="Payables ageing"
-          description={ageing.available ? ageing.basis : undefined}
-          action={
-            ageing.available && (
-              <span className="purchase-muted" style={{ fontSize: 12 }}>
-                As at {ageing.as_of_label}
-              </span>
-            )
-          }
-        >
-          {!ageing.available ? (
-            <PanelUnavailable reason={ageing.reason} kind={ageing.kind} />
-          ) : (
-            <>
-              <div className="purchase-ageing">
-                <BarChart
-                  title="Open payables by age"
-                  unitLabel="Amount"
-                  data={ageing.buckets.map((bucket) => ({
-                    id: bucket.id,
-                    label: bucket.label,
-                    value: bucket.amount,
-                    formatted: bucket.formatted,
-                    tone: bucket.tone === 'danger' ? 'danger' : bucket.tone === 'warning' ? 'warning' : 'muted',
-                  }))}
-                />
-                {/* The total belongs beside the bars, not under them: it is
-                    what the buckets add up to, and the design is right that a
-                    reader looks for it there. */}
-                <p className="purchase-total-tile">
-                  <span>Total outstanding</span>
-                  <strong>{ageing.total_formatted}</strong>
-                </p>
-              </div>
-              <div className="purchase-notice purchase-notice--info" style={{ marginTop: 12 }}>
-                <div>
-                  <strong>What "Not due" includes</strong>
-                  <p>{ageing.caveat}</p>
-                </div>
-              </div>
-            </>
-          )}
-        </DashboardPanel>
-
         <DashboardPanel title="Bill intake" description={intake.available ? intake.basis : undefined}>
           {!intake.available ? (
             <PanelUnavailable reason={intake.reason} kind={intake.kind} />
@@ -351,9 +336,18 @@ export function BillsPayablesDashboard({
                 ))}
               </div>
 
+              {bucket !== null && (
+                <div className="purchase-chips" style={{ marginBottom: 12 }}>
+                  <button type="button" className="purchase-chip is-active" onClick={() => filters.set({ bucket: null })}>
+                    Ageing: {BUCKET_LABELS[bucket] ?? bucket}
+                    <X size={12} aria-hidden style={{ marginLeft: 4 }} />
+                  </button>
+                </div>
+              )}
+
               <DataTable
                 caption={planning.basis}
-                rows={planning.rows}
+                rows={planningRows}
                 rowKey={(row) => `${row.supplier_account_id}-${row.bill_ref}`}
                 empty={<EmptyState title="Nothing is open for these suppliers." />}
                 columns={[

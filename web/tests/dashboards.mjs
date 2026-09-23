@@ -42,7 +42,8 @@ const apiCall = async (method, path, body, as = SES) => {
   const res = await fetch(`${API}/${path}${path.includes('?') ? '&' : '?'}${SCOPE}`, {
     method,
     headers: { Authorization: `Bearer ${as}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body ?? {}),
+    // fetch refuses a body on GET, and this helper is used to read as well as write.
+    ...(method === 'GET' || method === 'HEAD' ? {} : { body: JSON.stringify(body ?? {}) }),
   })
   const payload = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${JSON.stringify(payload).slice(0, 200)}`)
@@ -291,11 +292,166 @@ await check('a KPI and the records behind it agree', async () => {
 await check('an unavailable figure never renders as a zero', async () => {
   await page.goto(`${BASE}/dashboard/bills-payables?preset=this_year`, { waitUntil: 'networkidle' })
   await settle()
-  const card = page.locator('.purchase-metric', { hasText: 'Due within 7 / 15 / 30 days' })
+
+  // The forward-window card has two honest faces and this accepts either: the
+  // figure, when the planner has read real due dates for somebody, or the
+  // reason it cannot be answered company-wide. What it must never be is a zero
+  // standing in for "we could not ask".
+  const card = page.locator('.aic-kpi', { hasText: 'Due within 7 / 15 / 30 days' })
   const text = (await card.textContent()) || ''
-  ok(text.includes('Unavailable'), 'the card says Unavailable')
-  ok(!/₹\s?0\.00/.test(text), 'and never shows a zero amount')
-  ok(text.includes('acc_id'), 'and states the upstream reason')
+
+  if (text.includes('Unavailable')) {
+    ok(!/₹\s?0(\.00)?\b/.test(text), 'an unavailable card never shows a zero amount')
+    ok(text.includes('acc_id'), 'and states the upstream reason on the card')
+  } else {
+    ok(/₹/.test(text), 'a ready card shows a real amount')
+    ok(text.includes('15 days'), 'and carries the other two windows in its footnote')
+    // Ready means it was answered for a stated set of suppliers, never for the
+    // whole ledger — the card has to say which, or the figure reads as company-wide.
+    ok(((await card.getAttribute('title')) || '').includes('acc_id'), 'and still explains why it is not company-wide')
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Bills, for the payables workspace.
+//
+// The shared seed above builds orders and receipts but stops there, because
+// until now nothing needed a bill. The payables screen is a list of bills, so
+// it seeds its own: one that matches cleanly and is therefore ready to post,
+// one billed above the agreed rate so there is a real exception to look at,
+// and a pair sharing a supplier and an invoice date so the duplicate review
+// has something to review. They are entered through the real API, as a user.
+// ---------------------------------------------------------------------------
+{
+  const orders = await apiCall('GET', 'v1/purchase-orders?limit=6&status=RECEIVED')
+  const usable = []
+  for (const row of orders ?? []) {
+    const full = await apiCall('GET', `v1/purchase-orders/${row.po_id}`)
+    if (full?.lines?.length) usable.push(full)
+    if (usable.length === 4) break
+  }
+
+  let n = 0
+  for (const po of usable) {
+    n += 1
+    const line = po.lines[0]
+    await apiPost('v1/bills', {
+      supplier_account_id: po.supplier_account_id,
+      po_id: po.po_id,
+      supplier_invoice_no: `SEED-BILL-${String(n).padStart(3, '0')}`,
+      supplier_invoice_date: `2026-07-${String(10 + n).padStart(2, '0')}`,
+      // The second one is billed well above the agreed rate: an exception by policy.
+      lines: [{ po_line_id: line.line_id, qty: Number(line.ordered_qty), rate: n === 2 ? Number(line.agreed_rate) * 2 : Number(line.agreed_rate) }],
+    })
+  }
+
+  // Two bills, one supplier, one invoice date.
+  if (usable[0]) {
+    const po = usable[0]
+    await apiPost('v1/bills', {
+      supplier_account_id: po.supplier_account_id,
+      po_id: po.po_id,
+      supplier_invoice_no: 'SEED-BILL-DUP',
+      supplier_invoice_date: '2026-07-11',
+      lines: [{ po_line_id: po.lines[0].line_id, qty: 1, rate: Number(po.lines[0].agreed_rate) }],
+    })
+  }
+}
+
+await check('the payables tabs filter on the server and the paging agrees', async () => {
+  await page.goto(`${BASE}/dashboard/bills-payables?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const all = page.locator('.aic-tab', { hasText: 'All bills' })
+  const onTab = Number.parseInt(((await all.locator('span').textContent()) || '0').replace(/[^0-9]/g, ''), 10)
+  ok(Number.isFinite(onTab) && onTab > 0, 'the strip counts the bills that exist')
+
+  const footer = (await page.locator('.aic-pagination').first().textContent()) || ''
+  ok(footer.includes(`of ${onTab} bill`), `the footer agrees with the tab, got "${footer.trim().slice(0, 60)}"`)
+
+  // A tab is a server-side filter, not a hide: the count it carries is what
+  // the list becomes, and it survives a reload because it is in the URL.
+  const exceptions = page.locator('.aic-tab', { hasText: 'Exceptions' })
+  const expected = Number.parseInt(((await exceptions.locator('span').textContent()) || '0').replace(/[^0-9]/g, ''), 10)
+  await exceptions.click()
+  await settle()
+
+  eq(new URL(page.url()).searchParams.get('tab'), 'exceptions', 'the tab is in the URL')
+  eq(await page.locator('.aic-table tbody tr').count(), expected, 'the list holds exactly what the tab counted')
+
+  await page.reload({ waitUntil: 'networkidle' })
+  await settle()
+  ok(await exceptions.evaluate((el) => el.classList.contains('is-active')), 'and a reload lands on the same tab')
+})
+
+await check('every bill in the list states a value and never a tax it cannot compute', async () => {
+  await page.goto(`${BASE}/dashboard/bills-payables?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const first = page.locator('.aic-table tbody tr').first()
+  const amount = (await first.locator('.aic-amount').textContent()) || ''
+  ok(/₹/.test(amount), 'the row carries a rupee value')
+  ok(amount.includes('excl. tax'), 'and says the tax is not in it')
+
+  // Due date and payment are Books', and Books answers open items one supplier
+  // at a time. A bill it was not asked about must say so rather than leave a
+  // blank a reader takes for "nothing due".
+  const due = (await first.locator('td').nth(4).textContent()) || ''
+  ok(due.trim() !== '', 'the due date cell is never silently empty')
+})
+
+await check('Ask Aicountly answers, and offers nothing that moves money', async () => {
+  await page.goto(`${BASE}/dashboard/bills-payables?preset=this_year`, { waitUntil: 'networkidle' })
+  await settle()
+
+  await page.locator('.aic-ask-card').click()
+  await page.waitForTimeout(400)
+
+  const drawer = page.locator('.aic-drawer')
+  ok(await drawer.isVisible(), 'the panel opens')
+  eq(await page.evaluate(() => document.activeElement?.id), 'aic-ask-input', 'and takes the caret')
+
+  await drawer.getByRole('button', { name: 'Which bills need review before payment?', exact: true }).click()
+  await page.waitForTimeout(1800)
+
+  const answer = await drawer.locator('.aic-ask-answer').textContent()
+  ok((answer || '').length > 20, 'a real answer comes back from the engine')
+
+  // Advisory, always. Nothing in this panel may approve, post, schedule or pay.
+  const buttons = await drawer.locator('button').allTextContents()
+  const dangerous = buttons.filter((t) => /\b(approve|post to|pay|schedule)\b/i.test(t))
+  eq(dangerous.length, 0, `the panel offers no money-moving action, found ${JSON.stringify(dangerous)}`)
+
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  ok(!(await drawer.isVisible()), 'and Escape closes it')
+})
+
+await check('posting to Smart Books is confirmed, never fired from a menu', async () => {
+  await page.goto(`${BASE}/dashboard/bills-payables?preset=this_year&tab=ready_to_post`, { waitUntil: 'networkidle' })
+  await settle()
+
+  const rows = await page.locator('.aic-table tbody tr').count()
+  ok(rows > 0, 'there is a bill ready to post to try this on')
+
+  await page.locator('.aic-table tbody tr').first().getByRole('button', { name: /^Actions for bill/ }).click()
+  await page.waitForTimeout(300)
+
+  const post = page.getByRole('menuitem', { name: /Post to Smart Books/ })
+  ok(await post.isVisible(), 'the owner is offered the post')
+  await post.click()
+  await page.waitForTimeout(400)
+
+  // The menu item opens a confirmation. It does NOT post.
+  const dialog = page.locator('.aic-drawer[role="dialog"]')
+  ok(await dialog.isVisible(), 'a confirmation opens instead')
+  const text = (await dialog.textContent()) || ''
+  ok(text.includes('cannot be undone'), 'it says the post cannot be undone from here')
+  ok(text.includes('Aicountly Pay is not integrated'), 'and refuses to imply anybody gets paid')
+
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await page.waitForTimeout(300)
+  ok(!(await dialog.isVisible()), 'and cancelling leaves the bill alone')
 })
 
 await check('a chart offers its figures as a table', async () => {

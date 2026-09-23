@@ -453,12 +453,31 @@ export function DonutChart({
   segments,
   centreLabel,
   centreValue,
+  colour = seriesColour,
+  legend = true,
 }: {
   title: string
   summary: string
   segments: DonutSegment[]
   centreLabel: string
   centreValue: string
+  /**
+   * Overrides the categorical palette where the segments are not categories.
+   *
+   * Ageing buckets are ordered severity, not five unrelated things, so the
+   * payables screen hands in a ramp that runs from "not due" to "over ninety
+   * days". Everything else keeps the shared series palette by leaving this out.
+   */
+  colour?: (index: number, segment: DonutSegment) => string
+  /**
+   * Off only where the caller draws a richer legend of its own — one that
+   * carries the amounts as well as the shares, and filters on click.
+   *
+   * The figures table and the spoken summary are part of ChartFrame and are
+   * NOT affected: turning this off changes what a sighted reader sees twice,
+   * never whether the chart is readable without colour.
+   */
+  legend?: boolean
 }) {
   // Six is the limit for part-to-whole at a glance; past that adjacent slices
   // blur and the table is the better answer. The caller folds the tail.
@@ -514,7 +533,7 @@ export function DonutChart({
       <div className="purchase-donut">
         <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} role="img" aria-hidden="true">
           {arcs.map(({ segment, index, from, to }) => (
-            <path key={segment.id} d={arcPath(cx, cy, outer, inner, from, to)} fill={seriesColour(index)}>
+            <path key={segment.id} d={arcPath(cx, cy, outer, inner, from, to)} fill={colour(index, segment)}>
               <title>{`${segment.label}: ${segment.formatted}${segment.share === null ? '' : ` (${segment.share}%)`}`}</title>
             </path>
           ))}
@@ -535,21 +554,25 @@ export function DonutChart({
           </text>
         </svg>
 
-        {/* The legend is always present and every entry is directly labelled
-            with its share, so identity never rests on colour alone. */}
-        <ul className="purchase-donut__legend">
-          {shown.map((segment, index) => (
-            <li key={segment.id}>
-              <i style={{ background: seriesColour(index) }} aria-hidden />
-              <span className="purchase-donut__legend-name" title={segment.label}>
-                {segment.label}
-              </span>
-              <span className="purchase-donut__legend-share">
-                {segment.share === null ? '—' : `${segment.share}%`}
-              </span>
-            </li>
-          ))}
-        </ul>
+        {/* Every entry is directly labelled with its share, so identity never
+            rests on colour alone. It is drawn unless the caller is already
+            drawing a fuller one — two legends side by side, disagreeing about
+            colour, is worse than either alone. */}
+        {legend && (
+          <ul className="purchase-donut__legend">
+            {shown.map((segment, index) => (
+              <li key={segment.id}>
+                <i style={{ background: colour(index, segment) }} aria-hidden />
+                <span className="purchase-donut__legend-name" title={segment.label}>
+                  {segment.label}
+                </span>
+                <span className="purchase-donut__legend-share">
+                  {segment.share === null ? '—' : `${segment.share}%`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </ChartFrame>
   )

@@ -56,12 +56,20 @@ final class BillsDashboard extends Dashboard
             $this->sources->notRequested('books', BooksReader::LABEL, 'Payable figures need the reports.view or cost.view permission.');
         }
 
+        // Planning is built FIRST because two other things on this screen are
+        // made of it: the forward-window card, and the supplier exposure
+        // ranking. Both are derived from open items already read, so neither
+        // costs Smart Books a second round of requests.
+        $planning = $this->paymentPlanning();
+
         return $this->envelope(
-            $this->metrics($books),
+            $this->metrics($books, $planning),
             [
                 'matching' => $this->matching(),
                 'ageing'   => $this->ageing($books),
-                'payment_planning' => $this->paymentPlanning(),
+                'payment_planning' => $planning,
+                'supplier_exposure' => $this->supplierExposure($planning),
+                'trend'    => $this->billsTrend(),
                 'intake'   => $this->intake(),
             ],
         );
@@ -70,10 +78,11 @@ final class BillsDashboard extends Dashboard
     // -----------------------------------------------------------------------
 
     /**
-     * @param array<string, mixed>|null $books
+     * @param array<string, mixed>|null  $books
+     * @param array<string, mixed>       $planning the payment planning panel, already built
      * @return list<array<string, mixed>>
      */
-    private function metrics(?array $books): array
+    private function metrics(?array $books, array $planning): array
     {
         $currency = $this->documentCurrency() ?? 'INR';
         [$billSql, $billParams] = $this->filters->billClause('b');
@@ -163,13 +172,44 @@ final class BillsDashboard extends Dashboard
             $metrics[] = Metric::unavailable('payables_overdue', 'Overdue payables', $reason, 'Open creditor balances past their Books due date.', ['format' => 'currency', 'currency' => $currency, 'direction' => Metric::LOWER_IS_BETTER]);
         }
 
-        $metrics[] = Metric::unavailable(
-            'due_windows',
-            'Due within 7 / 15 / 30 days',
-            $dueWindowReason,
-            'Open creditor balances falling due within the next 7, 15 and 30 days, from Smart Books due dates.',
-            ['format' => 'currency', 'currency' => $currency, 'direction' => Metric::NEUTRAL],
-        );
+        // The forward windows, for the suppliers this screen CAN see.
+        //
+        // The company-wide figure is still not answerable — Books reports open
+        // items one creditor at a time — but the planning panel below has
+        // already read real bill-level due dates for a stated set of
+        // suppliers, and adding those up is not an estimate of anything. The
+        // card carries the scope in its footnote so nobody reads it as the
+        // whole ledger, and falls back to saying why when planning could not
+        // run at all.
+        $windows = ($planning['available'] ?? false) ? ($planning['windows'] ?? []) : [];
+
+        if ($windows !== []) {
+            $covered = (int) ($planning['covered_suppliers'] ?? 0);
+            $metrics[] = Metric::ready(
+                'due_windows',
+                'Due within 7 / 15 / 30 days',
+                (string) ($windows['due_7']['amount'] ?? '0'),
+                'Bills falling due within 7 days, from Smart Books\' own due dates, for the '
+                    . $covered . ' supplier(s) with bills posted from this application in ' . $this->period->label() . '.',
+                [
+                    'format' => 'currency', 'currency' => $currency, 'direction' => Metric::NEUTRAL,
+                    'comparison_unavailable_reason' => 'A forward window is a position as at now.',
+                    'footnote' => '15 days: ' . ($windows['due_15']['formatted'] ?? '—')
+                        . ' · 30 days: ' . ($windows['due_30']['formatted'] ?? '—')
+                        . ' · already overdue: ' . ($windows['overdue']['formatted'] ?? '—'),
+                    'explanation' => $dueWindowReason,
+                    'drilldown' => $this->drilldown('/dashboard/bills-payables', ['panel' => 'planning']),
+                ],
+            );
+        } else {
+            $metrics[] = Metric::unavailable(
+                'due_windows',
+                'Due within 7 / 15 / 30 days',
+                $dueWindowReason,
+                'Open creditor balances falling due within the next 7, 15 and 30 days, from Smart Books due dates.',
+                ['format' => 'currency', 'currency' => $currency, 'direction' => Metric::NEUTRAL],
+            );
+        }
 
         $metrics[] = Metric::ready(
             'duplicate_candidates',
@@ -651,6 +691,163 @@ final class BillsDashboard extends Dashboard
                 . '. It is NOT the whole creditors ledger: Books answers open items one supplier at a time, so a company-wide view has to be read in Books itself.',
             'pay_note' => 'Preparing a proposal changes nothing. It does not post a payment, does not allocate against a bill and does not mark anything paid — "proposal prepared", "payment recorded" and "payment executed" are three separate states, and only the first happens here. Aicountly Pay is not integrated.',
             'basis'    => 'Due dates and open amounts are Smart Books\' own. Held bills are ours: a bill with an open match exception is flagged and excluded from any proposal.',
+        ]);
+    }
+
+    /**
+     * Panel E — who we owe the most to.
+     *
+     * Made entirely out of the open items the planning panel has already read,
+     * so it asks Smart Books for nothing. That also fixes its honesty: this is
+     * exposure across the suppliers this screen covers, which is a bounded set
+     * and says so, not a ranking of the whole creditors ledger.
+     *
+     * @param array<string, mixed> $planning
+     * @return array<string, mixed>
+     */
+    private function supplierExposure(array $planning): array
+    {
+        if (!($planning['available'] ?? false)) {
+            // The planner's own reason travels with it. A second, vaguer
+            // sentence invented here would be a worse answer to the same question.
+            return $planning;
+        }
+
+        $currency = $this->documentCurrency() ?? 'INR';
+        $totals = [];
+
+        foreach ((array) ($planning['rows'] ?? []) as $row) {
+            $id = (int) $row['supplier_account_id'];
+            if (!isset($totals[$id])) {
+                $totals[$id] = [
+                    'supplier_account_id' => $id,
+                    'supplier_name' => $row['supplier_name'],
+                    'amount' => Decimal::ZERO,
+                    'bill_count' => 0,
+                    'overdue_count' => 0,
+                    'held_count' => 0,
+                ];
+            }
+            $totals[$id]['amount'] = Decimal::add($totals[$id]['amount'], (string) $row['pending']);
+            $totals[$id]['bill_count']++;
+            if (($row['days_overdue'] ?? null) !== null) {
+                $totals[$id]['overdue_count']++;
+            }
+            if ($row['held'] ?? false) {
+                $totals[$id]['held_count']++;
+            }
+        }
+
+        $total = Decimal::ZERO;
+        foreach ($totals as $entry) {
+            $total = Decimal::add($total, $entry['amount']);
+        }
+
+        usort($totals, static fn (array $a, array $b) => Decimal::cmp($b['amount'], $a['amount']));
+
+        $rows = [];
+        foreach (array_slice(array_values($totals), 0, 8) as $entry) {
+            $rows[] = $entry + [
+                'formatted' => Format::money($entry['amount'], $currency),
+                'share_pc'  => Decimal::percentOf($entry['amount'], $total, 1),
+                'route'     => '/dashboard/bills-payables',
+                'filters'   => ['supplier_id' => (string) $entry['supplier_account_id']],
+            ];
+        }
+
+        return $this->panel([
+            'rows'     => $rows,
+            'currency' => $currency,
+            'total'    => $total,
+            'total_formatted' => Format::money($total, $currency),
+            'covered_suppliers' => (int) ($planning['covered_suppliers'] ?? 0),
+            'basis' => 'Open amounts from Smart Books for the ' . (int) ($planning['covered_suppliers'] ?? 0)
+                . ' supplier(s) this screen reads open items for. It ranks exposure within that set — '
+                . 'it is not the largest creditors in the ledger, which only Books can answer.',
+        ]);
+    }
+
+    /**
+     * Panel F — bills booked, month by month.
+     *
+     * OURS, and only ours. The value is what the bills entered here add up to,
+     * with the count of those that reached Smart Books beside it.
+     *
+     * There is deliberately no "payments" or "outstanding" line: both are
+     * Books' and Books reports a position as at a date, not a series, so
+     * drawing them would mean re-reading the whole ledger once per month on
+     * every page load. The trend that IS drawn is one this application can
+     * stand behind, and the panel says which one it is.
+     *
+     * @return array<string, mixed>
+     */
+    private function billsTrend(): array
+    {
+        if (!$this->canSeeValues()) {
+            return $this->withheld('reports.view');
+        }
+
+        $months = 6;
+        $currency = $this->documentCurrency() ?? 'INR';
+        [$billSql, $billParams] = $this->filters->billClause('b');
+
+        // Anchored on the period end rather than today, so the series a reader
+        // sees belongs to the period the rest of the screen is showing.
+        $anchor = substr($this->period->to, 0, 7) . '-01';
+
+        $rows = $this->rows(
+            "SELECT to_char(month.start, 'YYYY-MM') AS period,
+                    COUNT(b.request_id) AS bill_count,
+                    COUNT(b.request_id) FILTER (WHERE b.status = 'POSTED') AS posted_count,
+                    COALESCE(SUM(value.subtotal), 0)::text AS booked,
+                    COALESCE(SUM(value.subtotal) FILTER (WHERE b.status = 'POSTED'), 0)::text AS posted_value
+             FROM generate_series(
+                      date_trunc('month', :anchor::date) - INTERVAL '" . ($months - 1) . " months',
+                      date_trunc('month', :anchor::date),
+                      INTERVAL '1 month'
+                  ) AS month(start)
+             LEFT JOIN purchase_bill_requests b
+                    ON date_trunc('month', COALESCE(b.supplier_invoice_date, b.created_at::date)) = month.start
+                   AND {scope}
+                   AND b.status <> 'CANCELLED'" . $billSql . "
+             LEFT JOIN LATERAL (
+                 SELECT COALESCE(SUM(NULLIF(line->>'amount', '')::numeric), 0) AS subtotal
+                 FROM jsonb_array_elements(COALESCE(b.requested_lines, '[]'::jsonb)) AS line
+             ) value ON TRUE
+             GROUP BY month.start
+             ORDER BY month.start",
+            ['anchor' => $anchor] + $billParams,
+            'b',
+        );
+
+        $points = [];
+        foreach ($rows as $row) {
+            $booked = Decimal::of((string) $row['booked']);
+            $posted = Decimal::of((string) $row['posted_value']);
+            $points[] = [
+                'period'    => (string) $row['period'],
+                'label'     => date('M Y', (int) strtotime((string) $row['period'] . '-01')),
+                'booked'    => $booked,
+                'formatted' => Format::money($booked, $currency),
+                'posted'    => $posted,
+                'posted_formatted' => Format::money($posted, $currency),
+                'bill_count'   => (int) $row['bill_count'],
+                'posted_count' => (int) $row['posted_count'],
+            ];
+        }
+
+        return $this->panel([
+            'points'   => $points,
+            'currency' => $currency,
+            'months'   => $months,
+            'series'   => [
+                ['id' => 'booked', 'label' => 'Bills booked', 'tone' => 'primary'],
+                ['id' => 'posted', 'label' => 'Posted to Books', 'tone' => 'good'],
+            ],
+            'basis' => 'Supplier bills entered in this application, by invoice month, exclusive of tax, '
+                . 'with the portion that reached Smart Books. Payments and the outstanding balance are Books\' own '
+                . 'and are a position as at a date rather than a series, so they are not drawn here — the ageing '
+                . 'panel is where the outstanding balance is answered.',
         ]);
     }
 

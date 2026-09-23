@@ -30,6 +30,28 @@ final class BillService
 {
     public const COMMAND_BILL = 'purchases.bill.post';
 
+    /**
+     * A bill that looks like an earlier one from the same supplier.
+     *
+     * The exact repeat — same supplier, same invoice number — is refused when
+     * the bill is entered, so it never reaches this. What is caught is same
+     * supplier and same invoice date, which is a coincidence often enough to
+     * be offered for review rather than blocked.
+     *
+     * `<` rather than `<>` is deliberate and is the whole reason this is a
+     * constant: it flags the LATER bill of a pair, once, which is the same rule
+     * the "Possible duplicate bills" card counts by. Written out twice, the two
+     * drifted apart and the card said one where the tab said two.
+     */
+    private const DUPLICATE_CLAUSE = "b.supplier_invoice_date IS NOT NULL
+        AND b.status NOT IN ('CANCELLED', 'POSTED')
+        AND EXISTS (SELECT 1 FROM purchase_bill_requests o
+                     WHERE o.cmp_id = b.cmp_id
+                       AND o.supplier_account_id = b.supplier_account_id
+                       AND o.supplier_invoice_date = b.supplier_invoice_date
+                       AND o.request_id < b.request_id
+                       AND o.status <> 'CANCELLED')";
+
     public function __construct(
         private readonly Context $ctx,
         private readonly Auth $auth,
@@ -362,6 +384,276 @@ final class BillService
         return [
             'rows'  => Db::all("SELECT b.* FROM purchase_bill_requests b WHERE {$clause} ORDER BY b.{$sortColumn} {$order}, b.request_id {$order} LIMIT {$limit} OFFSET {$offset}", $params),
             'total' => (int) Db::scalar("SELECT COUNT(*) FROM purchase_bill_requests b WHERE {$clause}", $params),
+        ];
+    }
+
+    /**
+     * The payables workspace list.
+     *
+     * `search()` above answers "which bill requests exist" and is what the
+     * plain bills screen wants. This answers a different question — what is
+     * owed, on what, and what is holding it up — and so it carries the figures
+     * the workspace shows in a row: the bill's own value, the supplier behind
+     * the account id, how many exceptions are open against it and whether it
+     * looks like an earlier bill.
+     *
+     * Three things are deliberately NOT here, because this application does not
+     * know them:
+     *
+     *  - TAX. Lines carry a tax category, never a rate. Books computes the GST
+     *    when it posts the voucher, and a second tax engine here would
+     *    eventually disagree with the one that files the return. The row says
+     *    the value is exclusive of tax rather than inventing a gross figure.
+     *  - THE DUE DATE. It is Books', per bill, and Books answers open items one
+     *    supplier at a time. The dashboard reads them for the suppliers it can
+     *    and the workspace merges them onto these rows; a bill outside that set
+     *    says so instead of guessing from the invoice date.
+     *  - WHETHER IT IS PAID. Same reason. A bill posted from here is a voucher
+     *    in Books, and only Books knows what has been settled against it.
+     *
+     * @param array<string, mixed> $filters
+     * @return array{rows: list<array<string, mixed>>, total: int, counts: array<string, int>}
+     */
+    public function payables(array $filters, int $limit, int $offset, string $sort, string $order): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'bill.enter');
+
+        [$scope, $params] = $this->ctx->scopeClause('b');
+        $where = [$scope];
+
+        // The workspace tabs. Each is a real state of a real bill, not a label
+        // invented to fill a pill: a tab nobody can reach is worse than a tab
+        // that is not there.
+        $tab = (string) ($filters['tab'] ?? 'all');
+        switch ($tab) {
+            case 'awaiting_review':
+                $where[] = "b.status IN ('DRAFT', 'MATCHING')";
+                break;
+            case 'exceptions':
+                $where[] = "EXISTS (SELECT 1 FROM purchase_match_results m
+                                     JOIN purchase_match_exceptions e ON e.match_id = m.match_id
+                                    WHERE m.bill_request_id = b.request_id AND e.status = 'OPEN')";
+                break;
+            case 'ready_to_post':
+                $where[] = "b.status = 'MATCHED'";
+                break;
+            case 'posted':
+                $where[] = "b.status = 'POSTED'";
+                break;
+            case 'failed':
+                $where[] = "b.status IN ('FAILED', 'EXCEPTION')";
+                break;
+            case 'duplicates':
+                // `o.request_id < b.request_id` — the LATER bill of a pair, not
+                // both of them. It is the rule the "Possible duplicate bills"
+                // card counts by, and the two have to be the same rule or the
+                // card says one and the tab it opens says two.
+                $where[] = self::DUPLICATE_CLAUSE;
+                break;
+            default:
+                $tab = 'all';
+        }
+
+        if (!empty($filters['status'])) {
+            $where[] = 'b.status = :status';
+            $params['status'] = (string) $filters['status'];
+        }
+        if (!empty($filters['supplier_account_id'])) {
+            $where[] = 'b.supplier_account_id = :supplier';
+            $params['supplier'] = (int) $filters['supplier_account_id'];
+        }
+        if (!empty($filters['po_id'])) {
+            $where[] = 'b.po_id = :po';
+            $params['po'] = (int) $filters['po_id'];
+        }
+        if (!empty($filters['from'])) {
+            $where[] = 'b.supplier_invoice_date >= :from_date';
+            $params['from_date'] = (string) $filters['from'];
+        }
+        if (!empty($filters['to'])) {
+            $where[] = 'b.supplier_invoice_date <= :to_date';
+            $params['to_date'] = (string) $filters['to'];
+        }
+        if (!empty($filters['q'])) {
+            // The invoice number, the order it is against and the supplier name
+            // frozen on that order — the three things somebody actually types.
+            $where[] = '(b.supplier_invoice_no ILIKE :term
+                         OR p.po_no ILIKE :term
+                         OR p.supplier_name_snapshot ILIKE :term)';
+            $params['term'] = '%' . $filters['q'] . '%';
+        }
+
+        $clause = implode(' AND ', $where);
+
+        $sortable = [
+            'invoice_date' => 'b.supplier_invoice_date',
+            'invoice_no'   => 'b.supplier_invoice_no',
+            'status'       => 'b.status',
+            'created_at'   => 'b.created_at',
+            'amount'       => 'value.subtotal',
+            'supplier'     => 'supplier_name',
+        ];
+        $sortColumn = $sortable[$sort] ?? 'b.created_at';
+
+        // The joins are shared by the page, the count and the tab counts, so
+        // the three can never disagree about what a bill is.
+        $from = "FROM purchase_bill_requests b
+                 LEFT JOIN purchase_orders p ON p.po_id = b.po_id
+                 LEFT JOIN LATERAL (
+                     SELECT COUNT(*) AS line_count,
+                            COALESCE(SUM(NULLIF(line->>'amount', '')::numeric), 0) AS subtotal
+                     FROM jsonb_array_elements(b.requested_lines) AS line
+                 ) value ON TRUE
+                 LEFT JOIN LATERAL (
+                     SELECT COUNT(*) AS open_exceptions
+                     FROM purchase_match_exceptions e
+                     JOIN purchase_match_results m ON m.match_id = e.match_id
+                     WHERE m.bill_request_id = b.request_id AND e.status = 'OPEN'
+                 ) exceptions ON TRUE";
+
+        $rows = Db::all(
+            "SELECT b.request_id, b.po_id, b.supplier_account_id, b.supplier_invoice_no,
+                    b.supplier_invoice_date, b.status, b.books_voucher_no, b.books_voucher_uuid,
+                    b.last_error, b.created_at, b.requested_by,
+                    p.po_no, p.currency_code, p.payment_terms,
+                    COALESCE(p.supplier_name_snapshot, latest.supplier_name) AS supplier_name,
+                    value.line_count, value.subtotal::text AS subtotal,
+                    exceptions.open_exceptions,
+                    duplicate.other_id AS duplicate_of, duplicate.other_no AS duplicate_of_no
+             {$from}
+             LEFT JOIN LATERAL (
+                 SELECT o.supplier_name_snapshot AS supplier_name
+                 FROM purchase_orders o
+                 WHERE o.cmp_id = b.cmp_id AND o.supplier_account_id = b.supplier_account_id
+                   AND o.supplier_name_snapshot IS NOT NULL
+                 ORDER BY o.po_date DESC, o.po_id DESC LIMIT 1
+             ) latest ON TRUE
+             LEFT JOIN LATERAL (
+                 SELECT o.request_id AS other_id, o.supplier_invoice_no AS other_no
+                 FROM purchase_bill_requests o
+                 WHERE o.cmp_id = b.cmp_id
+                   AND o.supplier_account_id = b.supplier_account_id
+                   AND o.supplier_invoice_date = b.supplier_invoice_date
+                   AND o.request_id < b.request_id
+                   AND o.status <> 'CANCELLED'
+                 ORDER BY o.request_id DESC LIMIT 1
+             ) duplicate ON TRUE
+             WHERE {$clause}
+             ORDER BY {$sortColumn} {$order} NULLS LAST, b.request_id {$order}
+             LIMIT {$limit} OFFSET {$offset}",
+            $params,
+        );
+
+        $total = (int) Db::scalar("SELECT COUNT(*) {$from} WHERE {$clause}", $params);
+
+        return [
+            'rows'   => array_map(fn (array $row) => $this->payableRow($row), $rows),
+            'total'  => $total,
+            'tab'    => $tab,
+            'counts' => $this->payableTabCounts($filters),
+        ];
+    }
+
+    /**
+     * One row of the workspace, with the permissions that decide its actions.
+     *
+     * `can_*` is a convenience for the interface, never the control: every one
+     * of these actions asserts the same permission again on the way in, so a
+     * row that arrives with a flag flipped by hand still cannot do anything.
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function payableRow(array $row): array
+    {
+        $status = (string) $row['status'];
+        $openExceptions = (int) ($row['open_exceptions'] ?? 0);
+        $posted = $status === 'POSTED';
+
+        return [
+            'request_id'          => (int) $row['request_id'],
+            'invoice_no'          => $row['supplier_invoice_no'],
+            'invoice_date'        => $row['supplier_invoice_date'],
+            'supplier_account_id' => (int) $row['supplier_account_id'],
+            'supplier_name'       => $row['supplier_name'],
+            'po_id'               => $row['po_id'] === null ? null : (int) $row['po_id'],
+            'po_no'               => $row['po_no'],
+            'payment_terms'       => $row['payment_terms'],
+            'status'              => $status,
+            'line_count'          => (int) ($row['line_count'] ?? 0),
+            'currency'            => (string) ($row['currency_code'] ?? 'INR'),
+            // Exclusive of tax, and labelled as such. See payables() above.
+            'subtotal'            => (string) ($row['subtotal'] ?? '0'),
+            'tax_basis'           => 'Books computes the tax when the bill is posted. This value is exclusive of it.',
+            'open_exceptions'     => $openExceptions,
+            'duplicate_of'        => $row['duplicate_of'] === null ? null : (int) $row['duplicate_of'],
+            'duplicate_of_no'     => $row['duplicate_of_no'],
+            'books_voucher_no'    => $row['books_voucher_no'],
+            'last_error'          => $row['last_error'],
+            'entered_by'          => $row['requested_by'],
+            'entered_at'          => $row['created_at'],
+            'route'               => '/bills/' . (int) $row['request_id'],
+            'can_edit'            => !$posted && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
+            'can_rematch'         => !$posted && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
+            'can_resolve'         => $openExceptions > 0 && Permissions::allows($this->ctx, $this->auth, 'match.resolve'),
+            'can_post'            => $status === 'MATCHED' && Permissions::allows($this->ctx, $this->auth, 'bill.post'),
+        ];
+    }
+
+    /**
+     * How many bills each tab holds, counted once for the whole strip.
+     *
+     * Counted WITHOUT the tab filter and with every other filter applied, which
+     * is what makes the numbers on the unselected tabs mean anything: they say
+     * how many rows a click would produce, not how many the current tab has.
+     *
+     * @param array<string, mixed> $filters
+     * @return array<string, int>
+     */
+    private function payableTabCounts(array $filters): array
+    {
+        [$scope, $params] = $this->ctx->scopeClause('b');
+        $where = [$scope];
+
+        if (!empty($filters['supplier_account_id'])) {
+            $where[] = 'b.supplier_account_id = :supplier';
+            $params['supplier'] = (int) $filters['supplier_account_id'];
+        }
+        if (!empty($filters['from'])) {
+            $where[] = 'b.supplier_invoice_date >= :from_date';
+            $params['from_date'] = (string) $filters['from'];
+        }
+        if (!empty($filters['to'])) {
+            $where[] = 'b.supplier_invoice_date <= :to_date';
+            $params['to_date'] = (string) $filters['to'];
+        }
+
+        $clause = implode(' AND ', $where);
+
+        $row = Db::first(
+            "SELECT COUNT(*) AS all_bills,
+                    COUNT(*) FILTER (WHERE b.status IN ('DRAFT', 'MATCHING')) AS awaiting_review,
+                    COUNT(*) FILTER (WHERE b.status = 'MATCHED') AS ready_to_post,
+                    COUNT(*) FILTER (WHERE b.status = 'POSTED') AS posted,
+                    COUNT(*) FILTER (WHERE b.status IN ('FAILED', 'EXCEPTION')) AS failed,
+                    COUNT(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM purchase_match_results m
+                          JOIN purchase_match_exceptions e ON e.match_id = m.match_id
+                         WHERE m.bill_request_id = b.request_id AND e.status = 'OPEN')) AS exceptions,
+                    COUNT(*) FILTER (WHERE " . self::DUPLICATE_CLAUSE . ") AS duplicates
+             FROM purchase_bill_requests b
+             WHERE {$clause}",
+            $params,
+        ) ?? [];
+
+        return [
+            'all'             => (int) ($row['all_bills'] ?? 0),
+            'awaiting_review' => (int) ($row['awaiting_review'] ?? 0),
+            'exceptions'      => (int) ($row['exceptions'] ?? 0),
+            'ready_to_post'   => (int) ($row['ready_to_post'] ?? 0),
+            'posted'          => (int) ($row['posted'] ?? 0),
+            'failed'          => (int) ($row['failed'] ?? 0),
+            'duplicates'      => (int) ($row['duplicates'] ?? 0),
         ];
     }
 
