@@ -1,67 +1,944 @@
-/*
- * Aicountly Purchases — dashboard styling.
+/**
+ * The Purchases visual system.
  *
- * Scoped to .purchase-workspace on purpose. The rest of the fleet shares the
- * tokens in index.css, and a product that redefines --accent globally changes
- * every other product's buttons the next time the shell is shared. Everything
- * here is a local token layered over those, so this screen can be green
- * without Books becoming green.
+ * Every rule is scoped under `.purchase-workspace` or a `purchase-` class, so
+ * this file cannot reach into the rest of the product and the rest of the
+ * product cannot reach into it.
  *
- * Light only. These figures are read in offices under fluorescent light, and a
- * dark dashboard is a dashboard printed badly.
+ * WHAT DECIDES A VALUE HERE. The five supplied designs, read as one system
+ * rather than five pictures: a 44px pastel icon tile on every KPI, one weight
+ * of card border everywhere, tabs underlined rather than segmented, one filled
+ * green button per screen and never two. Where a design showed a number this
+ * product cannot honestly produce, the SHAPE is matched and the number is not
+ * invented -- an unavailable figure keeps the same card, the same tile and the
+ * same footprint, and says so in the value slot.
  */
 
 .purchase-workspace {
+  /* Brand. #25B003 is the accent: underlines, dots, chart strokes, focus.
+     Filled buttons use the darker step because white text on #25B003 sits
+     under 3:1, and a button nobody can read is not on brand. */
   --purchase-brand: #25b003;
-  /* A darker green for solid buttons and small text: #25b003 on white is 2.5:1,
-     which fails at body size. This passes, and the brand accent still reads. */
-  --purchase-action: #187b12;
-  --purchase-action-hover: #12600d;
-  --purchase-soft: #edf8e9;
-  --purchase-bg: #f5f8f5;
-  --purchase-surface: #ffffff;
-  --purchase-text: #17251c;
-  --purchase-muted: #59685e;
-  --purchase-border: #dde7de;
-  --purchase-danger: #b42318;
-  --purchase-danger-soft: #fff0ec;
-  --purchase-warning: #8a5700;
-  --purchase-warning-soft: #fff4dc;
-  --purchase-info: #245ca2;
-  --purchase-info-soft: #edf4ff;
-  --purchase-radius: 16px;
-  --purchase-radius-sm: 10px;
-  --purchase-shadow: 0 5px 20px rgb(26 60 30 / 4%);
+  --purchase-brand-strong: #187b12;
+  --purchase-brand-tint: #eef8ec;
+  --purchase-brand-tint-strong: #dff1da;
 
-  min-width: 0;
+  --purchase-ink: #14181a;
+  --purchase-ink-soft: #3f4c46;
+  --purchase-muted: #6b7280;
+  --purchase-faint: #9aa3a0;
+
+  --purchase-surface: #ffffff;
+  --purchase-canvas: #fbfcfb;
+  --purchase-border: #e6eae7;
+  --purchase-border-strong: #d3dad5;
+
+  /* Semantic tints. Each is a background plus the ink that stays legible on
+     it -- kept as a pair so no caller has to guess a text colour. */
+  --purchase-good: #14804a;
+  --purchase-good-tint: #e7f5ec;
+  --purchase-warn: #9a6400;
+  --purchase-warn-tint: #fdf3e0;
+  --purchase-bad: #c0392b;
+  --purchase-bad-tint: #fdeceb;
+  --purchase-info: #0f6d74;
+  --purchase-info-tint: #e4f4f4;
+  --purchase-neutral-tint: #f1f3f2;
+
+  --purchase-radius: 14px;
+  --purchase-radius-sm: 10px;
+  --purchase-shadow: 0 1px 2px rgba(20, 30, 24, 0.04);
+
+  background: var(--purchase-canvas);
+  color: var(--purchase-ink);
   min-height: 100%;
-  padding: clamp(16px, 2vw, 30px);
-  background: var(--purchase-bg);
-  color: var(--purchase-text);
-  font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  font-size: 14px;
+  padding: 0 0 3rem;
+  font-size: 15px;
   line-height: 1.5;
 }
 
 .purchase-workspace *,
 .purchase-workspace *::before,
-.purchase-workspace *::after { box-sizing: border-box; }
-
-.purchase-workspace button,
-.purchase-workspace input,
-.purchase-workspace select,
-.purchase-workspace textarea { font: inherit; }
-
-.purchase-workspace button { cursor: pointer; }
-.purchase-workspace button:disabled { cursor: not-allowed; opacity: .6; }
-
-.purchase-workspace :focus-visible {
-  outline: 3px solid var(--purchase-action);
-  outline-offset: 3px;
+.purchase-workspace *::after {
+  box-sizing: border-box;
 }
 
-/* Visible only to a screen reader. Used for table captions and chart summaries,
-   which sighted users read from the heading above them. */
+.purchase-workspace :focus-visible {
+  outline: 2px solid var(--purchase-brand-strong);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Tabs — underlined, sitting on the rule they share with the page.
+ * ------------------------------------------------------------------ */
+
+.purchase-switcher {
+  display: flex;
+  gap: 0.35rem;
+  align-items: stretch;
+  padding: 0 1.75rem;
+  border-bottom: 1px solid var(--purchase-border);
+  background: var(--purchase-surface);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.purchase-switcher__button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0.95rem 0.85rem;
+  margin-bottom: -1px;
+  font: inherit;
+  font-size: 0.93rem;
+  color: var(--purchase-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 2.5px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.purchase-switcher__button:hover {
+  color: var(--purchase-ink);
+}
+
+.purchase-switcher__button.is-active {
+  color: var(--purchase-brand-strong);
+  font-weight: 600;
+  border-bottom-color: var(--purchase-brand);
+}
+
+/* ------------------------------------------------------------------ *
+ * Page header
+ * ------------------------------------------------------------------ */
+
+.purchase-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  padding: 1.6rem 1.75rem 0.4rem;
+}
+
+.purchase-eyebrow {
+  margin: 0 0 0.3rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--purchase-brand-strong);
+}
+
+.purchase-page-header h1 {
+  margin: 0;
+  font-size: 2.1rem;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--purchase-ink);
+}
+
+.purchase-page-subtitle {
+  margin: 0.35rem 0 0;
+  color: var(--purchase-muted);
+  font-size: 0.97rem;
+}
+
+.purchase-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* ------------------------------------------------------------------ *
+ * Buttons
+ * ------------------------------------------------------------------ */
+
+.purchase-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.95rem;
+  border-radius: var(--purchase-radius-sm);
+  border: 1px solid var(--purchase-border-strong);
+  background: var(--purchase-surface);
+  color: var(--purchase-ink);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.purchase-button:hover:not(:disabled) {
+  background: var(--purchase-neutral-tint);
+}
+
+.purchase-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.purchase-button--primary {
+  background: var(--purchase-brand-strong);
+  border-color: var(--purchase-brand-strong);
+  color: #fff;
+  font-weight: 600;
+}
+
+.purchase-button--primary:hover:not(:disabled) {
+  background: #14670f;
+  border-color: #14670f;
+}
+
+.purchase-button--secondary {
+  background: var(--purchase-surface);
+}
+
+.purchase-button.is-on {
+  background: var(--purchase-brand-tint);
+  border-color: var(--purchase-brand-tint-strong);
+  color: var(--purchase-brand-strong);
+  font-weight: 600;
+}
+
+.purchase-filterbar[hidden] { display: none; }
+
+.purchase-button--quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--purchase-brand-strong);
+  font-weight: 600;
+  padding-inline: 0.5rem;
+}
+
+.purchase-button--quiet:hover:not(:disabled) {
+  background: var(--purchase-brand-tint);
+}
+
+/* ------------------------------------------------------------------ *
+ * Context row (period, comparison) and filters
+ * ------------------------------------------------------------------ */
+
+.purchase-context,
+.purchase-filterbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0 1.75rem;
+}
+
+.purchase-context {
+  padding-top: 0.9rem;
+  padding-bottom: 1.1rem;
+}
+
+.purchase-filterbar {
+  padding-top: 1.1rem;
+  padding-bottom: 0.4rem;
+}
+
+/* A label WRAPS its control here, so it has to be a column: as a block it put
+   the caption and the field on one line and the filter row read as prose. */
+.purchase-workspace label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--purchase-faint);
+  gap: 0.3rem;
+}
+
+.purchase-workspace select,
+.purchase-workspace input[type='text'],
+.purchase-workspace input[type='search'],
+.purchase-workspace input[type='date'] {
+  appearance: none;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--purchase-ink);
+  background: var(--purchase-surface);
+  border: 1px solid var(--purchase-border-strong);
+  border-radius: var(--purchase-radius-sm);
+  padding: 0.5rem 0.75rem;
+  min-height: 38px;
+}
+
+.purchase-workspace select {
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.65rem center;
+}
+
+.purchase-workspace input::placeholder {
+  color: var(--purchase-faint);
+}
+
+/* ------------------------------------------------------------------ *
+ * Source status — this product's own row, not in the designs.
+ *
+ * The designs carry a "Demo data" chip because they are proposals. A live
+ * screen has a harder question to answer: which of its sources actually
+ * replied. That is what sits here instead.
+ * ------------------------------------------------------------------ */
+
+.purchase-source-list {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  list-style: none;
+  margin: 0;
+  padding: 0.85rem 1.75rem 0;
+  font-size: 0.82rem;
+  color: var(--purchase-muted);
+}
+
+.purchase-source-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.purchase-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--purchase-faint);
+  flex-shrink: 0;
+}
+
+.purchase-status-dot--ready { background: var(--purchase-brand); }
+.purchase-status-dot--stale { background: #d79a12; }
+.purchase-status-dot--unavailable { background: var(--purchase-bad); }
+
+/* ------------------------------------------------------------------ *
+ * KPI cards
+ * ------------------------------------------------------------------ */
+
+.purchase-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: 1rem;
+  padding: 1.1rem 1.75rem 0;
+  align-items: stretch;
+}
+
+.purchase-metric {
+  background: var(--purchase-surface);
+  border: 1px solid var(--purchase-border);
+  border-radius: var(--purchase-radius);
+  box-shadow: var(--purchase-shadow);
+  overflow: hidden;
+  display: flex;
+}
+
+.purchase-metric__link,
+.purchase-metric__content {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto auto;
+  column-gap: 0.85rem;
+  row-gap: 0.2rem;
+  align-content: start;
+  width: 100%;
+  text-align: left;
+  padding: 1.15rem 1.15rem 1.25rem;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+}
+
+.purchase-metric__link {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.purchase-metric__link:hover {
+  background: #fafcfa;
+}
+
+/* The pastel tile. It spans the label and value rows so the text block reads
+   as one column beside it, exactly as the designs lay it out. */
+.purchase-metric__icon {
+  grid-row: 1 / span 2;
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  background: var(--purchase-neutral-tint);
+  color: var(--purchase-ink-soft);
+  flex-shrink: 0;
+}
+
+.purchase-metric__icon.is-good { background: var(--purchase-good-tint); color: var(--purchase-good); }
+.purchase-metric__icon.is-warn { background: var(--purchase-warn-tint); color: var(--purchase-warn); }
+.purchase-metric__icon.is-bad { background: var(--purchase-bad-tint); color: var(--purchase-bad); }
+.purchase-metric__icon.is-info { background: var(--purchase-info-tint); color: var(--purchase-info); }
+
+.purchase-metric__label {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--purchase-ink-soft);
+  min-width: 0;
+}
+
+.purchase-metric__value {
+  grid-column: 2;
+  font-size: 1.72rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  color: var(--purchase-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* An unavailable figure keeps the card and the tile; only the weight drops,
+   so it can never be skimmed as a number. */
+.purchase-metric__value.is-unavailable {
+  font-size: 1.18rem;
+  font-weight: 600;
+  color: var(--purchase-muted);
+  letter-spacing: 0;
+}
+
+.purchase-metric__change {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  color: var(--purchase-muted);
+  margin-top: 0.15rem;
+}
+
+/* The tone is the API's, and it is about the BUSINESS not the arithmetic:
+   overdue payables going up is red even though the number grew. */
+.purchase-metric__change.is-positive { color: var(--purchase-good); }
+.purchase-metric__change.is-negative { color: var(--purchase-bad); }
+.purchase-metric__change.is-neutral { color: var(--purchase-muted); }
+
+.purchase-metric__basis,
+.purchase-metric__footnote {
+  grid-column: 1 / -1;
+  font-size: 0.78rem;
+  color: var(--purchase-muted);
+  line-height: 1.45;
+}
+
+.purchase-metric__basis { margin-top: 0.7rem; }
+.purchase-metric__footnote { margin-top: 0.4rem; color: var(--purchase-faint); }
+
+/* ------------------------------------------------------------------ *
+ * Panels
+ * ------------------------------------------------------------------ */
+
+.purchase-dashboard-content {
+  padding: 1.25rem 1.75rem 0;
+}
+
+.purchase-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.purchase-dashboard-grid > * { grid-column: span 12; }
+
+@media (min-width: 1100px) {
+  .purchase-dashboard-grid > .purchase-col-7 { grid-column: span 7; }
+  .purchase-dashboard-grid > .purchase-col-5 { grid-column: span 5; }
+  .purchase-dashboard-grid > .purchase-col-8 { grid-column: span 8; }
+  .purchase-dashboard-grid > .purchase-col-4 { grid-column: span 4; }
+  .purchase-dashboard-grid > .purchase-col-6 { grid-column: span 6; }
+}
+
+.purchase-span-all { grid-column: 1 / -1 !important; }
+
+.purchase-panel {
+  background: var(--purchase-surface);
+  border: 1px solid var(--purchase-border);
+  border-radius: var(--purchase-radius);
+  box-shadow: var(--purchase-shadow);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.purchase-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1.1rem 1.25rem 0.85rem;
+}
+
+.purchase-panel__header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.purchase-panel__header p {
+  margin: 0.3rem 0 0;
+  font-size: 0.83rem;
+  color: var(--purchase-muted);
+}
+
+.purchase-panel__body { padding: 0 1.25rem 1.25rem; }
+.purchase-panel__body--flush { padding: 0 0 0.4rem; }
+
+/* Tinted panels, for the "Reorder watch" / "Supplier watch" treatment. */
+.purchase-panel--accent {
+  background: var(--purchase-brand-tint);
+  border-color: var(--purchase-brand-tint-strong);
+}
+
+.purchase-panel--warning {
+  background: var(--purchase-warn-tint);
+  border-color: #f3e2bd;
+}
+
+/* ------------------------------------------------------------------ *
+ * Badges, chips, pills
+ * ------------------------------------------------------------------ */
+
+.purchase-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--purchase-neutral-tint);
+  color: var(--purchase-ink-soft);
+}
+
+.purchase-badge--good { background: var(--purchase-good-tint); color: var(--purchase-good); }
+.purchase-badge--warning { background: var(--purchase-warn-tint); color: var(--purchase-warn); }
+.purchase-badge--danger { background: var(--purchase-bad-tint); color: var(--purchase-bad); }
+.purchase-badge--info { background: var(--purchase-info-tint); color: var(--purchase-info); }
+.purchase-badge--neutral { background: var(--purchase-neutral-tint); color: var(--purchase-muted); }
+
+.purchase-chips {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.purchase-chips button,
+.purchase-chip {
+  appearance: none;
+  font: inherit;
+  font-size: 0.83rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 999px;
+  border: 1px solid var(--purchase-border-strong);
+  background: var(--purchase-surface);
+  color: var(--purchase-ink-soft);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.purchase-chips .purchase-segment__count,
+.purchase-chip .purchase-segment__count {
+  display: inline;
+  font-size: inherit;
+  font-weight: 700;
+  margin-left: 0.35rem;
+  opacity: 0.75;
+}
+
+.purchase-chips button.is-active,
+.purchase-chip.is-active {
+  background: var(--purchase-brand-tint);
+  border-color: var(--purchase-brand-tint-strong);
+  color: var(--purchase-brand-strong);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ *
+ * Tables
+ * ------------------------------------------------------------------ */
+
+.purchase-table-scroll {
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.purchase-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.purchase-table th {
+  text-align: left;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--purchase-muted);
+  padding: 0.6rem 1.25rem;
+  border-bottom: 1px solid var(--purchase-border);
+  white-space: nowrap;
+  background: #fcfdfc;
+}
+
+.purchase-table td {
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--purchase-border);
+  vertical-align: middle;
+  color: var(--purchase-ink);
+}
+
+.purchase-table tbody tr:last-child td { border-bottom: 0; }
+.purchase-table tbody tr:hover { background: #fafcfa; }
+
+.purchase-table .num,
+.purchase-table__num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.purchase-table__sub {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--purchase-muted);
+  margin-top: 0.1rem;
+}
+
+.purchase-table__link {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: inherit;
+  color: var(--purchase-brand-strong);
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.purchase-table__link:hover { text-decoration: underline; }
+
+/* Inline fulfilment bar, as the Procurement design shows it. */
+.purchase-meter {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 140px;
+}
+
+.purchase-meter__track {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--purchase-neutral-tint);
+  overflow: hidden;
+}
+
+.purchase-meter__fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--purchase-brand);
+}
+
+.purchase-meter__fill.is-warn { background: #dda322; }
+.purchase-meter__fill.is-bad { background: var(--purchase-bad); }
+
+.purchase-meter__value {
+  font-size: 0.78rem;
+  color: var(--purchase-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.6rem;
+  text-align: right;
+}
+
+/* ------------------------------------------------------------------ *
+ * Pipeline, segments, timeline, priorities
+ * ------------------------------------------------------------------ */
+
+.purchase-pipeline {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.purchase-pipeline__stage {
+  flex: 1 1 130px;
+  border: 1px solid var(--purchase-border);
+  border-radius: var(--purchase-radius-sm);
+  background: #fcfdfc;
+  padding: 0.85rem 0.9rem;
+  min-width: 0;
+  position: relative;
+}
+
+.purchase-pipeline__stage + .purchase-pipeline__stage::before {
+  content: '';
+  position: absolute;
+  left: -0.42rem;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-top: 1.5px solid var(--purchase-border-strong);
+  border-right: 1.5px solid var(--purchase-border-strong);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.purchase-pipeline__label {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--purchase-muted);
+  margin-bottom: 0.3rem;
+}
+
+.purchase-pipeline__count {
+  display: block;
+  font-size: 1.4rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.purchase-segments {
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.purchase-segment { min-width: 0; }
+
+.purchase-segment__count {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+/* The match bar: one rule, three weights, as the Bills design draws it. */
+.purchase-segmentbar {
+  display: flex;
+  height: 9px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--purchase-neutral-tint);
+  margin-bottom: 1rem;
+}
+
+.purchase-segmentbar span { display: block; height: 100%; }
+.purchase-segmentbar .is-good { background: var(--purchase-brand); }
+.purchase-segmentbar .is-warn { background: #e0ab2e; }
+.purchase-segmentbar .is-bad { background: #d9584a; }
+
+.purchase-timeline { display: grid; gap: 0.6rem; }
+
+.purchase-timeline__group {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--purchase-border);
+}
+
+.purchase-timeline__group:last-child { border-bottom: 0; }
+
+.purchase-timeline__summary {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  flex-shrink: 0;
+  border-radius: var(--purchase-radius-sm);
+  background: var(--purchase-neutral-tint);
+  padding: 0.35rem 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--purchase-muted);
+  line-height: 1.25;
+}
+
+.purchase-priority-list { display: grid; gap: 0.6rem; }
+
+.purchase-priority {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.9rem;
+  border: 1px solid var(--purchase-border);
+  border-radius: var(--purchase-radius-sm);
+  padding: 0.8rem 0.95rem;
+  background: var(--purchase-surface);
+}
+
+.purchase-priority__top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.purchase-priority__footer {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--purchase-muted);
+}
+
+/* The evidence tile beside a suggestion, per the AI design. */
+.purchase-evidence-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--purchase-radius-sm);
+  display: grid;
+  place-items: center;
+  background: var(--purchase-brand-tint);
+  color: var(--purchase-brand-strong);
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * Charts
+ * ------------------------------------------------------------------ */
+
+.purchase-chart { width: 100%; }
+.purchase-chart__grid { stroke: var(--purchase-border); stroke-width: 1; }
+.purchase-chart__line { fill: none; stroke: var(--purchase-brand-strong); stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.purchase-chart__line--forecast { stroke-dasharray: 6 5; stroke: #4db6ac; }
+.purchase-chart__area { fill: var(--purchase-brand); opacity: 0.11; }
+
+.purchase-chart__toggle {
+  margin-top: 0.6rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.purchase-legend {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-size: 0.8rem;
+  color: var(--purchase-muted);
+  margin-top: 0.5rem;
+}
+
+.purchase-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+
+.purchase-legend i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+/* Grouped horizontal bars — "PO fulfilment by supplier". */
+.purchase-bars { display: grid; gap: 0.75rem; }
+
+.purchase-bar-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 148px) 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.purchase-bar-row__label {
+  color: var(--purchase-ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.purchase-bar-row__track {
+  background: var(--purchase-neutral-tint);
+  border-radius: 999px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.purchase-bar-row__fill { display: block; height: 100%; border-radius: 999px; background: var(--purchase-brand-strong); }
+.purchase-bar-row__fill--secondary { background: #4db6ac; }
+
+.purchase-bar-row__value {
+  font-variant-numeric: tabular-nums;
+  color: var(--purchase-muted);
+  font-size: 0.8rem;
+  min-width: 3.2rem;
+  text-align: right;
+}
+
+/* ------------------------------------------------------------------ *
+ * Notices, empties, utilities
+ * ------------------------------------------------------------------ */
+
+.purchase-notice {
+  border: 1px solid var(--purchase-border);
+  border-radius: var(--purchase-radius-sm);
+  padding: 0.85rem 1rem;
+  font-size: 0.88rem;
+  background: var(--purchase-neutral-tint);
+  color: var(--purchase-ink-soft);
+}
+
+.purchase-notice--info { background: var(--purchase-info-tint); border-color: #cfe7e7; color: #0d5a60; }
+.purchase-notice--success { background: var(--purchase-good-tint); border-color: var(--purchase-brand-tint-strong); color: var(--purchase-good); }
+.purchase-notice--warning { background: var(--purchase-warn-tint); border-color: #f3e2bd; color: var(--purchase-warn); }
+.purchase-notice--danger { background: var(--purchase-bad-tint); border-color: #f6cdc9; color: var(--purchase-bad); }
+
+.purchase-empty {
+  padding: 1.6rem 1.25rem;
+  text-align: center;
+  color: var(--purchase-muted);
+  font-size: 0.88rem;
+}
+
+.purchase-muted { color: var(--purchase-muted); }
+.purchase-soft { color: var(--purchase-faint); }
+.purchase-brand { color: var(--purchase-brand-strong); }
+.purchase-danger { color: var(--purchase-bad); }
+.purchase-warning { color: var(--purchase-warn); }
+.purchase-border { border-color: var(--purchase-border); }
+.purchase-action { color: var(--purchase-brand-strong); }
+
+.purchase-dl { display: grid; gap: 0.55rem; margin: 0; font-size: 0.86rem; }
+.purchase-dl > div { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
+.purchase-dl dt { color: var(--purchase-muted); }
+.purchase-dl dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+
+.purchase-orders { display: grid; gap: 0.5rem; }
+
 .purchase-sr-only {
   position: absolute;
   width: 1px;
@@ -74,631 +951,302 @@
   border: 0;
 }
 
-/* --- Header ------------------------------------------------------------- */
+/* ------------------------------------------------------------------ *
+ * Ask box — the AI design's full-width question field.
+ * ------------------------------------------------------------------ */
 
-.purchase-page-header,
-.purchase-panel__header,
-.purchase-priority__top,
-.purchase-priority__footer {
+.purchase-ask {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.purchase-page-header { align-items: flex-start; margin-bottom: 20px; }
-
-.purchase-eyebrow {
-  margin: 0 0 5px;
-  color: var(--purchase-action);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-}
-
-.purchase-page-header h1 {
-  margin: 0;
-  font-size: clamp(25px, 2.2vw, 34px);
-  line-height: 1.2;
-  letter-spacing: -.035em;
-}
-
-.purchase-page-subtitle,
-.purchase-panel__header p { margin: 7px 0 0; color: var(--purchase-muted); }
-
-.purchase-header-actions,
-.purchase-context,
-.purchase-filterbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-
-.purchase-context { margin-bottom: 16px; }
-
-/* --- Buttons ------------------------------------------------------------ */
-
-.purchase-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 9px 15px;
-  border: 1px solid transparent;
-  border-radius: var(--purchase-radius-sm);
-  font-weight: 650;
-  text-decoration: none;
-  transition: background-color .15s ease, border-color .15s ease;
-}
-
-.purchase-button--primary { background: var(--purchase-action); color: #fff; }
-.purchase-button--primary:hover { background: var(--purchase-action-hover); }
-
-.purchase-button--secondary {
-  border-color: var(--purchase-border);
-  background: #fff;
-  color: var(--purchase-text);
-}
-.purchase-button--secondary:hover { background: var(--purchase-soft); border-color: #b7d8ae; }
-
-.purchase-button--quiet {
-  min-height: 32px;
-  padding: 4px 10px;
-  border-color: transparent;
-  background: transparent;
-  color: var(--purchase-action);
-  font-size: 13px;
-}
-.purchase-button--quiet:hover { background: var(--purchase-soft); }
-
-/* --- Switcher ----------------------------------------------------------- */
-
-.purchase-switcher {
-  display: flex;
-  gap: 5px;
-  max-width: 100%;
-  padding: 6px;
-  overflow-x: auto;
-  border: 1px solid var(--purchase-border);
-  border-radius: 14px;
-  background: #fff;
-}
-
-.purchase-switcher__button {
-  flex: 1 0 auto;
-  min-height: 42px;
-  padding: 10px 18px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--purchase-muted);
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.purchase-switcher__button:hover { background: #f4f8f2; }
-
-.purchase-switcher__button.is-active {
-  background: var(--purchase-soft);
-  color: var(--purchase-action);
-  box-shadow: inset 0 0 0 1px #cfe6c7;
-}
-
-/* --- Filters and source status ------------------------------------------ */
-
-.purchase-filterbar { margin: 18px 0 10px; }
-
-.purchase-filterbar label,
-.purchase-context label {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 650;
-  color: var(--purchase-muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
-}
-
-.purchase-filterbar input,
-.purchase-filterbar select,
-.purchase-context select,
-.purchase-context input {
-  min-height: 40px;
-  max-width: 100%;
-  padding: 8px 12px;
-  border: 1px solid var(--purchase-border);
-  border-radius: 9px;
-  background: #fff;
-  color: var(--purchase-text);
-  font-weight: 500;
-  text-transform: none;
-  letter-spacing: normal;
-}
-
-.purchase-source-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  margin: 0 0 18px;
-  padding: 0;
-  list-style: none;
-  color: var(--purchase-muted);
-  font-size: 12px;
-}
-
-.purchase-source-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-
-.purchase-status-dot {
-  width: 7px;
-  height: 7px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: #849187;
-}
-
-.purchase-status-dot--ready { background: var(--purchase-action); }
-.purchase-status-dot--stale { background: #aa6900; }
-.purchase-status-dot--unavailable { background: var(--purchase-danger); }
-
-/* --- Metric cards ------------------------------------------------------- */
-
-.purchase-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 20px;
-}
-
-.purchase-metric,
-.purchase-panel {
-  min-width: 0;
-  border: 1px solid var(--purchase-border);
-  border-radius: var(--purchase-radius);
-  background: var(--purchase-surface);
-  box-shadow: var(--purchase-shadow);
-}
-
-.purchase-metric__link,
-.purchase-metric__content {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  width: 100%;
-  min-height: 160px;
-  padding: 19px;
-  border: 0;
-  border-radius: inherit;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-}
-
-.purchase-metric__link:hover { background: #f8fcf6; }
-
-.purchase-metric__label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--purchase-muted);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.purchase-metric__value {
-  max-width: 100%;
-  font-size: clamp(24px, 2vw, 30px);
-  line-height: 1.2;
-  letter-spacing: -.035em;
-  font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
-}
-
-.purchase-metric__value.is-unavailable {
-  font-size: 18px;
-  color: var(--purchase-muted);
-  font-weight: 600;
-  letter-spacing: normal;
-}
-
-.purchase-metric__change,
-.purchase-metric__basis { font-size: 12px; }
-
-.purchase-metric__basis,
-.purchase-muted { color: var(--purchase-muted); }
-
-.purchase-metric__basis {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.purchase-metric__change.is-positive { color: var(--purchase-action); }
-.purchase-metric__change.is-negative { color: var(--purchase-danger); }
-.purchase-metric__change.is-neutral { color: var(--purchase-muted); }
-
-.purchase-metric__footnote { margin-top: auto; font-size: 11px; color: var(--purchase-muted); }
-
-/* --- Layout ------------------------------------------------------------- */
-
-.purchase-dashboard-content { display: grid; gap: 20px; }
-
-.purchase-dashboard-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
-  gap: 20px;
-  align-items: start;
-}
-
-.purchase-span-all { grid-column: 1 / -1; }
-
-.purchase-panel__header {
-  align-items: flex-start;
-  padding: 19px 20px;
-  border-bottom: 1px solid #edf1ed;
-}
-
-.purchase-panel__header h2 { margin: 0; font-size: 16px; font-weight: 700; }
-.purchase-panel__header p { font-size: 12px; }
-.purchase-panel__body { padding: 20px; }
-.purchase-panel__body--flush { padding: 0; }
-
-/* --- Priority cards ----------------------------------------------------- */
-
-.purchase-priority-list { display: grid; gap: 12px; }
-
-.purchase-priority {
-  padding: 16px;
-  border: 1px solid var(--purchase-border);
-  border-radius: 12px;
-  background: #fbfdf9;
-}
-
-.purchase-priority h3 { margin: 12px 0 5px; font-size: 14px; }
-.purchase-priority p { margin: 0 0 14px; color: var(--purchase-muted); font-size: 13px; }
-.purchase-priority__footer { flex-wrap: wrap; }
-
-.purchase-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 25px;
-  padding: 3px 9px;
+  gap: 0.7rem;
+  background: var(--purchase-brand-tint);
+  border: 1px solid var(--purchase-brand-tint-strong);
   border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
+  padding: 0.45rem 0.5rem 0.45rem 1.1rem;
 }
 
-.purchase-badge--success { background: var(--purchase-soft); color: var(--purchase-action); }
-.purchase-badge--warning { background: var(--purchase-warning-soft); color: var(--purchase-warning); }
-.purchase-badge--danger { background: var(--purchase-danger-soft); color: var(--purchase-danger); }
-.purchase-badge--info { background: var(--purchase-info-soft); color: var(--purchase-info); }
-.purchase-badge--neutral { background: #eff3ef; color: #536257; }
-
-/* --- Tables ------------------------------------------------------------- */
-
-.purchase-table-scroll { max-width: 100%; overflow: auto; }
-
-.purchase-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-
-.purchase-table caption { text-align: left; }
-
-.purchase-table th,
-.purchase-table td {
-  padding: 13px 14px;
-  border-bottom: 1px solid #edf1ed;
-  text-align: left;
-  vertical-align: middle;
+.purchase-ask input {
+  flex: 1;
+  border: 0 !important;
+  background: transparent !important;
+  min-height: 34px;
+  font-size: 0.95rem !important;
+  padding-left: 0 !important;
 }
 
-.purchase-table th {
-  position: sticky;
-  top: 0;
-  background: #f7faf5;
-  color: var(--purchase-muted);
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-}
+.purchase-ask input:focus { outline: none; }
 
-.purchase-table tbody tr:hover { background: #fafdf8; }
-.purchase-table .is-numeric { text-align: right; font-variant-numeric: tabular-nums; }
-.purchase-table .is-compact { padding: 8px 14px; }
-
-.purchase-table__link {
-  border: 0;
-  padding: 0;
-  background: none;
-  color: var(--purchase-action);
-  font: inherit;
-  font-weight: 650;
-  text-align: left;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.purchase-table__sub { display: block; color: var(--purchase-muted); font-size: 11px; }
-
-/* --- Empty, loading and error ------------------------------------------- */
-
-.purchase-empty {
-  display: grid;
-  justify-items: center;
-  gap: 10px;
-  padding: 36px 20px;
-  text-align: center;
-  color: var(--purchase-muted);
-}
-
-.purchase-empty strong { color: var(--purchase-text); }
-
-.purchase-notice {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 14px 16px;
-  border: 1px solid var(--purchase-border);
-  border-radius: 12px;
-  background: #fff;
-}
-
-.purchase-notice--danger { border-color: #f0c2b8; background: var(--purchase-danger-soft); }
-.purchase-notice--warning { border-color: #e8d19a; background: var(--purchase-warning-soft); }
-.purchase-notice--info { border-color: #c3d8f2; background: var(--purchase-info-soft); }
-.purchase-notice--success { border-color: #bfe0b4; background: var(--purchase-soft); }
-
-.purchase-notice p { margin: 4px 0 0; font-size: 13px; }
-
-/* A quiet, non-spinning loading state. Reduced motion is respected below and
-   this does not animate at all, so nothing is lost when it is. */
-.purchase-skeleton {
-  border-radius: 8px;
-  background: linear-gradient(90deg, #eef2ee, #f7faf5, #eef2ee);
-  background-size: 200% 100%;
-  animation: purchase-shimmer 1.4s ease-in-out infinite;
-}
-
-@keyframes purchase-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-.purchase-skeleton--metric { height: 160px; }
-.purchase-skeleton--row { height: 16px; margin-bottom: 10px; }
-
-/* --- Charts ------------------------------------------------------------- */
-
-.purchase-chart { width: 100%; min-width: 0; }
-.purchase-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
-
-.purchase-chart__axis { fill: var(--purchase-muted); font-size: 10px; }
-.purchase-chart__grid { stroke: #eef2ee; stroke-width: 1; }
-.purchase-chart__bar { fill: var(--purchase-brand); }
-.purchase-chart__bar--muted { fill: #cfe6c7; }
-.purchase-chart__bar--warning { fill: #e8b54a; }
-.purchase-chart__bar--danger { fill: #e08573; }
-.purchase-chart__line { fill: none; stroke: var(--purchase-action); stroke-width: 2; }
-.purchase-chart__line--forecast { stroke-dasharray: 5 4; stroke: #7fb96f; }
-.purchase-chart__area { fill: rgb(37 176 3 / 10%); }
-.purchase-chart__point { fill: var(--purchase-action); }
-
-.purchase-chart__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-/* --- Segmented controls (panel views) ----------------------------------- */
-
-.purchase-segments {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.purchase-segment {
-  min-height: 32px;
-  padding: 5px 12px;
-  border: 1px solid var(--purchase-border);
-  border-radius: 999px;
-  background: #fff;
-  color: var(--purchase-muted);
-  font-size: 12px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.purchase-segment:hover { background: var(--purchase-soft); }
-
-.purchase-segment.is-active {
-  border-color: #b7d8ae;
-  background: var(--purchase-soft);
-  color: var(--purchase-action);
-}
-
-.purchase-segment__count {
-  margin-left: 6px;
-  color: inherit;
-  font-variant-numeric: tabular-nums;
-  opacity: .75;
-}
-
-/* --- Pipeline ----------------------------------------------------------- */
-
-.purchase-pipeline {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
-}
-
-.purchase-pipeline__stage {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px;
-  border: 1px solid var(--purchase-border);
-  border-radius: 12px;
-  background: #fbfdf9;
-  text-align: left;
-  color: inherit;
-}
-
-.purchase-pipeline__stage:hover { border-color: #b7d8ae; background: var(--purchase-soft); }
-.purchase-pipeline__count { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.purchase-pipeline__label { font-size: 12px; color: var(--purchase-muted); }
-
-/* --- Timeline ----------------------------------------------------------- */
-
-.purchase-timeline { display: grid; gap: 14px; }
-
-.purchase-timeline__group { border: 1px solid var(--purchase-border); border-radius: 12px; overflow: hidden; }
-.purchase-timeline__group.is-overdue { border-color: #f0c2b8; }
-
-.purchase-timeline__summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  background: #f7faf5;
-  cursor: pointer;
-  font-weight: 650;
-  list-style: none;
-}
-
-.purchase-timeline__summary::-webkit-details-marker { display: none; }
-.purchase-timeline__summary::before { content: '▸'; color: var(--purchase-muted); }
-details[open] > .purchase-timeline__summary::before { content: '▾'; }
-.purchase-timeline__group.is-overdue .purchase-timeline__summary { background: var(--purchase-danger-soft); }
-
-/* --- Drawer ------------------------------------------------------------- */
+/* ------------------------------------------------------------------ *
+ * Drawer
+ * ------------------------------------------------------------------ */
 
 .purchase-drawer-backdrop {
   position: fixed;
   inset: 0;
+  background: rgba(16, 24, 20, 0.35);
   z-index: 60;
-  display: flex;
-  justify-content: flex-end;
-  background: rgb(12 30 16 / 32%);
 }
 
 .purchase-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(440px, 100vw);
+  background: var(--purchase-surface);
+  border-left: 1px solid var(--purchase-border);
+  z-index: 61;
   display: flex;
   flex-direction: column;
-  width: min(540px, 100%);
-  height: 100%;
-  background: var(--purchase-surface);
-  box-shadow: -10px 0 40px rgb(15 35 18 / 18%);
+  box-shadow: -10px 0 30px rgba(16, 24, 20, 0.1);
 }
 
 .purchase-drawer__header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  padding: 18px 20px;
+  gap: 1rem;
+  padding: 1.1rem 1.25rem;
   border-bottom: 1px solid var(--purchase-border);
 }
 
-.purchase-drawer__header h2 { margin: 0; font-size: 17px; }
-.purchase-drawer__body { flex: 1; padding: 20px; overflow-y: auto; }
+.purchase-drawer__header h2 { margin: 0; font-size: 1.05rem; font-weight: 650; }
+.purchase-drawer__body { padding: 1.1rem 1.25rem; overflow-y: auto; flex: 1; }
 
 .purchase-drawer__close {
-  min-width: 36px;
-  min-height: 36px;
-  border: 1px solid var(--purchase-border);
-  border-radius: 9px;
-  background: #fff;
+  appearance: none;
+  border: 1px solid var(--purchase-border-strong);
+  background: var(--purchase-surface);
+  border-radius: var(--purchase-radius-sm);
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
   color: var(--purchase-muted);
-  font-size: 18px;
-  line-height: 1;
+  flex-shrink: 0;
 }
 
-.purchase-drawer__close:hover { background: var(--purchase-soft); }
+/* ------------------------------------------------------------------ *
+ * Loading
+ * ------------------------------------------------------------------ */
 
-/* --- Definition lists used in drawers and explainers -------------------- */
-
-.purchase-dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px 16px; margin: 0; }
-.purchase-dl dt { color: var(--purchase-muted); font-size: 12px; }
-.purchase-dl dd { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-
-/* --- Ask box ------------------------------------------------------------ */
-
-.purchase-ask {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border: 1px solid #cfe6c7;
-  border-radius: 14px;
-  background: var(--purchase-soft);
+.purchase-skeleton {
+  background: linear-gradient(90deg, #f1f4f2 25%, #e8ece9 37%, #f1f4f2 63%);
+  background-size: 400% 100%;
+  animation: purchase-shimmer 1.3s ease infinite;
+  border-radius: var(--purchase-radius);
 }
 
-.purchase-ask input {
-  flex: 1;
-  min-height: 44px;
-  padding: 10px 14px;
-  border: 1px solid var(--purchase-border);
-  border-radius: 10px;
-  background: #fff;
-}
+.purchase-skeleton--metric { height: 152px; }
+.purchase-skeleton--row { height: 15px; border-radius: 6px; margin-bottom: 0.5rem; }
 
-.purchase-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-
-/*
- * A suggested question can be a whole sentence.
- *
- * The pill elsewhere is deliberately `nowrap` — a status chip that wraps looks
- * broken — but a chip carrying "Which reorder suggestions are supported by
- * current stock and lead times?" is 560px wide on a 390px screen, and that is
- * a horizontal scrollbar on the page rather than inside anything.
- */
-.purchase-chips .purchase-segment {
-  max-width: 100%;
-  white-space: normal;
-  text-align: left;
-  line-height: 1.35;
-}
-
-.purchase-segments .purchase-segment { max-width: 100%; }
-
-/* --- Responsive --------------------------------------------------------- */
-
-@media (min-width: 1500px) {
-  .purchase-metrics { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-}
-
-@media (max-width: 1100px) {
-  .purchase-dashboard-grid { grid-template-columns: minmax(0, 1fr); }
-}
-
-@media (max-width: 760px) {
-  .purchase-page-header { flex-direction: column; }
-  .purchase-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .purchase-panel__header { flex-wrap: wrap; }
-  .purchase-header-actions { width: 100%; }
-  .purchase-dl { grid-template-columns: minmax(0, 1fr); }
-  .purchase-drawer { width: 100%; }
-}
-
-@media (max-width: 420px) {
-  .purchase-metrics { grid-template-columns: minmax(0, 1fr); }
-  .purchase-metric__link,
-  .purchase-metric__content { min-height: 140px; }
+@keyframes purchase-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .purchase-workspace *,
-  .purchase-workspace *::before,
-  .purchase-workspace *::after {
-    animation: none !important;
-    transition: none !important;
-    scroll-behavior: auto !important;
-  }
+  .purchase-skeleton { animation: none; }
+  .purchase-workspace * { transition: none !important; }
 }
+
+/* ------------------------------------------------------------------ *
+ * Narrow screens
+ * ------------------------------------------------------------------ */
+
+@media (max-width: 720px) {
+  .purchase-page-header,
+  .purchase-context,
+  .purchase-filterbar,
+  .purchase-metrics,
+  .purchase-dashboard-content,
+  .purchase-source-list { padding-inline: 1rem; }
+
+  .purchase-switcher { padding-inline: 1rem; }
+  .purchase-page-header h1 { font-size: 1.65rem; }
+  .purchase-metrics { grid-template-columns: 1fr; }
+  .purchase-header-actions { width: 100%; }
+  .purchase-context > *,
+  .purchase-filterbar > * { flex: 1 1 140px; min-width: 0; }
+  .purchase-workspace select,
+  .purchase-workspace input[type='text'],
+  .purchase-workspace input[type='search'] { width: 100%; }
+}
+
+/* ------------------------------------------------------------------ *
+ * The period control, in the header row beside Export.
+ * ------------------------------------------------------------------ */
+
+.purchase-header-period { margin: 0; }
+
+.purchase-header-period select {
+  padding-left: 2.15rem;
+  min-height: 38px;
+  font-weight: 500;
+  background-image:
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='15' height='15' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='4' width='18' height='18' rx='2'/><path d='M16 2v4M8 2v4M3 10h18'/></svg>"),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat, no-repeat;
+  background-position: left 0.7rem center, right 0.65rem center;
+}
+
+/* The comparison row sits under the header, quiet: it qualifies the period
+   rather than competing with it. */
+.purchase-context {
+  font-size: 0.85rem;
+  color: var(--purchase-muted);
+  align-items: center;
+  padding-top: 0.55rem;
+  padding-bottom: 0.15rem;
+}
+
+.purchase-context label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.07em;
+}
+
+.purchase-context select,
+.purchase-context input { min-height: 34px; padding-block: 0.35rem; font-size: 0.85rem; }
+
+/* ------------------------------------------------------------------ *
+ * Donut
+ * ------------------------------------------------------------------ */
+
+.purchase-donut {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.purchase-donut svg { flex-shrink: 0; }
+
+.purchase-donut__value {
+  font-size: 19px;
+  font-weight: 700;
+  fill: var(--purchase-ink);
+}
+
+.purchase-donut__label {
+  font-size: 11px;
+  fill: var(--purchase-muted);
+}
+
+.purchase-donut__legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+  min-width: 11rem;
+  /* Capped: left to grow, the share column drifts to the far edge of a wide
+     card and stops reading as part of the same row. */
+  max-width: 21rem;
+  flex: 0 1 18rem;
+}
+
+.purchase-donut__legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  min-width: 0;
+}
+
+.purchase-donut__legend i {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.purchase-donut__legend-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--purchase-ink-soft);
+}
+
+.purchase-donut__legend-share {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--purchase-ink);
+}
+
+/* ------------------------------------------------------------------ *
+ * Sparkline and line-chart chrome
+ * ------------------------------------------------------------------ */
+
+.purchase-spark { display: block; overflow: visible; }
+
+.purchase-chart--line {
+  display: block;
+  margin: 0 auto;
+  max-width: 720px;
+}
+
+.purchase-chart__tick {
+  font-size: 10px;
+  fill: var(--purchase-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-chart__endlabel {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The index base. One emphasised rule on the plot, solid like every other. */
+.purchase-chart__baseline {
+  stroke: var(--purchase-border-strong);
+  stroke-width: 1.25;
+}
+
+/* Status, not series: these are outcomes, and each carries its own label. */
+.purchase-segment__count.is-good { color: var(--purchase-good); }
+.purchase-segment__count.is-warn { color: var(--purchase-warn); }
+.purchase-segment__count.is-bad { color: var(--purchase-bad); }
+
+/* The ageing total, as the design sets it beside the bars. */
+.purchase-total-tile {
+  background: var(--purchase-brand-tint);
+  border: 1px solid var(--purchase-brand-tint-strong);
+  border-radius: var(--purchase-radius-sm);
+  padding: 1rem 1.15rem;
+  text-align: center;
+  align-self: center;
+  min-width: 10rem;
+}
+
+.purchase-total-tile span {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--purchase-muted);
+  margin-bottom: 0.25rem;
+}
+
+.purchase-total-tile strong {
+  display: block;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--purchase-brand-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-ageing {
+  display: flex;
+  gap: 1.25rem;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.purchase-ageing > .purchase-chart { flex: 1 1 18rem; min-width: 0; }

@@ -65,12 +65,12 @@ export function ProcurementDashboard({
         className="purchase-span-all"
         action={
           workbench.available && (
-            <div className="purchase-segments">
+            <div className="purchase-chips">
               {workbench.views.map((view) => (
                 <button
                   key={view.id}
                   type="button"
-                  className={workbench.view === view.id ? 'purchase-segment is-active' : 'purchase-segment'}
+                  className={workbench.view === view.id ? 'purchase-chip is-active' : 'purchase-chip'}
                   aria-pressed={workbench.view === view.id}
                   onClick={() => filters.set({ view: view.id, offset: null })}
                 >

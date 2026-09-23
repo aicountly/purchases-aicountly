@@ -7,9 +7,32 @@
  * reader would learn to treat both as zero.
  */
 
-import { useId, type ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { AlertTriangle, ArrowRight, CheckCircle2, ChevronRight, Info, RefreshCw } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowRight,
+  Banknote,
+  Boxes,
+  CalendarClock,
+  CheckCircle2,
+  ChevronRight,
+  ClipboardList,
+  CreditCard,
+  FileWarning,
+  Info,
+  PauseCircle,
+  PiggyBank,
+  RefreshCw,
+  SlidersHorizontal,
+  ShoppingCart,
+  Sparkles,
+  Timer,
+  TrendingUp,
+  Truck,
+  Users,
+  type LucideIcon,
+} from 'lucide-react'
 import { PURCHASE_VIEWS, type PurchaseViewId } from './filters'
 import type { DashboardMetric, Drilldown, SourceStatus } from './types'
 
@@ -47,12 +70,57 @@ export function DashboardSwitcher({
 // Metric card
 // ---------------------------------------------------------------------------
 
+/**
+ * The tile beside each figure.
+ *
+ * Keyed on the metric id rather than chosen from its value, so a card does not
+ * change its face when the number moves — the icon says what the figure IS, the
+ * colour says what kind of thing it is, and only the delta reacts to the data.
+ * Anything unmapped falls back to a neutral tile rather than to no tile, so the
+ * row never loses its rhythm.
+ */
+const METRIC_FACE: Record<string, { icon: LucideIcon; tone: 'good' | 'warn' | 'bad' | 'info' | '' }> = {
+  net_purchases: { icon: ShoppingCart, tone: 'good' },
+  open_commitment: { icon: ClipboardList, tone: 'info' },
+  supplier_dues: { icon: CreditCard, tone: 'info' },
+  payables_total: { icon: CreditCard, tone: 'info' },
+  overdue_dues: { icon: AlertTriangle, tone: 'bad' },
+  payables_overdue: { icon: AlertTriangle, tone: 'bad' },
+  due_in_horizon: { icon: CalendarClock, tone: 'warn' },
+  overdue_orders: { icon: Timer, tone: 'bad' },
+  delayed_orders: { icon: Timer, tone: 'bad' },
+  my_approvals: { icon: CheckCircle2, tone: 'warn' },
+  orders_pending_approval: { icon: CheckCircle2, tone: 'warn' },
+  requisitions_awaiting: { icon: ClipboardList, tone: 'warn' },
+  approved_not_ordered: { icon: ClipboardList, tone: 'info' },
+  bills_awaiting_review: { icon: FileWarning, tone: 'warn' },
+  bills_with_exceptions: { icon: FileWarning, tone: 'bad' },
+  payment_terms: { icon: Banknote, tone: 'info' },
+  due_windows: { icon: CalendarClock, tone: 'warn' },
+  active_suppliers: { icon: Users, tone: 'good' },
+  on_time_delivery: { icon: Truck, tone: 'good' },
+  acceptance_rate: { icon: CheckCircle2, tone: 'good' },
+  concentration: { icon: Boxes, tone: 'info' },
+  supplier_issues: { icon: AlertTriangle, tone: 'warn' },
+  opportunity_value: { icon: PiggyBank, tone: 'good' },
+  forecast_spend: { icon: TrendingUp, tone: 'info' },
+  anomalies_open: { icon: AlertTriangle, tone: 'warn' },
+  duplicate_candidates: { icon: PauseCircle, tone: 'warn' },
+  stock_out_risk: { icon: Boxes, tone: 'bad' },
+}
+
 export function MetricCard({ metric, onOpen }: { metric: DashboardMetric; onOpen: (target: Drilldown) => void }) {
   const available = metric.status === 'ready'
   const clickable = available && metric.drilldown !== undefined
+  const face = METRIC_FACE[metric.id] ?? { icon: Sparkles, tone: '' as const }
+  const Face = face.icon
 
   const body = (
     <>
+      <span className={`purchase-metric__icon ${face.tone === '' ? '' : `is-${face.tone}`}`} aria-hidden>
+        <Face size={20} />
+      </span>
+
       <span className="purchase-metric__label">
         {metric.label}
         {/* The basis is on the card and in the tooltip: a reader should not have
@@ -359,8 +427,10 @@ export function PurchaseDashboardShell({
   title,
   subtitle,
   onViewChange,
+  headerControls,
   contextControls,
   filterControls,
+  filtersApplied = false,
   sources,
   metrics,
   loading,
@@ -374,8 +444,12 @@ export function PurchaseDashboardShell({
   title: string
   subtitle: string
   onViewChange: (view: PurchaseViewId) => void
-  contextControls: ReactNode
+  /** Sits in the header row beside Export and the primary action. */
+  headerControls?: ReactNode
+  contextControls?: ReactNode
   filterControls: ReactNode
+  /** True when a filter beyond the period is applied, so the row opens itself. */
+  filtersApplied?: boolean
   sources: SourceStatus[]
   metrics: DashboardMetric[]
   loading: boolean
@@ -387,6 +461,15 @@ export function PurchaseDashboardShell({
 }) {
   const navigate = useNavigate()
 
+  // Closed by default. The designs go straight from the heading to the figures,
+  // and they are right to: on most visits nobody narrows anything, and three
+  // empty fields between the title and the numbers is three fields of noise.
+  // It opens itself when something IS filtered, so a narrowed screen can never
+  // hide why it is narrowed.
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const showFilters = filtersOpen || filtersApplied
+  const filterbarId = useId()
+
   const openDrilldown = (target: Drilldown) => {
     const query = new URLSearchParams(target.filters).toString()
     navigate(query === '' ? target.route : `${target.route}?${query}`)
@@ -396,18 +479,37 @@ export function PurchaseDashboardShell({
     // A div, not a <main>: the application frame already provides the main
     // landmark, and two of them is one too many for a screen reader.
     <div className="purchase-workspace">
+      {/* Tabs sit above the title, directly under the application bar, so the
+          five dashboards read as one screen with five faces rather than five
+          separate pages that happen to share a heading. */}
+      <DashboardSwitcher activeView={activeView} onChange={onViewChange} />
+
       <header className="purchase-page-header">
         <div style={{ minWidth: 0 }}>
-          <p className="purchase-eyebrow">Aicountly Purchases</p>
           <h1>{title}</h1>
           <p className="purchase-page-subtitle">{subtitle}</p>
         </div>
         <div className="purchase-header-actions">
+          {headerControls}
+          <button
+            type="button"
+            className={
+              showFilters
+                ? 'purchase-button purchase-button--secondary is-on'
+                : 'purchase-button purchase-button--secondary'
+            }
+            onClick={() => setFiltersOpen((open) => !open)}
+            aria-expanded={showFilters}
+            aria-controls={filterbarId}
+          >
+            <SlidersHorizontal size={15} aria-hidden /> Filters
+          </button>
           <button
             type="button"
             className="purchase-button purchase-button--secondary"
             onClick={onRefresh}
             disabled={refreshing}
+            aria-label="Refresh the figures"
           >
             <RefreshCw size={15} aria-hidden /> {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
@@ -415,11 +517,11 @@ export function PurchaseDashboardShell({
         </div>
       </header>
 
-      <div className="purchase-context">{contextControls}</div>
+      {contextControls !== undefined && <div className="purchase-context">{contextControls}</div>}
 
-      <DashboardSwitcher activeView={activeView} onChange={onViewChange} />
-
-      <div className="purchase-filterbar">{filterControls}</div>
+      <div className="purchase-filterbar" id={filterbarId} hidden={!showFilters}>
+        {filterControls}
+      </div>
 
       <SourceList sources={sources} fetchedAt={fetchedAt} />
 

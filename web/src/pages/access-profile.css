@@ -278,13 +278,18 @@
 
 .permissions-toolbar {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
-  gap: 18px;
+  gap: 14px 18px;
   margin-bottom: 16px;
 }
 
-.permission-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* The heading keeps a readable measure and the tools drop to their own row
+   rather than squeezing the section description into a ribbon. */
+.permissions-toolbar > .section-heading { flex: 1 1 360px; min-width: 0; }
+
+.permission-tools { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; margin-left: auto; }
 
 .permission-search { width: min(280px, 30vw); position: relative; }
 
@@ -424,10 +429,18 @@
 .collapse-trigger svg { transition: transform 160ms ease; }
 .collapse-trigger[aria-expanded='true'] svg { transform: rotate(180deg); }
 
+/*
+ * Columns follow the space the card actually has, not the width of the window.
+ * The window is the wrong measure here: the shell's sidebar and this page's own
+ * right rail take about 550px between them, so a viewport breakpoint that says
+ * "1280 is a desktop, use four columns" hands each column 150px and breaks
+ * `requisition.view` across two lines. A permission key printed over a line
+ * break is a key nobody can check, which is the whole reason it is printed.
+ */
 .permission-grid {
   padding: 11px 13px 13px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(204px, 100%), 1fr));
   gap: 6px 14px;
 }
 
@@ -491,7 +504,12 @@
   animation: access-shimmer 1.4s linear infinite;
 }
 
-.skeleton-row { margin-top: 12px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.skeleton-row {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(204px, 100%), 1fr));
+  gap: 10px;
+}
 
 @keyframes access-shimmer {
   from { background-position: 200% 0; }
@@ -706,7 +724,10 @@
 .access-action-bar {
   position: fixed;
   z-index: 30;
-  left: calc(var(--sidebar-w) + 20px);
+  /* The shell owns the sidebar's width; `--shell-width` is declared on
+     `.app-shell`, so it reaches here by inheritance and the bar stays put if
+     the frame is ever re-measured. */
+  left: calc(var(--shell-width, 15rem) + 20px);
   right: 20px;
   bottom: 16px;
   max-width: 780px;
@@ -861,23 +882,35 @@
 /* Responsive                                                             */
 /* --------------------------------------------------------------------- */
 
-/* Four permission columns on a desktop, three once the workspace is narrower
-   than the labels want, two on a tablet and one on a phone. The right rail
-   drops below the editor rather than squeezing it. */
-@media (max-width: 1279px) {
-  .access-layout { grid-template-columns: minmax(0, 1fr) 272px; }
+/* On a wide screen the card has room for more than four columns, and does not
+   want them: past four, a row of permissions stops being scannable and the
+   layout max-width above is there for the same reason. */
+@media (min-width: 1600px) {
   .permission-grid,
-  .skeleton-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .skeleton-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
-@media (max-width: 1023px) {
+/*
+ * When the rail goes, and why here.
+ *
+ * The shell's sidebar already costs 248px, so a 1280px laptop has about 990px
+ * to spend and a 300px rail leaves the permission list too narrow to hold three
+ * columns. The rail narrows first and then drops below the editor — under it
+ * the grid gets the whole width back, which is worth more than keeping the
+ * summary in the corner of a cramped screen.
+ */
+@media (max-width: 1439px) {
+  .access-layout { grid-template-columns: minmax(0, 1fr) 252px; }
+}
+
+@media (max-width: 1179px) {
   .access-layout { grid-template-columns: 1fr; }
   .access-sidebar { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
-  .permission-grid,
-  .skeleton-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 980px) {
+  /* The shell's sidebar becomes a drawer here, so the bar stops leaving room
+     for it at exactly the width the shell stops occupying. */
   .access-action-bar { left: 12px; right: 12px; max-width: none; }
 
   /* The search and the two accordion buttons stop fitting beside the heading
@@ -894,8 +927,6 @@
   .profile-details-grid { grid-template-columns: 1fr; }
   .permission-tools { flex-wrap: wrap; }
   .permission-tools .access-btn { flex: 1 1 auto; }
-  .permission-grid,
-  .skeleton-row { grid-template-columns: 1fr; }
   .permission-group-header { align-items: flex-start; flex-wrap: wrap; }
   .access-sidebar { grid-template-columns: 1fr; }
   .access-action-bar { flex-wrap: wrap; row-gap: 8px; }

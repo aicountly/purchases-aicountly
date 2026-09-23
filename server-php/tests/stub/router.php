@@ -110,6 +110,20 @@ if (str_contains($path, '/validatesession')) {
 }
 
 // --- Manage ---------------------------------------------------------------
+if (str_contains($path, '/companies') && !str_contains($path, '/companyinfo')) {
+    // Manage's company list, as CompanyModel::listCompanies shapes it. Enough
+    // rows to exercise the launcher's search, sort and default handling.
+    $rows = [
+        ['comp_id' => 88, 'comp_name' => 'Shivansh Enterprises', 'ownership' => 'owner', 'is_creator' => true],
+        ['comp_id' => 91, 'comp_name' => 'Aicountly Interactive Services Pvt Ltd', 'ownership' => 'owner', 'is_creator' => true],
+        ['comp_id' => 92, 'comp_name' => 'Deccan Steel Traders', 'ownership' => 'shared', 'is_creator' => false],
+        ['comp_id' => 93, 'comp_name' => 'Metro Electricals', 'ownership' => 'shared', 'is_creator' => false],
+        ['comp_id' => 94, 'comp_name' => 'Pioneer Packaging', 'ownership' => 'owner', 'is_creator' => true],
+    ];
+    echo json_encode(['success' => '1', 'data' => $rows, 'total' => count($rows)]);
+    exit;
+}
+
 if (str_contains($path, '/companyinfo')) {
     // Manage's real answer shape — CompanyModel::companyInfo reports the caller's
     // role three ways for three generations of caller. `role` here is the stub's
@@ -125,7 +139,21 @@ if (str_contains($path, '/companyinfo')) {
     $bearer = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     $role = preg_match('/role-([a-z0-9]+)/i', $bearer, $m) === 1 ? strtolower($m[1]) : '1';
 
-    $company = ['comp_id' => $cmpId, 'cmp_id' => $cmpId, 'comp_name' => 'Stub Trading Co'];
+    $company = [
+        'comp_id' => $cmpId,
+        'cmp_id' => $cmpId,
+        'comp_name' => 'Stub Trading Co',
+        // Manage sends its years newest first; the launcher relies on that
+        // ordering to preselect the current one.
+        'fy_list' => [
+            ['fy_id' => 6, 'fy_start' => '2026-04-01', 'fy_end' => '2027-03-31'],
+            ['fy_id' => 5, 'fy_start' => '2025-04-01', 'fy_end' => '2026-03-31'],
+        ],
+        'branch_list' => [
+            ['id' => 30, 'name' => 'Main Branch'],
+            ['id' => 31, 'name' => 'Warehouse South'],
+        ],
+    ];
     if ($role === '1') {
         $company += ['is_creator' => true, 'ownership' => 'owner', 'access_type' => 1];
     } elseif ($role !== 'silent') {
