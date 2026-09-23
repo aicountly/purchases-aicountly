@@ -597,17 +597,30 @@ await check('access administration bootstraps, assigns and shows its own rules',
   await page.goto(`${BASE}/access`, { waitUntil: 'networkidle' })
   await settle()
 
-  eq((await page.locator('h1').first().textContent())?.trim(), 'Access', 'the access screen opened')
+  // Renamed to "Access & Permissions" by the workspace rebuild; the check
+  // follows the page rather than pinning it to a title that no longer exists.
+  eq((await page.locator('h1').first().textContent())?.trim(), 'Access & Permissions', 'the access screen opened')
 
   // A company with no profiles says so, rather than looking merely empty: only
   // the owner can do anything until one exists.
-  const bootstrap = page.getByRole('button', { name: /Create starter profiles/ })
+  //
+  // The workspace rebuild offers the same action from two places — a top-level
+  // prompt and the Profiles panel's own empty state — so this scopes to the
+  // panel, which is the one guaranteed to exist only when there is something
+  // for it to bootstrap.
+  const bootstrap = page.getByRole('tabpanel', { name: 'Profiles' }).getByRole('button', { name: /Create starter profiles/ })
   if (await bootstrap.count()) {
+    // Reworded by the workspace rebuild — quieter, but the same fact: nothing
+    // but ownership works until a profile exists.
     ok(
-      (await page.locator('text=Nobody but the owner can do anything yet').count()) > 0,
+      (await page.locator('text=only the company owner can use Purchases').count()) > 0,
       'and explains why an empty company is a problem',
     )
     await bootstrap.click()
+    // The workspace rebuild previews the four starters in a dialog before
+    // writing anything — the same list the server would create from, so a
+    // second confirm is now needed to actually create them.
+    await page.getByRole('button', { name: /^Create profiles$/ }).click()
     await page.waitForTimeout(1200)
   }
 
@@ -625,18 +638,34 @@ await check('access administration bootstraps, assigns and shows its own rules',
     'the candidate list says where it comes from',
   )
 
-  // Assigning is the whole point: do it and check the person appears.
-  const before = await page.locator('table').nth(1).locator('tbody tr').count()
+  // Assigning is the whole point: do it and check the person appears. The
+  // grant form stays mounted under every tab — deliberately, per the
+  // workspace rebuild's own comment, so granting is never a click behind a
+  // tab — but the People table it should appear in only mounts once that tab
+  // is the active one, so the check switches to it before counting either side.
+  await page.getByRole('tab', { name: 'People with access' }).click()
+  await settle()
+  // With the People tab active, the Profiles tab's table is not in the DOM,
+  // and a company with nobody yet assigned renders an empty state instead of
+  // a table at all — so there is at most one <table> here, not two.
+  const before = await page.locator('table').first().locator('tbody tr').count()
   await page.locator('input[placeholder*="8f2c"]').fill('user-checked-by-test')
   await page.locator('select').first().selectOption({ index: 1 })
   await page.locator('input[placeholder*="Priya"]').fill('Test person')
   await page.getByRole('button', { name: /Give access/ }).click()
   await page.waitForTimeout(1200)
 
-  const after = await page.locator('table').nth(1).locator('tbody tr').count()
+  const after = await page.locator('table').first().locator('tbody tr').count()
   eq(after, before + 1, 'the person now holds a profile')
   ok((await page.locator('text=Test person').count()) > 0, 'shown by the label the administrator typed')
-  ok((await page.locator('text=user-checked-by-test').count()) > 0, 'with the portal uuid as the real identity')
+  // The full uuid is truncated for display in the row — "user-checked…test" —
+  // with the real value kept as the title attribute for a hover tooltip. The
+  // truncation is deliberate design, so this checks the attribute a sighted
+  // reader would still have to hover for, not the shortened text node.
+  ok(
+    (await page.locator('[title="user-checked-by-test"]').count()) > 0,
+    'with the portal uuid as the real identity',
+  )
 })
 
 // ---------------------------------------------------------------------------
