@@ -69,7 +69,9 @@ behaviours worth knowing:
   "what is in stock?" or "what do we owe?".
 
 **Absent on purpose, and tested for:** no item master, no supplier ledger, no
-stock balance, no GRN table, no payable balance, no input-GST or TDS figure.
+stock balance, no GRN table, no payable balance, no input-GST or TDS figure —
+and no analytics or metrics table: every count and average this product shows
+is derived on the request that draws it.
 
 ## Segregation of duties
 
@@ -123,6 +125,42 @@ They compose the same way everything else here does — our workflow counts from
 our own tables, posted money from Books and stock from Inventory, both live, on
 the request that renders the screen. Each source reports its own status, so a
 dashboard degrades one panel at a time.
+
+## Sourcing, and its figures
+
+`GET /v1/rfqs` returns each enquiry with five numbers counted beside it —
+suppliers invited, suppliers who answered, quotations received, lines, and
+whether it has been awarded — plus `meta.status_counts` for the lifecycle tabs.
+`GET /v1/rfqs/summary` answers for the whole financial year.
+
+**None of it is stored.** There is no sourcing metrics table and no roll-up
+job; every figure is counted from `purchase_rfqs`, `purchase_rfq_invitations`,
+`purchase_quotes` and `purchase_bid_awards` on the request that draws the
+screen. A stored "quotes received" would be a second answer to a question the
+quotations already answer, and wrong from the first write that missed it.
+
+Three definitions the screen depends on, so they cannot drift:
+
+- **A quotation** is the latest non-withdrawn revision from one supplier — the
+  same rule `compare()` uses. Counting revisions reports four quotations when
+  one supplier priced the same enquiry twice.
+- **Value** is estimated landed cost: lines plus freight plus other charges.
+  Averaged within ONE currency, the one most quotations are in; the rest are
+  counted and reported so the screen can say they were left out.
+- **Cost savings potential** is the spread between the dearest and cheapest
+  comparable quotation on enquiries nobody has decided yet. It stops counting
+  the moment an enquiry is awarded, because by then it is a decision and not an
+  opportunity.
+
+Quoted money needs `cost.view`. Without it the summary sends `values: null` and
+the cards say so rather than showing a zero. A month with no previous month to
+compare against gets no percentage at all.
+
+**Not available, and therefore not drawn:** nothing in this product carries a
+category — not the RFQ, not its lines, not the item read through from Inventory
+— so the sourcing screen has no category column and no category filter. Bulk
+RFQ import and saved RFQ templates have no endpoint behind them, so both
+buttons are inert and labelled.
 
 ## Running the tests
 

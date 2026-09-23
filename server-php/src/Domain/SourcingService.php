@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Domain;
 
+use Aicountly\Api\Ai\AiClient;
 use Aicountly\Api\Audit;
 use Aicountly\Api\Auth;
 use Aicountly\Api\Context;
@@ -418,28 +419,362 @@ final class SourcingService
         return $row;
     }
 
-    /** @return array{rows:list<array<string, mixed>>, total:int} */
+    /**
+     * The sourcing list, with the three numbers the list is actually read for.
+     *
+     * A buyer scanning this screen is asking "who did we ask, who answered, and
+     * what did they say" — so invitations, responses and quotations are counted
+     * in the same query rather than left to a call per row. The counts are
+     * derived, never stored: a second copy of "how many quotes" is a second
+     * number to disagree with the quotes themselves.
+     *
+     * Only the LATEST non-withdrawn revision from each supplier counts as a
+     * quotation, which is the same rule compare() uses. Counting revisions
+     * would say four quotes arrived when one supplier priced twice.
+     *
+     * @param array<string, mixed> $filters
+     * @return array{rows:list<array<string, mixed>>, total:int, status_counts:array<string,int>}
+     */
     public function searchRfqs(array $filters, int $limit, int $offset, string $sort, string $order): array
     {
         [$scope, $params] = $this->ctx->scopeClause('r');
         $where = [$scope];
 
+        // Everything except the status itself, so the lifecycle tabs can show
+        // how many RFQs each status holds UNDER the current search and dates.
+        // Counting them without the other filters would offer the user a tab
+        // that lands on an empty table.
+        $unfiltered = $where;
+        $unfilteredParams = $params;
+
         if (!empty($filters['status'])) {
             $where[] = 'r.status = :status';
             $params['status'] = (string) $filters['status'];
         }
-        if (!empty($filters['q'])) {
-            $where[] = '(r.rfq_no ILIKE :term OR r.title ILIKE :term)';
-            $params['term'] = '%' . $filters['q'] . '%';
+
+        foreach (self::listConditions($filters) as [$sql, $bindings]) {
+            $where[] = $sql;
+            $unfiltered[] = $sql;
+            $params += $bindings;
+            $unfilteredParams += $bindings;
         }
 
         $clause = implode(' AND ', $where);
         $sortColumn = in_array($sort, ['rfq_date', 'rfq_no', 'status', 'response_deadline', 'created_at'], true) ? $sort : 'rfq_date';
 
+        $rows = Db::all(
+            "SELECT r.*,
+                    (SELECT COUNT(*) FROM purchase_rfq_invitations i WHERE i.rfq_id = r.rfq_id)                    AS invited_count,
+                    (SELECT COUNT(*) FROM purchase_rfq_invitations i
+                      WHERE i.rfq_id = r.rfq_id AND i.status = 'RESPONDED')                                        AS responded_count,
+                    (SELECT COUNT(DISTINCT q.supplier_account_id) FROM purchase_quotes q
+                      WHERE q.rfq_id = r.rfq_id AND q.status <> 'WITHDRAWN')                                       AS quote_count,
+                    (SELECT COUNT(*) FROM purchase_rfq_lines l WHERE l.rfq_id = r.rfq_id)                          AS line_count,
+                    (SELECT COUNT(*) FROM purchase_bid_awards a WHERE a.rfq_id = r.rfq_id)                         AS award_count,
+                    (SELECT string_agg(head.label, ', ' ORDER BY head.line_no)
+                       FROM (SELECT l.line_no,
+                                    COALESCE(
+                                        NULLIF(btrim(l.description), ''),
+                                        CASE WHEN l.item_id IS NOT NULL
+                                             THEN 'Inventory item ' || l.item_id
+                                             ELSE 'Line ' || l.line_no END
+                                    ) AS label
+                               FROM purchase_rfq_lines l
+                              WHERE l.rfq_id = r.rfq_id
+                              ORDER BY l.line_no
+                              LIMIT 3) head)                                                                       AS item_summary
+               FROM purchase_rfqs r
+              WHERE {$clause}
+              ORDER BY r.{$sortColumn} {$order}, r.rfq_id {$order}
+              LIMIT {$limit} OFFSET {$offset}",
+            $params,
+        );
+
+        $statusCounts = [];
+        foreach (Db::all(
+            'SELECT r.status, COUNT(*) AS n FROM purchase_rfqs r WHERE ' . implode(' AND ', $unfiltered) . ' GROUP BY r.status',
+            $unfilteredParams,
+        ) as $row) {
+            $statusCounts[(string) $row['status']] = (int) $row['n'];
+        }
+
         return [
-            'rows'  => Db::all("SELECT r.* FROM purchase_rfqs r WHERE {$clause} ORDER BY r.{$sortColumn} {$order}, r.rfq_id {$order} LIMIT {$limit} OFFSET {$offset}", $params),
-            'total' => (int) Db::scalar("SELECT COUNT(*) FROM purchase_rfqs r WHERE {$clause}", $params),
+            'rows'          => $rows,
+            'total'         => (int) Db::scalar("SELECT COUNT(*) FROM purchase_rfqs r WHERE {$clause}", $params),
+            'status_counts' => $statusCounts,
         ];
+    }
+
+    /**
+     * The figures above the sourcing list.
+     *
+     * Every one of them is counted from the records themselves at read time.
+     * There is no metrics table and no nightly roll-up, for the same reason the
+     * dashboards have none: a stored count is a second answer to a question the
+     * rows already answer, and it is wrong from the first write that misses it.
+     *
+     * WHERE A FIGURE CANNOT BE PRODUCED IT IS NULL, NOT ZERO. A month with
+     * nothing to compare against does not get a percentage, and a user without
+     * `cost.view` does not get quoted values — in both cases the screen says so
+     * rather than drawing a confident nought.
+     *
+     * @return array<string, mixed>
+     */
+    public function summary(): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'rfq.view');
+
+        [$scope, $params] = $this->ctx->scopeClause('r');
+
+        $monthStart = gmdate('Y-m-01');
+        $previousStart = gmdate('Y-m-01', strtotime($monthStart . ' -1 month'));
+        $months = ['month_start' => $monthStart, 'previous_start' => $previousStart];
+
+        $pipeline = Db::first(
+            "SELECT COUNT(*)                                                             AS total,
+                    COUNT(*) FILTER (WHERE r.status = 'DRAFT')                           AS draft,
+                    COUNT(*) FILTER (WHERE r.status IN ('ISSUED', 'RESPONSES_OPEN'))     AS open,
+                    COUNT(*) FILTER (WHERE r.status = 'EVALUATING')                      AS evaluating,
+                    COUNT(*) FILTER (WHERE r.status = 'AWARDED')                         AS awarded,
+                    COUNT(*) FILTER (WHERE r.status = 'CLOSED')                          AS closed,
+                    COUNT(*) FILTER (WHERE r.status = 'CANCELLED')                       AS cancelled,
+                    COUNT(*) FILTER (WHERE r.rfq_date >= :month_start)                   AS raised_this_month,
+                    COUNT(*) FILTER (WHERE r.rfq_date >= :previous_start
+                                       AND r.rfq_date <  :month_start)                   AS raised_last_month,
+                    COUNT(*) FILTER (WHERE r.response_deadline IS NOT NULL
+                                       AND r.response_deadline < NOW()
+                                       AND r.status IN ('ISSUED', 'RESPONSES_OPEN'))     AS overdue,
+                    COUNT(*) FILTER (
+                        WHERE EXISTS (SELECT 1 FROM purchase_quotes q
+                                       WHERE q.rfq_id = r.rfq_id AND q.status <> 'WITHDRAWN')
+                    )                                                                    AS quoted,
+                    COUNT(*) FILTER (
+                        WHERE r.status IN ('ISSUED', 'RESPONSES_OPEN')
+                          AND NOT EXISTS (SELECT 1 FROM purchase_quotes q
+                                           WHERE q.rfq_id = r.rfq_id AND q.status <> 'WITHDRAWN')
+                    )                                                                    AS awaiting_response
+               FROM purchase_rfqs r
+              WHERE {$scope}",
+            $params + $months,
+        ) ?? [];
+
+        // Awarded THIS MONTH is the decision date, not the RFQ's own date: an
+        // enquiry raised in March and decided in April was decided in April.
+        $awardedThisMonth = (int) (Db::scalar(
+            "SELECT COUNT(DISTINCT a.rfq_id)
+               FROM purchase_bid_awards a
+               JOIN purchase_rfqs r ON r.rfq_id = a.rfq_id
+              WHERE {$scope} AND a.decided_at >= :month_start",
+            $params + ['month_start' => $monthStart],
+        ) ?? 0);
+
+        $counts = [
+            'total'              => (int) ($pipeline['total'] ?? 0),
+            'draft'              => (int) ($pipeline['draft'] ?? 0),
+            'open'               => (int) ($pipeline['open'] ?? 0),
+            'quoted'             => (int) ($pipeline['quoted'] ?? 0),
+            'evaluating'         => (int) ($pipeline['evaluating'] ?? 0),
+            'awarded'            => (int) ($pipeline['awarded'] ?? 0),
+            'awarded_this_month' => $awardedThisMonth,
+            'closed'             => (int) ($pipeline['closed'] ?? 0),
+            'cancelled'          => (int) ($pipeline['cancelled'] ?? 0),
+            'awaiting_response'  => (int) ($pipeline['awaiting_response'] ?? 0),
+            'overdue'            => (int) ($pipeline['overdue'] ?? 0),
+            'raised_this_month'  => (int) ($pipeline['raised_this_month'] ?? 0),
+            'raised_last_month'  => (int) ($pipeline['raised_last_month'] ?? 0),
+        ];
+
+        return [
+            'counts'         => $counts,
+            // Quoted money is spend, and spend is `cost.view`. Without it the
+            // cards keep their place and say what is missing.
+            'values_visible' => Permissions::allows($this->ctx, $this->auth, 'cost.view'),
+            'values'         => Permissions::allows($this->ctx, $this->auth, 'cost.view')
+                ? $this->quoteValues($scope, $params, $months)
+                : null,
+            // Whether a model is configured at all. The screen offers the same
+            // actions either way; it just does not call something "AI" when the
+            // answer behind it came from the rules engine.
+            'ai'             => ['available' => AiClient::isConfigured()],
+        ];
+    }
+
+    /**
+     * What the quotations on file are worth, and the spread between them.
+     *
+     * ESTIMATED LANDED COST, not the line total — the same figure compare()
+     * puts in front of a buyer, because freight and other charges routinely
+     * decide which quotation is actually cheapest.
+     *
+     * ONE CURRENCY. Quotations are priced in the currency the supplier quoted,
+     * and an average across currencies is a number with no meaning. The
+     * currency most quotations are in wins, the rest are counted and reported
+     * so the screen can say they were left out.
+     *
+     * @param array<string, mixed> $params
+     * @param array{month_start:string, previous_start:string} $months
+     * @return array<string, mixed>
+     */
+    private function quoteValues(string $scope, array $params, array $months): array
+    {
+        // The latest non-withdrawn revision from each supplier, which is the
+        // rule the comparative statement uses. Counting revisions would report
+        // four quotations when one supplier priced the same enquiry twice.
+        $live = "WITH live AS (
+                     SELECT DISTINCT ON (q.rfq_id, q.supplier_account_id)
+                            q.quote_id, q.rfq_id, q.currency_code, q.created_at,
+                            q.freight_amount, q.other_charges, r.status
+                       FROM purchase_quotes q
+                       JOIN purchase_rfqs r ON r.rfq_id = q.rfq_id
+                      WHERE {$scope} AND q.status <> 'WITHDRAWN'
+                      ORDER BY q.rfq_id, q.supplier_account_id, q.revision_no DESC
+                 ), landed AS (
+                     SELECT live.rfq_id, live.currency_code, live.created_at, live.status,
+                            COALESCE((SELECT SUM(ql.line_amount) FROM purchase_quote_lines ql
+                                       WHERE ql.quote_id = live.quote_id), 0)
+                              + live.freight_amount + live.other_charges AS landed
+                       FROM live
+                 )";
+
+        $byCurrency = Db::all(
+            "{$live}
+             SELECT currency_code,
+                    COUNT(*)                                                            AS quotes,
+                    AVG(landed)                                                         AS average,
+                    COUNT(*)    FILTER (WHERE created_at >= :month_start)               AS quotes_this_month,
+                    AVG(landed) FILTER (WHERE created_at >= :month_start)               AS average_this_month,
+                    COUNT(*)    FILTER (WHERE created_at >= :previous_start
+                                          AND created_at <  :month_start)               AS quotes_last_month,
+                    AVG(landed) FILTER (WHERE created_at >= :previous_start
+                                          AND created_at <  :month_start)               AS average_last_month
+               FROM landed
+              GROUP BY currency_code
+              ORDER BY COUNT(*) DESC, currency_code",
+            $params + $months,
+        );
+
+        if ($byCurrency === []) {
+            return [
+                'currency'          => 'INR',
+                'quotes'            => 0,
+                'average'           => null,
+                'average_change_pc' => null,
+                'other_currencies'  => 0,
+                'savings_potential' => null,
+                'open_comparisons'  => 0,
+                'comparison_ready'  => 0,
+            ];
+        }
+
+        $main = $byCurrency[0];
+        $currency = (string) $main['currency_code'];
+
+        // The spread between the dearest and the cheapest comparable quotation
+        // on an enquiry nobody has decided yet. That difference is what is
+        // still on the table — it is not a saving until somebody awards.
+        $spread = Db::first(
+            "{$live}, per_rfq AS (
+                 SELECT rfq_id, currency_code, status,
+                        COUNT(*) AS offers, MIN(landed) AS lowest, MAX(landed) AS highest
+                   FROM landed
+                  GROUP BY rfq_id, currency_code, status
+             )
+             SELECT COUNT(*) FILTER (WHERE offers >= 2)                                  AS comparison_ready,
+                    COUNT(*) FILTER (WHERE offers >= 2
+                                       AND status NOT IN ('AWARDED', 'CANCELLED', 'CLOSED')) AS open_comparisons,
+                    COALESCE(SUM(highest - lowest) FILTER (
+                        WHERE offers >= 2 AND status NOT IN ('AWARDED', 'CANCELLED', 'CLOSED')
+                    ), 0)                                                                AS spread
+               FROM per_rfq
+              WHERE currency_code = :currency",
+            $params + ['currency' => $currency],
+        ) ?? [];
+
+        $thisMonth = $main['average_this_month'] === null ? null : (float) $main['average_this_month'];
+        $lastMonth = $main['average_last_month'] === null ? null : (float) $main['average_last_month'];
+
+        return [
+            'currency' => $currency,
+            'quotes'   => (int) $main['quotes'],
+            'average'  => $main['average'] === null ? null : round((float) $main['average'], 2),
+            // No previous month to compare against is no percentage. A change
+            // against nothing is not a change.
+            'average_change_pc' => ($thisMonth === null || $lastMonth === null || $lastMonth <= 0)
+                ? null
+                : round((($thisMonth - $lastMonth) / $lastMonth) * 100, 1),
+            'other_currencies'  => count($byCurrency) - 1,
+            'savings_potential' => round((float) ($spread['spread'] ?? 0), 2),
+            'open_comparisons'  => (int) ($spread['open_comparisons'] ?? 0),
+            'comparison_ready'  => (int) ($spread['comparison_ready'] ?? 0),
+        ];
+    }
+
+    /**
+     * The optional list filters, as SQL fragments with their bindings.
+     *
+     * Each one is a question a buyer actually asks of this screen: what did we
+     * raise in March, what has this supplier been asked for, what has nobody
+     * answered, what is past its deadline. Anything not asked for is absent —
+     * a filter the backend cannot honour is worse than no filter, because the
+     * UI then lies about what it returned.
+     *
+     * @param array<string, mixed> $filters
+     * @return list<array{0:string, 1:array<string, mixed>}>
+     */
+    private static function listConditions(array $filters): array
+    {
+        $conditions = [];
+
+        if (!empty($filters['q'])) {
+            $conditions[] = ['(r.rfq_no ILIKE :term OR r.title ILIKE :term)', ['term' => '%' . $filters['q'] . '%']];
+        }
+        if (!empty($filters['from'])) {
+            $conditions[] = ['r.rfq_date >= :from', ['from' => (string) $filters['from']]];
+        }
+        if (!empty($filters['to'])) {
+            $conditions[] = ['r.rfq_date <= :to', ['to' => (string) $filters['to']]];
+        }
+        if (!empty($filters['supplier_account_id'])) {
+            $conditions[] = [
+                'EXISTS (SELECT 1 FROM purchase_rfq_invitations i
+                          WHERE i.rfq_id = r.rfq_id AND i.supplier_account_id = :supplier)',
+                ['supplier' => (int) $filters['supplier_account_id']],
+            ];
+        }
+        if (!empty($filters['created_by'])) {
+            $conditions[] = ['r.created_by = :created_by', ['created_by' => (string) $filters['created_by']]];
+        }
+
+        $quotes = (string) ($filters['quotes'] ?? '');
+        if ($quotes === 'none') {
+            $conditions[] = ["NOT EXISTS (SELECT 1 FROM purchase_quotes q WHERE q.rfq_id = r.rfq_id AND q.status <> 'WITHDRAWN')", []];
+        } elseif ($quotes === 'any') {
+            $conditions[] = ["EXISTS (SELECT 1 FROM purchase_quotes q WHERE q.rfq_id = r.rfq_id AND q.status <> 'WITHDRAWN')", []];
+        } elseif ($quotes === 'comparable') {
+            // Two or more suppliers priced it, so there is something to compare.
+            $conditions[] = [
+                "(SELECT COUNT(DISTINCT q.supplier_account_id) FROM purchase_quotes q
+                   WHERE q.rfq_id = r.rfq_id AND q.status <> 'WITHDRAWN') >= 2",
+                [],
+            ];
+        }
+
+        if (($filters['deadline'] ?? '') === 'overdue') {
+            $conditions[] = [
+                "(r.response_deadline IS NOT NULL AND r.response_deadline < NOW()
+                  AND r.status IN ('ISSUED', 'RESPONSES_OPEN'))",
+                [],
+            ];
+        } elseif (($filters['deadline'] ?? '') === 'due_soon') {
+            $conditions[] = [
+                "(r.response_deadline IS NOT NULL
+                  AND r.response_deadline BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+                  AND r.status IN ('ISSUED', 'RESPONSES_OPEN'))",
+                [],
+            ];
+        }
+
+        return $conditions;
     }
 
     /** @return list<array<string, mixed>> */

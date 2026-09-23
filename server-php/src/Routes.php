@@ -81,6 +81,9 @@ final class Routes
         // Sourcing: RFQ, quotes, comparison, award.
         $router->get('v1/rfqs', [SourcingController::class, 'index']);
         $router->post('v1/rfqs', [SourcingController::class, 'create']);
+        // Before `{id}`: the router takes the first pattern that matches, and
+        // `v1/rfqs/{id}` would swallow this one as an RFQ numbered "summary".
+        $router->get('v1/rfqs/summary', [SourcingController::class, 'summary']);
         $router->get('v1/rfqs/{id}', [SourcingController::class, 'show']);
         $router->post('v1/rfqs/{id}/issue', [SourcingController::class, 'issue']);
         $router->post('v1/rfqs/{id}/invite', [SourcingController::class, 'invite']);

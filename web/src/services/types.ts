@@ -122,6 +122,78 @@ export interface Rfq {
   awards: BidAward[]
 }
 
+/**
+ * An RFQ as the SOURCING LIST returns it.
+ *
+ * The list endpoint sends the stored row plus five figures counted from the
+ * records beside it — who was invited, who answered, how many suppliers priced
+ * it, how many lines it has and what they are. None of them is stored: a saved
+ * "quotes received" is a second answer to a question the quotes already answer.
+ *
+ * It is NOT an `Rfq`: the list carries no lines, invitations, quotes or awards,
+ * and typing it as one is how a list row ends up calling `.quotes.length` on
+ * something that was never sent.
+ */
+export interface RfqListRow {
+  rfq_id: number
+  rfq_uuid: string
+  rfq_no: string
+  rfq_date: string
+  title: string | null
+  status: string
+  response_deadline: string | null
+  required_by: string | null
+  currency_code: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  /** Counted at read time. Postgres returns bigint counts as strings. */
+  invited_count: number | string
+  responded_count: number | string
+  quote_count: number | string
+  line_count: number | string
+  award_count: number | string
+  /** The first three lines, comma separated. Null when the RFQ has none. */
+  item_summary: string | null
+}
+
+/** Quoted money, in one currency. Null throughout when `cost.view` is missing. */
+export interface SourcingValues {
+  currency: string
+  quotes: number
+  average: number | null
+  /** Null when there is no previous month to compare against. Never zero. */
+  average_change_pc: number | null
+  /** Quotations priced in another currency, left out of the average. */
+  other_currencies: number
+  savings_potential: number | null
+  /** Comparable and still undecided — the spread is only on the table until it is awarded. */
+  open_comparisons: number
+  comparison_ready: number
+}
+
+/** The figures above the sourcing list, counted for the whole financial year. */
+export interface SourcingSummary {
+  counts: {
+    total: number
+    draft: number
+    open: number
+    quoted: number
+    evaluating: number
+    awarded: number
+    awarded_this_month: number
+    closed: number
+    cancelled: number
+    awaiting_response: number
+    overdue: number
+    raised_this_month: number
+    raised_last_month: number
+  }
+  values_visible: boolean
+  values: SourcingValues | null
+  ai: { available: boolean }
+}
+
 export interface ComparisonColumn {
   quote_id: number
   supplier_account_id: number

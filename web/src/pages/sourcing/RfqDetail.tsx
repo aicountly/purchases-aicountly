@@ -1,67 +1,20 @@
+/**
+ * One enquiry: what was asked for, who was asked, what they came back with, and
+ * the decision.
+ *
+ * Moved here from `pages/Sourcing.tsx` when sourcing became a folder. The code
+ * is unchanged — the list beside it was rebuilt, and this screen was not part
+ * of that.
+ */
+
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Plus } from 'lucide-react'
-import { api, ApiError } from '../services/api'
-import type { CatalogSupplier, Comparison, Rfq } from '../services/types'
-import { useApi } from '../hooks/useApi'
-import { usePurchases } from '../context/PurchasesContext'
-import { ItemPicker, SupplierPicker } from '../components/LivePicker'
-import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
-
-const STATUSES = ['', 'DRAFT', 'ISSUED', 'RESPONSES_OPEN', 'EVALUATING', 'AWARDED', 'CANCELLED', 'CLOSED']
-
-export function RfqList() {
-  const navigate = useNavigate()
-  const { scope, can } = usePurchases()
-  const [status, setStatus] = useState('')
-
-  const { data, loading, error } = useApi(
-    (signal) => api.list<Rfq>('v1/rfqs', { status: status || undefined, limit: 100 }, signal),
-    [scope?.cmp_id, scope?.fy_id, status],
-    Boolean(scope),
-  )
-
-  return (
-    <div style={{ display: 'grid', gap: '1rem' }}>
-      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Sourcing</h1>
-        {can('rfq.create') && (
-          <Button tone="primary" onClick={() => navigate('/rfqs/new')}>
-            <Plus size={15} aria-hidden /> New RFQ
-          </Button>
-        )}
-      </header>
-
-      {error && <Notice tone="danger" title="Could not load RFQs">{error}</Notice>}
-
-      <Card
-        title={`${data?.meta.total ?? 0} RFQ${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}
-        action={
-          <Select value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: '12rem' }}>
-            {STATUSES.map((value) => (
-              <option key={value} value={value}>{value === '' ? 'All statuses' : value.replace(/_/g, ' ')}</option>
-            ))}
-          </Select>
-        }
-      >
-        <DataTable
-          loading={loading}
-          rows={data?.data ?? []}
-          rowKey={(row) => row.rfq_id}
-          onRowClick={(row) => navigate(`/rfqs/${row.rfq_id}`)}
-          empty="No RFQs yet."
-          columns={[
-            { key: 'no', header: 'Number', render: (row) => <Link to={`/rfqs/${row.rfq_id}`} onClick={(e) => e.stopPropagation()}>{row.rfq_no}</Link> },
-            { key: 'title', header: 'Title', render: (row) => row.title ?? '—' },
-            { key: 'date', header: 'Raised', render: (row) => date(row.rfq_date) },
-            { key: 'deadline', header: 'Responses by', render: (row) => date(row.response_deadline) },
-            { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-          ]}
-        />
-      </Card>
-    </div>
-  )
-}
+import { api, ApiError } from '../../services/api'
+import type { CatalogSupplier, Comparison, Rfq } from '../../services/types'
+import { useApi } from '../../hooks/useApi'
+import { usePurchases } from '../../context/PurchasesContext'
+import { SupplierPicker } from '../../components/LivePicker'
+import { Button, Card, DataTable, date, Field, money, Notice, qty, StatusBadge, Textarea } from '../../ui'
 
 export function RfqDetail() {
   const { id } = useParams<{ id: string }>()
@@ -306,112 +259,3 @@ const headStyle = {
 }
 
 const cellStyle = { padding: '0.5rem 0.6rem', borderBottom: '1px solid var(--border)' }
-
-export function RfqEditor() {
-  const navigate = useNavigate()
-  const [title, setTitle] = useState('')
-  const [deadline, setDeadline] = useState('')
-  const [requiredBy, setRequiredBy] = useState('')
-  const [terms, setTerms] = useState('')
-  const [suppliers, setSuppliers] = useState<Array<{ id: number; name: string }>>([])
-  const [lines, setLines] = useState<Array<{ key: string; item_id: number | null; label: string; qty: string }>>([
-    { key: 'a', item_id: null, label: '', qty: '1' },
-  ])
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function save() {
-    setSaving(true)
-    setError(null)
-    try {
-      const response = await api.post<Rfq>('v1/rfqs', {
-        title: title || undefined,
-        response_deadline: deadline || undefined,
-        required_by: requiredBy || undefined,
-        commercial_terms: terms || undefined,
-        supplier_account_ids: suppliers.map((s) => s.id),
-        lines: lines.filter((l) => l.item_id).map((l) => ({ item_id: l.item_id, required_qty: Number(l.qty || 0), description: l.label })),
-      })
-      navigate(`/rfqs/${response.data.rfq_id}`)
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div style={{ display: 'grid', gap: '1rem', maxWidth: '56rem' }}>
-      <h1 style={{ margin: 0, fontSize: '1.3rem' }}>New RFQ</h1>
-      {error && <Notice tone="danger" title="Could not save">{error}</Notice>}
-
-      <Card title="Enquiry">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.85rem' }}>
-          <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Q3 steel" /></Field>
-          <Field label="Responses by"><Input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></Field>
-          <Field label="Delivery needed by"><Input type="date" value={requiredBy} onChange={(e) => setRequiredBy(e.target.value)} /></Field>
-        </div>
-        <div style={{ marginTop: '0.85rem' }}>
-          <Field label="Commercial terms"><Textarea value={terms} onChange={(e) => setTerms(e.target.value)} /></Field>
-        </div>
-      </Card>
-
-      <Card title="Suppliers to invite">
-        <SupplierPicker
-          onPick={(supplier: CatalogSupplier) =>
-            setSuppliers((current) =>
-              current.some((s) => s.id === supplier.acc_id) ? current : [...current, { id: supplier.acc_id, name: supplier.acc_name }],
-            )
-          }
-        />
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.75rem' }}>
-          {suppliers.map((supplier) => (
-            <span
-              key={supplier.id}
-              style={{ padding: '0.2rem 0.6rem', borderRadius: '999px', background: 'var(--surface-2)', border: '1px solid var(--border)', fontSize: '0.85rem' }}
-            >
-              {supplier.name}
-              <button
-                type="button"
-                onClick={() => setSuppliers((c) => c.filter((s) => s.id !== supplier.id))}
-                style={{ marginLeft: '0.4rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)' }}
-                aria-label={`Remove ${supplier.name}`}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-          {suppliers.length === 0 && <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>None yet.</span>}
-        </div>
-      </Card>
-
-      <Card
-        title="Lines"
-        action={<Button onClick={() => setLines((c) => [...c, { key: Math.random().toString(36).slice(2), item_id: null, label: '', qty: '1' }])}>Add line</Button>}
-      >
-        <div style={{ display: 'grid', gap: '0.75rem' }}>
-          {lines.map((line) => (
-            <div key={line.key} style={{ display: 'grid', gridTemplateColumns: '3fr 1fr auto', gap: '0.6rem', alignItems: 'end' }}>
-              <ItemPicker
-                selectedLabel={line.label || null}
-                onPick={(item) =>
-                  setLines((c) => c.map((l) => (l.key === line.key ? { ...l, item_id: item.item_id, label: item.item_name } : l)))
-                }
-              />
-              <Field label="Quantity">
-                <Input value={line.qty} inputMode="decimal" onChange={(e) => setLines((c) => c.map((l) => (l.key === line.key ? { ...l, qty: e.target.value } : l)))} />
-              </Field>
-              <Button tone="ghost" onClick={() => setLines((c) => (c.length > 1 ? c.filter((l) => l.key !== line.key) : c))}>Remove</Button>
-            </div>
-          ))}
-        </div>
-      </Card>
-
-      <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-        <Button onClick={() => navigate(-1)}>Cancel</Button>
-        <Button tone="primary" disabled={saving} onClick={save}>{saving ? 'Saving…' : 'Save RFQ'}</Button>
-      </div>
-    </div>
-  )
-}
-

@@ -443,6 +443,137 @@ check('awarding records the rationale and rejects the losing quotes', function (
     assertSame('REJECTED', $statuses[601], 'loser');
 });
 
+check('the list counts who was asked, who answered and what they quoted', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new SourcingService($ctx, $auth);
+    $rfq = $service->createRfq([
+        'title'                => 'Office laptops',
+        'supplier_account_ids' => [601, 602],
+        'lines'                => [
+            ['item_id' => 201, 'required_qty' => 20, 'description' => 'Dell Latitude or equivalent'],
+            ['item_id' => 202, 'required_qty' => 20, 'description' => 'Docking station'],
+        ],
+    ]);
+    $rfqLineId = (int) $rfq['lines'][0]['line_id'];
+    $service->issueRfq((int) $rfq['rfq_id']);
+
+    // One supplier, priced twice. A revision is a new row, so a list that
+    // counted rows would report two quotations from one supplier.
+    $service->recordQuote((int) $rfq['rfq_id'], [
+        'supplier_account_id' => 601,
+        'lines' => [['rfq_line_id' => $rfqLineId, 'item_id' => 201, 'quoted_qty' => 20, 'quoted_rate' => 60000]],
+    ]);
+    $service->recordQuote((int) $rfq['rfq_id'], [
+        'supplier_account_id' => 601,
+        'lines' => [['rfq_line_id' => $rfqLineId, 'item_id' => 201, 'quoted_qty' => 20, 'quoted_rate' => 58000]],
+    ]);
+
+    $result = $service->searchRfqs([], 50, 0, 'rfq_date', 'DESC');
+    $row = $result['rows'][0];
+
+    assertSame(1, $result['total'], 'one RFQ');
+    assertSame(2, (int) $row['invited_count'], 'two suppliers invited');
+    assertSame(1, (int) $row['responded_count'], 'one supplier answered');
+    assertSame(1, (int) $row['quote_count'], 'two revisions from one supplier are one quotation');
+    assertSame(2, (int) $row['line_count'], 'two lines');
+    assertTrue(str_contains((string) $row['item_summary'], 'Dell Latitude'), 'the lines are summarised');
+    assertSame(1, $result['status_counts']['RESPONSES_OPEN'], 'the tab count follows the status');
+});
+
+check('the list filters on dates, suppliers and whether anybody has quoted', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new SourcingService($ctx, $auth);
+
+    $quoted = $service->createRfq(['title' => 'Steel', 'supplier_account_ids' => [601], 'lines' => [['item_id' => 201, 'required_qty' => 5]]]);
+    $silent = $service->createRfq(['title' => 'Packaging', 'supplier_account_ids' => [602], 'lines' => [['item_id' => 202, 'required_qty' => 5]]]);
+
+    $service->recordQuote((int) $quoted['rfq_id'], [
+        'supplier_account_id' => 601,
+        'lines' => [['rfq_line_id' => (int) $quoted['lines'][0]['line_id'], 'item_id' => 201, 'quoted_qty' => 5, 'quoted_rate' => 100]],
+    ]);
+
+    $none = $service->searchRfqs(['quotes' => 'none'], 50, 0, 'rfq_date', 'DESC');
+    assertSame(1, $none['total'], 'only the enquiry nobody answered');
+    assertSame((int) $silent['rfq_id'], (int) $none['rows'][0]['rfq_id'], 'and it is the right one');
+
+    $bySupplier = $service->searchRfqs(['supplier_account_id' => 602], 50, 0, 'rfq_date', 'DESC');
+    assertSame(1, $bySupplier['total'], 'only what that supplier was asked for');
+
+    $future = $service->searchRfqs(['from' => gmdate('Y-m-d', strtotime('+1 day'))], 50, 0, 'rfq_date', 'DESC');
+    assertSame(0, $future['total'], 'nothing was raised tomorrow');
+
+    // The tab counts answer under the search, not over the whole table.
+    $searched = $service->searchRfqs(['q' => 'Packaging'], 50, 0, 'rfq_date', 'DESC');
+    assertSame(1, array_sum($searched['status_counts']), 'the tabs count what the search found');
+});
+
+check('the summary counts the pipeline and the spread between competing quotes', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new SourcingService($ctx, $auth);
+
+    $draft = $service->createRfq(['title' => 'Draft enquiry', 'lines' => [['item_id' => 201, 'required_qty' => 1]]]);
+    assertSame('DRAFT', $draft['status'], 'the draft stays a draft');
+
+    $rfq = $service->createRfq(['title' => 'Steel', 'supplier_account_ids' => [601, 602], 'lines' => [['item_id' => 201, 'required_qty' => 100]]]);
+    $rfqLineId = (int) $rfq['lines'][0]['line_id'];
+    $service->issueRfq((int) $rfq['rfq_id']);
+
+    // 100 x 240 + 500 freight = 24500 ; 100 x 250 = 25000. The spread is 500.
+    $service->recordQuote((int) $rfq['rfq_id'], [
+        'supplier_account_id' => 601, 'freight_amount' => 500,
+        'lines' => [['rfq_line_id' => $rfqLineId, 'item_id' => 201, 'quoted_qty' => 100, 'quoted_rate' => 240]],
+    ]);
+    $service->recordQuote((int) $rfq['rfq_id'], [
+        'supplier_account_id' => 602,
+        'lines' => [['rfq_line_id' => $rfqLineId, 'item_id' => 201, 'quoted_qty' => 100, 'quoted_rate' => 250]],
+    ]);
+
+    $summary = $service->summary();
+
+    assertSame(2, $summary['counts']['total'], 'both enquiries');
+    assertSame(1, $summary['counts']['draft'], 'one draft');
+    assertSame(1, $summary['counts']['quoted'], 'one enquiry has quotations');
+    assertSame(0, $summary['counts']['awarded_this_month'], 'nothing awarded yet');
+    assertSame(2, $summary['counts']['raised_this_month'], 'both raised this month');
+
+    assertTrue($summary['values_visible'], 'the owner sees quoted values');
+    assertSame('INR', $summary['values']['currency'], 'one currency');
+    assertSame(2, $summary['values']['quotes'], 'two quotations');
+    // (24500 + 25000) / 2
+    assertSame(24750.0, (float) $summary['values']['average'], 'average landed cost');
+    assertSame(500.0, (float) $summary['values']['savings_potential'], 'the spread still on the table');
+    assertSame(1, $summary['values']['open_comparisons'], 'one enquiry is comparable and undecided');
+    assertSame(0, $summary['values']['other_currencies'], 'nothing was quoted in another currency');
+    // One month of quotations is nothing to compare against, so no percentage.
+    assertSame(null, $summary['values']['average_change_pc'], 'no invented trend');
+});
+
+check('an awarded enquiry is no longer money on the table', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new SourcingService($ctx, $auth);
+    $rfq = $service->createRfq(['supplier_account_ids' => [601, 602], 'lines' => [['item_id' => 201, 'required_qty' => 100]]]);
+    $rfqLineId = (int) $rfq['lines'][0]['line_id'];
+
+    $service->recordQuote((int) $rfq['rfq_id'], ['supplier_account_id' => 601, 'lines' => [['rfq_line_id' => $rfqLineId, 'item_id' => 201, 'quoted_qty' => 100, 'quoted_rate' => 240]]]);
+    $service->recordQuote((int) $rfq['rfq_id'], ['supplier_account_id' => 602, 'lines' => [['rfq_line_id' => $rfqLineId, 'item_id' => 201, 'quoted_qty' => 100, 'quoted_rate' => 250]]]);
+
+    assertSame(1, $service->summary()['values']['open_comparisons'], 'comparable while undecided');
+
+    $winner = (int) Db::scalar(
+        'SELECT quote_id FROM purchase_quotes WHERE rfq_id = :rfq AND supplier_account_id = 601',
+        ['rfq' => (int) $rfq['rfq_id']],
+    );
+    $service->award((int) $rfq['rfq_id'], [
+        'awards' => [['rfq_line_id' => $rfqLineId, 'quote_id' => $winner, 'qty' => 100, 'rate' => 240, 'rationale' => 'Cheapest landed.']],
+    ]);
+
+    $summary = $service->summary();
+    assertSame(0, $summary['values']['open_comparisons'], 'a decided enquiry is not an opportunity');
+    assertSame(0.0, (float) $summary['values']['savings_potential'], 'and its spread is not counted');
+    assertSame(1, $summary['counts']['awarded_this_month'], 'awarded this month, by the decision date');
+    assertSame(1, $summary['values']['comparison_ready'], 'it is still a comparison that was made');
+});
+
 echo "\nPurchase orders and receiving\n";
 
 check('creates a purchase order and totals it', function () use ($ctx, $auth) {
