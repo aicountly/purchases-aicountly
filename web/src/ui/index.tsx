@@ -411,14 +411,25 @@ export function DataTable<T>({
  * read in. The currency comes from the document, never hard-coded: Books
  * supports more than one and a schema that assumed INR would have to be undone.
  */
-export function money(value: number | string | null | undefined, currency = 'INR'): string {
+export function money(
+  value: number | string | null | undefined,
+  currency = 'INR',
+  /**
+   * Paise, or not.
+   *
+   * Two by default, because a rate and a line amount are read to the paisa. A
+   * summary figure is not — "₹12,48,500.00" above a dashboard card is two
+   * characters of noise in the widest number on the screen — so those pass 0.
+   */
+  maximumFractionDigits = 2,
+): string {
   const amount = typeof value === 'string' ? Number.parseFloat(value) : (value ?? 0)
   if (!Number.isFinite(amount)) return '—'
 
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency,
-    maximumFractionDigits: 2,
+    maximumFractionDigits,
   }).format(amount)
 }
 

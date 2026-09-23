@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
+  ArrowRight,
   Bell,
   Building2,
   CalendarDays,
@@ -212,6 +213,21 @@ export function AppShell() {
         </nav>
 
         <div className="app-shell__foot">
+          {/* The assistant this product already has, offered from the frame
+              rather than rebuilt per screen. It is a link, not a widget: the
+              answering happens on Ask Purchases, which is backed by a real
+              endpoint. */}
+          <NavLink to="/dashboard/ai-insights" className="app-shell__ai">
+            <span className="app-shell__ai-title">
+              <Sparkles size={14} aria-hidden />
+              Ask AICOUNTLY AI
+            </span>
+            <span className="app-shell__ai-copy">Create a requisition, check approvals, or analyse spend.</span>
+            <span className="app-shell__ai-cta">
+              Chat with AI <ArrowRight size={13} aria-hidden />
+            </span>
+          </NavLink>
+
           <p className="app-shell__assurance">
             <ShieldCheck size={15} aria-hidden />
             <span>No order, bill or payment leaves this product without an approval.</span>

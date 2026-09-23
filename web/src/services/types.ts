@@ -495,3 +495,103 @@ export interface MatchPolicy {
   is_default: boolean
   is_active: boolean
 }
+
+// ---------------------------------------------------------------------------
+// Requisition list screen
+//
+// The list endpoint returns the requisition row plus the counts the table
+// draws beside it — how many lines it has, and how far through approval it is.
+// They arrive with the row rather than per row: fifty requisitions on screen
+// would otherwise be a hundred and one requests.
+// ---------------------------------------------------------------------------
+
+export interface ApprovalStage {
+  stage_no: number | null
+  stage_name: string | null
+  reason_kind: string
+  reason_detail: string | null
+  status: string
+  decided_at: string | null
+}
+
+export interface RequisitionRow {
+  requisition_id: number
+  requisition_uuid: string
+  requisition_no: string
+  requisition_date: string
+  status: string
+  requester_uuid: string
+  department: string | null
+  required_by: string | null
+  priority: string
+  justification: string | null
+  exception_flags: string[] | string
+  estimated_value: string
+  created_at: string
+  /** How many lines the requisition has. */
+  line_count: number
+  /** The first line's description, used as the row's title when there is one. */
+  first_description: string | null
+  approval_stages: number
+  approval_approved: number
+  approval_rejected: number
+  approval_pending: number
+  approval_chain: ApprovalStage[]
+  /** Raised by the signed-in user. The only requester this API can name. */
+  is_mine: boolean
+}
+
+export interface RequisitionPeriodCounts {
+  from?: string
+  total: number
+  pending: number
+  approved: number
+  rejected: number
+  value: number
+}
+
+export interface RequisitionSeriesPoint {
+  bucket: string
+  total: number
+  pending: number
+  approved: number
+  rejected: number
+  value: number
+}
+
+/** The facts behind the insight banner. Counts only — the wording is ours. */
+export interface RequisitionSignals {
+  aged_pending_days: number
+  aged_pending: number
+  oldest_pending_days: number
+  high_value_pending: number
+  high_value_amount: number
+  high_value_threshold: number
+  due_soon_days: number
+  due_soon: number
+  overdue: number
+  stalled_drafts: number
+  stalled_draft_days: number
+  rejected_30d: number
+  missing_department: number
+  busiest_department: { department: string; pending: number } | null
+}
+
+export interface RequisitionSummary {
+  totals: {
+    total: number
+    draft: number
+    pending: number
+    approved: number
+    rejected: number
+    cancelled: number
+    estimated_value: number
+    pending_value: number
+  }
+  month: RequisitionPeriodCounts
+  previous_month: RequisitionPeriodCounts
+  today: { date: string; raised: number; pending: number }
+  series: RequisitionSeriesPoint[]
+  departments: { department: string; total: number; pending: number }[]
+  signals: RequisitionSignals
+}

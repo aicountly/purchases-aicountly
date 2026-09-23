@@ -73,6 +73,10 @@ final class Routes
         $router->get('v1/requisitions', [RequisitionsController::class, 'index']);
         $router->post('v1/requisitions', [RequisitionsController::class, 'create']);
         $router->get('v1/requisitions/replenishment', [RequisitionsController::class, 'replenishment']);
+        // Declared before `{id}`: the router takes the first pattern that
+        // matches, and `summary` is one segment exactly like an id is.
+        $router->get('v1/requisitions/summary', [RequisitionsController::class, 'summary']);
+        $router->get('v1/requisitions/export', [RequisitionsController::class, 'export']);
         $router->get('v1/requisitions/{id}', [RequisitionsController::class, 'show']);
         $router->post('v1/requisitions/{id}/submit', [RequisitionsController::class, 'submit']);
         $router->post('v1/requisitions/{id}/approve', [RequisitionsController::class, 'approve']);

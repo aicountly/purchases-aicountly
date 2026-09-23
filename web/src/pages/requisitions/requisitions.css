@@ -1,0 +1,1283 @@
+/*
+ * Procurement → Requisitions.
+ *
+ * Scoped to .requisitions-workspace, exactly as Access is scoped to
+ * .access-workspace and the dashboards to .purchase-workspace, and for the same
+ * reason: the fleet shares the tokens in index.css, and a product that redefines
+ * --accent globally changes every other product's buttons the next time the
+ * shell is shared. Everything here is a local token layered over those.
+ *
+ * The palette is the Access screen's, deliberately. Two upgraded screens in one
+ * product that are each a different indigo is worse than either of them being
+ * the wrong indigo.
+ *
+ * Light only, like the rest of the workspace. This screen is read next to the
+ * dashboards.
+ */
+
+.requisitions-workspace,
+.rq-portal {
+  --rq-bg: #f8faff;
+  --rq-surface: #ffffff;
+  --rq-surface-soft: #f9faff;
+  --rq-border: #e7eaf3;
+  --rq-border-strong: #d8deec;
+
+  --rq-text: #101534;
+  --rq-text-secondary: #53607d;
+  --rq-text-muted: #6b768f;
+
+  --rq-primary: #4c3fe4;
+  --rq-primary-hover: #3f32d6;
+  --rq-primary-soft: #f0efff;
+
+  --rq-blue: #2f5fd8;
+  --rq-blue-soft: #eef4ff;
+
+  --rq-green: #0f7d5b;
+  --rq-green-soft: #eafaf4;
+
+  --rq-violet: #6d3fd1;
+  --rq-violet-soft: #f5efff;
+
+  --rq-amber: #8a5300;
+  --rq-amber-soft: #fff7e8;
+
+  --rq-danger: #b42318;
+  --rq-danger-soft: #fff0f3;
+
+  --rq-radius-sm: 10px;
+  --rq-radius-md: 14px;
+  --rq-radius-lg: 18px;
+
+  --rq-shadow-xs: 0 1px 2px rgb(25 32 56 / 4%);
+  --rq-shadow-sm: 0 6px 18px rgb(25 32 56 / 6%);
+  --rq-shadow-md: 0 16px 40px rgb(47 55 94 / 9%);
+
+  color: var(--rq-text);
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.requisitions-workspace {
+  min-width: 0;
+  min-height: 100%;
+  padding: clamp(16px, 1.6vw, 26px) clamp(16px, 2vw, 28px) 40px;
+  background:
+    radial-gradient(circle at 72% 2%, rgb(91 91 255 / 9%), transparent 26%),
+    radial-gradient(circle at 93% 15%, rgb(76 188 255 / 8%), transparent 24%),
+    var(--rq-bg);
+}
+
+.requisitions-workspace *,
+.rq-portal *,
+.requisitions-workspace *::before,
+.requisitions-workspace *::after { box-sizing: border-box; }
+
+.requisitions-workspace button,
+.requisitions-workspace input,
+.requisitions-workspace select,
+.requisitions-workspace textarea,
+.rq-portal button,
+.rq-portal input,
+.rq-portal textarea { font: inherit; }
+
+.requisitions-workspace button,
+.rq-portal button { cursor: pointer; }
+
+.requisitions-workspace :focus-visible,
+.rq-portal :focus-visible {
+  outline: 3px solid var(--rq-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.rq-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.rq-muted { color: var(--rq-text-muted); }
+.rq-nowrap { white-space: nowrap; }
+
+/* --- Header --------------------------------------------------------------- */
+
+.rq-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.rq-header__title { display: flex; align-items: center; gap: 13px; min-width: 0; }
+
+.rq-header__icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--rq-primary);
+  background: linear-gradient(145deg, #eef2ff, #e3e6ff);
+}
+
+.rq-header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+}
+
+.rq-header p {
+  margin: 4px 0 0;
+  color: var(--rq-text-muted);
+  font-size: 12.5px;
+}
+
+.rq-header__actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+
+/* --- Buttons -------------------------------------------------------------- */
+
+.rq-btn {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 15px;
+  border: 1px solid transparent;
+  border-radius: var(--rq-radius-sm);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: transform 0.17s ease, box-shadow 0.17s ease, border-color 0.17s ease, background 0.17s ease;
+}
+
+.rq-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.rq-btn:disabled { cursor: not-allowed; opacity: 0.55; transform: none; }
+
+.rq-btn--primary {
+  border-color: var(--rq-primary);
+  /* The deep indigo the designs lead with. Dark enough that white text on it
+     clears AA comfortably, which a mid-indigo would not. */
+  background: linear-gradient(135deg, #5a4dfa, #3a2fbe);
+  box-shadow: 0 7px 18px rgb(75 58 227 / 20%);
+  color: #fff;
+}
+
+.rq-btn--primary:hover:not(:disabled) { box-shadow: 0 9px 24px rgb(75 58 227 / 27%); }
+
+.rq-btn--secondary {
+  border-color: #cfd5e7;
+  background: #fff;
+  color: #3d35c4;
+  box-shadow: var(--rq-shadow-xs);
+}
+
+.rq-btn--secondary:hover:not(:disabled) { border-color: #9b98f5; background: #fafaff; }
+
+.rq-btn--danger {
+  border-color: rgb(180 35 24 / 30%);
+  background: var(--rq-danger-soft);
+  color: var(--rq-danger);
+}
+
+.rq-btn--danger:hover:not(:disabled) { border-color: var(--rq-danger); }
+
+.rq-btn--quiet {
+  min-height: 34px;
+  padding: 0 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--rq-text-secondary);
+  font-size: 12px;
+}
+
+.rq-btn--quiet:hover:not(:disabled) { background: #f2f3fa; color: var(--rq-text); }
+
+.rq-btn--sm { min-height: 32px; padding: 0 11px; font-size: 11.5px; border-radius: 8px; }
+
+.rq-textbtn {
+  border: 0;
+  background: transparent;
+  color: var(--rq-primary);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.rq-textbtn:hover { background: var(--rq-primary-soft); }
+
+/* --- KPI cards ------------------------------------------------------------ */
+
+.rq-kpis {
+  display: grid;
+  /* Four counts and one amount. The amount gets the wider column because
+     "₹12,48,500" is twice the width of "12" and wrapping a money figure is the
+     one thing this row must never do. */
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(210px, 1.2fr);
+  gap: 13px;
+  margin-bottom: 15px;
+}
+
+.rq-kpi {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 126px;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px 16px;
+  border: 1px solid rgb(222 227 241 / 88%);
+  border-radius: 15px;
+  background: rgb(255 255 255 / 78%);
+  box-shadow: 0 5px 16px rgb(31 42 82 / 3.5%);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.rq-kpi:hover { transform: translateY(-2px); box-shadow: var(--rq-shadow-sm); }
+
+.rq-kpi--blue   { background: linear-gradient(135deg, rgb(239 244 255 / 95%), rgb(255 255 255 / 95%)); }
+.rq-kpi--amber  { background: linear-gradient(135deg, rgb(255 247 232 / 95%), rgb(255 255 255 / 95%)); }
+.rq-kpi--green  { background: linear-gradient(135deg, rgb(234 250 244 / 95%), rgb(255 255 255 / 95%)); }
+.rq-kpi--red    { background: linear-gradient(135deg, rgb(255 240 243 / 95%), rgb(255 255 255 / 95%)); }
+.rq-kpi--violet { background: linear-gradient(135deg, rgb(246 240 255 / 96%), rgb(255 255 255 / 96%)); }
+
+.rq-kpi.is-selected { border-color: rgb(76 63 228 / 45%); box-shadow: 0 0 0 1px rgb(76 63 228 / 18%), var(--rq-shadow-sm); }
+
+/*
+ * The whole card filters the table.
+ *
+ * A transparent button stretched over the card, under the content: the card
+ * keeps its layout, the click target is the card, and a keyboard still gets one
+ * focusable control with a name rather than a <div> with an onClick.
+ */
+.rq-kpi__action {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 0;
+  background: transparent;
+  border-radius: inherit;
+}
+
+.rq-kpi__top { display: flex; align-items: center; gap: 9px; }
+
+.rq-kpi__icon {
+  display: grid;
+  width: 33px;
+  height: 33px;
+  flex: 0 0 33px;
+  place-items: center;
+  border-radius: 10px;
+  background: rgb(83 79 246 / 10%);
+  color: var(--rq-primary);
+}
+
+.rq-kpi--amber  .rq-kpi__icon { background: rgb(180 108 0 / 12%); color: var(--rq-amber); }
+.rq-kpi--green  .rq-kpi__icon { background: rgb(15 125 91 / 10%); color: var(--rq-green); }
+.rq-kpi--red    .rq-kpi__icon { background: rgb(180 35 24 / 10%); color: var(--rq-danger); }
+.rq-kpi--violet .rq-kpi__icon { background: rgb(109 63 209 / 10%); color: var(--rq-violet); }
+
+.rq-kpi__label {
+  color: var(--rq-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 0;
+}
+
+.rq-kpi__value {
+  margin-top: 11px;
+  font-size: 23px;
+  font-weight: 760;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The widest figure on the row, and the one that must not wrap. */
+.rq-kpi__money { font-size: 21px; }
+
+.rq-kpi__skeleton { display: block; width: 62px; height: 22px; margin-top: 11px; border-radius: 6px; }
+
+.rq-kpi__foot {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 12px;
+  font-size: 10.5px;
+  min-width: 0;
+}
+
+.rq-kpi__trend { font-weight: 700; white-space: nowrap; }
+.rq-kpi__trend--positive { color: var(--rq-green); }
+.rq-kpi__trend--negative { color: var(--rq-danger); }
+.rq-kpi__trend--quiet { color: var(--rq-text-secondary); }
+
+.rq-kpi__comparison {
+  min-width: 0;
+  color: var(--rq-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rq-sparkline {
+  /* Small, and the first thing to give up room. Five cards across a 1150px
+     content column leave about 180px each, and the words are worth more than
+     the line: the trend and what it is compared with must never truncate to
+     make space for a chart with no axis. */
+  width: 100%;
+  max-width: 50px;
+  height: 20px;
+  flex: 0 1 50px;
+  overflow: visible;
+  color: rgb(76 63 228 / 45%);
+}
+
+.rq-kpi--amber  .rq-sparkline { color: rgb(180 108 0 / 45%); }
+.rq-kpi--green  .rq-sparkline { color: rgb(15 125 91 / 42%); }
+.rq-kpi--red    .rq-sparkline { color: rgb(180 35 24 / 40%); }
+.rq-kpi--violet .rq-sparkline { color: rgb(109 63 209 / 42%); }
+
+.rq-sparkline path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* --- Insight banner ------------------------------------------------------- */
+
+.rq-insight {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 16px;
+  overflow: hidden;
+  padding: 15px 18px;
+  margin-bottom: 15px;
+  border: 1px solid #dee4ff;
+  border-radius: 15px;
+  background:
+    radial-gradient(circle at 82% 50%, rgb(129 140 248 / 16%), transparent 38%),
+    linear-gradient(105deg, #f4f7ff 0%, #f9f6ff 52%, #eef7ff 100%);
+}
+
+.rq-insight--positive { border-color: #d6eee4; background: linear-gradient(105deg, #f2fbf7 0%, #f7fbff 100%); }
+
+.rq-insight__mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--rq-violet);
+  background: rgb(124 58 237 / 9%);
+}
+
+.rq-insight--positive .rq-insight__mark { color: var(--rq-green); background: rgb(15 125 91 / 9%); }
+
+.rq-insight__copy { min-width: 0; }
+
+.rq-insight__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #3730a3;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rq-insight--positive .rq-insight__eyebrow { color: var(--rq-green); }
+
+.rq-insight__position {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgb(16 21 52 / 7%);
+  color: var(--rq-text-secondary);
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.rq-insight__copy h2 {
+  margin: 4px 0 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.rq-insight__copy p { margin: 3px 0 0; color: var(--rq-text-secondary); font-size: 12px; }
+
+.rq-insight__actions { display: flex; align-items: center; gap: 8px; }
+
+.rq-insight__stepper { display: inline-flex; gap: 4px; }
+
+.rq-insight__stepper button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid rgb(79 70 229 / 16%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 84%);
+  color: var(--rq-text-secondary);
+}
+
+.rq-insight__stepper button:hover { color: var(--rq-primary); border-color: rgb(79 70 229 / 40%); }
+
+.rq-insight__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 15px;
+  border: 1px solid rgb(79 70 229 / 18%);
+  border-radius: var(--rq-radius-sm);
+  background: rgb(255 255 255 / 88%);
+  color: #4338ca;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background 0.17s ease, border-color 0.17s ease;
+}
+
+.rq-insight__cta:hover { background: #fff; border-color: rgb(79 70 229 / 45%); }
+
+/* --- Filters -------------------------------------------------------------- */
+
+.rq-filters { margin-bottom: 10px; }
+
+.rq-filters__bar {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(260px, 1.8fr) minmax(140px, 0.6fr) minmax(150px, 0.65fr) minmax(200px, 0.9fr) auto;
+  gap: 9px;
+  align-items: center;
+}
+
+.rq-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--rq-border-strong);
+  border-radius: 11px;
+  background: #fff;
+  color: var(--rq-text-muted);
+  box-shadow: var(--rq-shadow-xs);
+  min-width: 0;
+}
+
+.rq-search:focus-within { border-color: #a5b4fc; box-shadow: 0 0 0 3px rgb(99 102 241 / 10%); }
+
+.rq-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--rq-text);
+  font-size: 13px;
+}
+
+/* The browser's own clear button on a search input is a second X next to the
+   keyboard hint and does the same thing the chip underneath already offers. */
+.rq-search input::-webkit-search-cancel-button { appearance: none; }
+
+.rq-search__hint {
+  padding: 2px 7px;
+  border: 1px solid var(--rq-border);
+  border-radius: 6px;
+  background: var(--rq-surface-soft);
+  color: var(--rq-text-muted);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rq-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 42px;
+  min-width: 0;
+  padding: 0 12px;
+  border: 1px solid var(--rq-border-strong);
+  border-radius: 11px;
+  background: #fff;
+  color: var(--rq-text);
+  font-size: 12.5px;
+  outline: none;
+  box-shadow: var(--rq-shadow-xs);
+  transition: border-color 0.17s ease, box-shadow 0.17s ease;
+}
+
+.rq-control:focus { border-color: #a5b4fc; box-shadow: 0 0 0 3px rgb(99 102 241 / 10%); }
+.rq-control--button { justify-content: flex-start; font-weight: 650; white-space: nowrap; }
+.rq-control--button span { overflow: hidden; text-overflow: ellipsis; }
+.rq-control--button:hover { border-color: #9b98f5; }
+.rq-control--button.is-set { border-color: rgb(76 63 228 / 45%); color: var(--rq-primary); background: var(--rq-primary-soft); }
+.rq-control--button svg { flex: 0 0 auto; color: var(--rq-text-muted); }
+.rq-control--button.is-set svg { color: var(--rq-primary); }
+
+.rq-control__badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--rq-primary);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.rq-daterange { display: grid; gap: 10px; min-width: 232px; }
+.rq-daterange label { display: grid; gap: 4px; }
+.rq-daterange span { color: var(--rq-text-secondary); font-size: 11.5px; font-weight: 700; }
+
+.rq-daterange input {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--rq-border-strong);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 12.5px;
+}
+
+.rq-daterange__actions { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+
+/*
+ * More filters, anchored under its own button.
+ *
+ * Absolute inside the toolbar rather than portaled: it is not inside a
+ * scrolling table, so it travels with the page correctly, and keeping it in the
+ * DOM where it belongs keeps its controls in the natural tab order.
+ */
+.rq-more {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  display: grid;
+  gap: 12px;
+  width: min(330px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--rq-border);
+  border-radius: var(--rq-radius-md);
+  background: #fff;
+  box-shadow: var(--rq-shadow-md);
+}
+
+.rq-field { display: grid; gap: 5px; min-width: 0; }
+.rq-field > span { color: var(--rq-text-secondary); font-size: 11.5px; font-weight: 700; }
+
+.rq-field select,
+.rq-field input,
+.rq-field textarea {
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--rq-border-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--rq-text);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.rq-field textarea { resize: vertical; }
+.rq-field select:focus,
+.rq-field input:focus,
+.rq-field textarea:focus { border-color: #a5b4fc; box-shadow: 0 0 0 3px rgb(99 102 241 / 10%); }
+
+.rq-field__pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+.rq-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--rq-text-secondary); }
+.rq-check input { width: 15px; height: 15px; accent-color: var(--rq-primary); }
+
+.rq-more__actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+/* --- Active filter chips -------------------------------------------------- */
+
+.rq-chips { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 10px; }
+
+.rq-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid rgb(76 63 228 / 16%);
+  border-radius: 999px;
+  background: var(--rq-primary-soft);
+  color: #3d35c4;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.rq-chip button {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(76 63 228 / 12%);
+  color: inherit;
+}
+
+.rq-chip button:hover { background: rgb(76 63 228 / 26%); }
+
+/* --- Tabs ----------------------------------------------------------------- */
+
+.rq-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 12px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.rq-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 0 13px;
+  border: 0;
+  background: transparent;
+  color: var(--rq-text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.rq-tab svg { color: var(--rq-text-muted); }
+.rq-tab:hover { color: var(--rq-primary); }
+.rq-tab:hover svg { color: var(--rq-primary); }
+.rq-tab.is-active { color: var(--rq-primary); font-weight: 750; }
+.rq-tab.is-active svg { color: currentcolor; }
+
+/* The underline, drawn in the accent each tab means rather than one indigo for
+   all five: the tab that says Rejected should not be the colour of Approved. */
+.rq-tab.is-active::after {
+  content: '';
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed);
+}
+
+.rq-tab--pending.is-active  { color: var(--rq-amber); }
+.rq-tab--approved.is-active { color: var(--rq-green); }
+.rq-tab--rejected.is-active { color: var(--rq-danger); }
+.rq-tab--pending.is-active::after  { background: linear-gradient(90deg, #d97706, #f59e0b); }
+.rq-tab--approved.is-active::after { background: linear-gradient(90deg, #0f7d5b, #10b981); }
+.rq-tab--rejected.is-active::after { background: linear-gradient(90deg, #b42318, #ef4444); }
+
+.rq-tab__count {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgb(16 21 52 / 6%);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rq-tab.is-active .rq-tab__count { background: rgb(76 63 228 / 12%); }
+.rq-tab--pending.is-active  .rq-tab__count { background: rgb(180 108 0 / 14%); }
+.rq-tab--approved.is-active .rq-tab__count { background: rgb(15 125 91 / 13%); }
+.rq-tab--rejected.is-active .rq-tab__count { background: rgb(180 35 24 / 12%); }
+
+/* --- Bulk bar ------------------------------------------------------------- */
+
+.rq-bulk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  border: 1px solid rgb(76 63 228 / 22%);
+  border-radius: var(--rq-radius-md);
+  background: var(--rq-primary-soft);
+  color: #3d35c4;
+  font-size: 12.5px;
+}
+
+.rq-bulk__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* --- Table ---------------------------------------------------------------- */
+
+.rq-table-card {
+  overflow: hidden;
+  border: 1px solid var(--rq-border);
+  border-radius: var(--rq-radius-lg);
+  background: var(--rq-surface);
+  box-shadow: var(--rq-shadow-sm);
+}
+
+.rq-table-scroll { width: 100%; overflow-x: auto; }
+
+.rq-table {
+  width: 100%;
+  /* Under this the columns start colliding rather than compressing, so the
+     card scrolls sideways instead. Measured against the widest real row: a
+     long title, a long department and a six-digit amount. */
+  min-width: 980px;
+  border-collapse: collapse;
+}
+
+.rq-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 44px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--rq-border);
+  background: linear-gradient(180deg, #fbfcfe, #f6f8fc);
+  color: var(--rq-text-secondary);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.rq-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #eef1f6;
+  color: #344054;
+  font-size: 12.5px;
+  vertical-align: middle;
+}
+
+.rq-table tbody tr { transition: background 0.15s ease; }
+.rq-table tbody tr:hover { background: #fafbff; }
+.rq-table tbody tr.is-selected { background: var(--rq-primary-soft); }
+.rq-table tbody tr:last-child td { border-bottom: 0; }
+
+.rq-table__pick { width: 40px; }
+.rq-table__pick input { width: 15px; height: 15px; accent-color: var(--rq-primary); }
+.rq-table__num { text-align: right; }
+.rq-table__actions { width: 48px; text-align: right; }
+
+.rq-number {
+  color: #2f5fd8;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.rq-number:hover { text-decoration: underline; }
+
+/*
+ * The title column is the elastic one.
+ *
+ * `width: 100%` with `max-width: 0` is the table-layout idiom for "take
+ * whatever the other nine columns leave, and no more": the cell can then be
+ * given an ellipsis, which a table cell otherwise refuses. Nine columns of
+ * fixed content plus one that breathes is what makes this table fit a 1366px
+ * laptop without scrolling sideways AND fill a 1920px desktop without a band of
+ * dead space down the right.
+ */
+.rq-table__title { width: 100%; max-width: 0; }
+
+.rq-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.rq-title strong {
+  color: var(--rq-text);
+  font-size: 12.5px;
+  font-weight: 650;
+  /* One line. A requisition described in a paragraph would otherwise make its
+     row four times the height of every other row in the table. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rq-title span {
+  color: var(--rq-text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rq-dept {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  min-height: 23px;
+  padding: 2px 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* Six tints, assigned by a hash of the department's name — see
+   `departmentTone`. Free text has no master to colour from, so the colour has
+   to come from the text itself or it changes on every render. */
+.rq-dept--0 { color: #6d28d9; background: #f3e8ff; }
+.rq-dept--1 { color: #1d4ed8; background: #e7efff; }
+.rq-dept--2 { color: #0f7d5b; background: #e3f8f0; }
+.rq-dept--3 { color: #8a5300; background: #fff3dd; }
+.rq-dept--4 { color: #b42318; background: #ffe9ea; }
+.rq-dept--5 { color: #475467; background: #eef1f6; }
+
+.rq-user { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; min-width: 0; }
+
+.rq-avatar {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  place-items: center;
+  border-radius: 50%;
+  background: #e7eaf3;
+  color: var(--rq-text-muted);
+  font-size: 9.5px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+
+.rq-avatar--me { background: linear-gradient(135deg, #6f8dfa, #5a4dfa); color: #fff; }
+
+.rq-user__name { overflow: hidden; text-overflow: ellipsis; max-width: 96px; }
+
+.rq-user__you {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--rq-green-soft);
+  color: var(--rq-green);
+  font-size: 9.5px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.rq-amount { color: var(--rq-text); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.rq-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 2px 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rq-status--draft    { color: #475467; background: #eef1f6; }
+.rq-status--pending  { color: var(--rq-amber); background: var(--rq-amber-soft); }
+.rq-status--approved { color: var(--rq-green); background: var(--rq-green-soft); }
+.rq-status--rejected { color: var(--rq-danger); background: var(--rq-danger-soft); }
+.rq-status--neutral  { color: var(--rq-text-secondary); background: #f2f4f8; }
+
+.rq-approval {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 76px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+}
+
+.rq-approval:hover { background: #f4f6fb; border-color: var(--rq-border); }
+
+.rq-approval__count { color: var(--rq-text-secondary); font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.rq-approval__track {
+  display: block;
+  width: 68px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8ebf2;
+}
+
+.rq-approval__value { display: block; height: 100%; border-radius: inherit; transition: width 0.2s ease; }
+.rq-approval__value--pending  { background: #f59e0b; }
+.rq-approval__value--approved { background: #10b981; }
+.rq-approval__value--rejected { background: #ef4444; }
+.rq-approval__value--draft,
+.rq-approval__value--neutral  { background: #cbd2e0; }
+
+.rq-table-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  min-height: 58px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--rq-border);
+  color: var(--rq-text-muted);
+  font-size: 11.5px;
+}
+
+.rq-pager { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.rq-pager button {
+  min-width: 33px;
+  height: 33px;
+  padding: 0 8px;
+  border: 1px solid var(--rq-border-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--rq-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  transition: border-color 0.17s ease, color 0.17s ease;
+}
+
+.rq-pager button:hover:not(:disabled) { border-color: #9b98f5; color: var(--rq-primary); }
+.rq-pager button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.rq-pager button.is-active {
+  border-color: transparent;
+  background: linear-gradient(135deg, #5a4dfa, #3a2fbe);
+  color: #fff;
+  font-weight: 700;
+}
+
+.rq-pager select {
+  height: 33px;
+  margin-left: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--rq-border-strong);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--rq-text-secondary);
+  font-size: 11.5px;
+}
+
+/* --- States --------------------------------------------------------------- */
+
+.rq-state { padding: 46px 24px 50px; text-align: center; }
+
+.rq-state__visual {
+  display: grid;
+  width: 60px;
+  height: 60px;
+  margin: 0 auto 16px;
+  place-items: center;
+  border-radius: 18px;
+  background: var(--rq-primary-soft);
+  color: var(--rq-primary);
+}
+
+.rq-state__visual--danger { background: var(--rq-danger-soft); color: var(--rq-danger); }
+
+.rq-state h3 { margin: 0 0 6px; font-size: 16px; font-weight: 700; }
+.rq-state p { margin: 0 auto; max-width: 420px; color: var(--rq-text-secondary); font-size: 12.5px; }
+.rq-state__actions { display: flex; align-items: center; justify-content: center; gap: 9px; flex-wrap: wrap; margin-top: 18px; }
+
+.rq-state__note {
+  max-width: 460px;
+  margin: 18px auto 0;
+  padding: 9px 12px;
+  border: 1px solid var(--rq-border);
+  border-radius: var(--rq-radius-sm);
+  background: var(--rq-surface-soft);
+  color: var(--rq-text-muted);
+  font-size: 11.5px;
+}
+
+.rq-skeleton {
+  display: inline-block;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #eef1f7 25%, #f7f9fc 37%, #eef1f7 63%);
+  background-size: 400% 100%;
+  animation: rq-shimmer 1.4s ease infinite;
+}
+
+@keyframes rq-shimmer {
+  from { background-position: 100% 50%; }
+  to   { background-position: 0 50%; }
+}
+
+.rq-skeleton-rows { padding: 8px 16px 16px; }
+
+.rq-skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  /* The height of a real row, so nothing moves when the rows arrive. */
+  height: 53px;
+  border-bottom: 1px solid #eef1f6;
+}
+
+.rq-skeleton-row:last-child { border-bottom: 0; }
+
+/* --- Row menu and popovers ------------------------------------------------ */
+
+.rq-menu { display: inline-flex; }
+
+.rq-menu__trigger {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rq-text-secondary);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.rq-menu__trigger:hover { background: #eef1f6; color: var(--rq-text); }
+
+.rq-portal {
+  position: fixed;
+  z-index: 60;
+}
+
+.rq-menu__list {
+  min-width: 206px;
+  padding: 6px;
+  border: 1px solid var(--rq-border);
+  border-radius: var(--rq-radius-md);
+  background: #fff;
+  box-shadow: var(--rq-shadow-md);
+}
+
+.rq-menu__item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--rq-text);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.rq-menu__item:hover:not(:disabled) { background: var(--rq-primary-soft); color: var(--rq-primary); }
+.rq-menu__item:disabled { opacity: 0.45; cursor: not-allowed; }
+.rq-menu__item--danger { color: var(--rq-danger); }
+.rq-menu__item--danger:hover:not(:disabled) { background: var(--rq-danger-soft); color: var(--rq-danger); }
+.rq-menu__sep { height: 1px; margin: 5px 4px; background: var(--rq-border); }
+
+.rq-popover {
+  width: 272px;
+  padding: 14px;
+  border: 1px solid var(--rq-border);
+  border-radius: var(--rq-radius-md);
+  background: #fff;
+  box-shadow: var(--rq-shadow-md);
+}
+
+.rq-popover__trigger { border: 0; background: transparent; padding: 0; }
+.rq-popover__title { margin: 0 0 10px; font-size: 12px; font-weight: 750; color: var(--rq-text-secondary); }
+
+.rq-stages { display: grid; gap: 11px; margin: 0; padding: 0; list-style: none; }
+.rq-stages li { display: flex; gap: 9px; }
+
+.rq-stages__dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #cbd2e0;
+}
+
+.rq-stages__dot--approved { background: #10b981; }
+.rq-stages__dot--pending  { background: #f59e0b; }
+.rq-stages__dot--rejected { background: #ef4444; }
+
+.rq-stages__body { display: grid; gap: 2px; min-width: 0; }
+.rq-stages__body strong { font-size: 12px; font-weight: 650; }
+.rq-stages__body span { color: var(--rq-text-muted); font-size: 11px; }
+
+/* --- Dialog --------------------------------------------------------------- */
+
+.rq-scrim {
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(16 21 52 / 38%);
+  backdrop-filter: blur(2px);
+}
+
+.rq-dialog {
+  width: min(440px, 100%);
+  padding: 20px;
+  border-radius: var(--rq-radius-lg);
+  background: #fff;
+  box-shadow: var(--rq-shadow-md);
+}
+
+.rq-dialog h2 { margin: 0 0 10px; font-size: 16px; font-weight: 750; }
+.rq-dialog__body { display: grid; gap: 11px; color: var(--rq-text-secondary); font-size: 12.5px; }
+.rq-dialog__body p { margin: 0; }
+
+.rq-dialog__list {
+  padding: 8px 10px;
+  border-radius: var(--rq-radius-sm);
+  background: var(--rq-surface-soft);
+  color: var(--rq-text);
+  font-size: 12px;
+  font-weight: 650;
+  /* Twenty numbers in a confirm dialog should scroll, not push the buttons off
+     the bottom of a laptop screen. */
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.rq-dialog__actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+
+/* --- Toasts --------------------------------------------------------------- */
+
+.rq-toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 80;
+  display: grid;
+  gap: 9px;
+  width: min(360px, calc(100vw - 40px));
+}
+
+.rq-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 13px;
+  border: 1px solid var(--rq-border);
+  border-radius: var(--rq-radius-md);
+  background: #fff;
+  box-shadow: var(--rq-shadow-md);
+  font-size: 12.5px;
+}
+
+.rq-toast--success { border-color: rgb(15 125 91 / 30%); }
+.rq-toast--success > svg { color: var(--rq-green); }
+.rq-toast--danger { border-color: rgb(180 35 24 / 30%); }
+.rq-toast--danger > svg { color: var(--rq-danger); }
+.rq-toast strong { display: block; font-size: 12.5px; }
+.rq-toast p { margin: 3px 0 0; color: var(--rq-text-secondary); font-size: 11.5px; }
+
+.rq-toast__dismiss {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--rq-text-muted);
+  padding: 2px;
+  border-radius: 5px;
+}
+
+.rq-toast__dismiss:hover { background: #f2f4f8; color: var(--rq-text); }
+
+/* ------------------------------------------------------------------ *
+ * Narrower than a desktop
+ *
+ * The table keeps its width and scrolls sideways rather than reflowing into
+ * cards: ten columns of one record read as a table, and a stack of ten labelled
+ * values per requisition is not easier to scan — it is the same data, four
+ * times taller.
+ * ------------------------------------------------------------------ */
+
+@media (max-width: 1320px) {
+  .rq-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rq-filters__bar { grid-template-columns: minmax(240px, 1.6fr) minmax(140px, 0.6fr) minmax(150px, 0.6fr) auto; }
+  .rq-filters__bar > .rq-control--button:nth-of-type(1) { grid-column: 3 / 5; }
+}
+
+@media (max-width: 1100px) {
+  .rq-filters__bar { grid-template-columns: 1fr 1fr; }
+  .rq-search { grid-column: 1 / -1; }
+  .rq-filters__bar > .rq-control--button:nth-of-type(1) { grid-column: auto; }
+}
+
+@media (max-width: 860px) {
+  .rq-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  .rq-insight { grid-template-columns: auto 1fr; }
+  .rq-insight__actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
+@media (max-width: 620px) {
+  .requisitions-workspace { padding: 14px 12px 32px; }
+
+  .rq-header { align-items: flex-start; }
+  .rq-header__actions { width: 100%; }
+  .rq-header__actions .rq-btn--primary { flex: 1; }
+
+  .rq-kpis { grid-template-columns: 1fr; }
+  .rq-filters__bar { grid-template-columns: 1fr; }
+  .rq-insight { grid-template-columns: 1fr; }
+  .rq-search__hint { display: none; }
+  .rq-table-foot { flex-direction: column; align-items: flex-start; }
+}
+
+/*
+ * Motion is decoration here, and some people are made ill by it.
+ *
+ * Nothing on this screen depends on an animation to be understood — the
+ * skeleton still occupies the space, the bar is still the right width — so all
+ * of it goes rather than being reduced.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .requisitions-workspace *,
+  .requisitions-workspace *::before,
+  .requisitions-workspace *::after,
+  .rq-portal *,
+  .rq-portal *::before,
+  .rq-portal *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+
+  .rq-btn:hover:not(:disabled),
+  .rq-kpi:hover { transform: none; }
+}

@@ -167,6 +167,66 @@
   margin: 0.6rem 0.75rem;
 }
 
+
+/*
+ * The assistant, offered where the sidebar already ends.
+ *
+ * It goes to `/dashboard/ai-insights` — the Ask Purchases screen this product
+ * already has, backed by a real endpoint. A chat bubble here with a scripted
+ * reply inside it would be a lie about a capability, and this product has one
+ * that works.
+ */
+.app-shell__ai {
+  display: block;
+  /* Compact on purpose. The navigation above it scrolls, so every pixel this
+     card takes is a pixel of the product somebody has to scroll to reach on a
+     1080p screen. */
+  padding: 0.55rem 0.7rem 0.6rem;
+  margin-bottom: 0.7rem;
+  border: 1px solid #e2e0fb;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 88% 12%, rgb(124 58 237 / 10%), transparent 42%),
+    linear-gradient(135deg, #f4f4ff, #fbf7ff);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.app-shell__ai:hover {
+  border-color: #b7b2f8;
+  box-shadow: 0 6px 16px rgb(76 63 228 / 10%);
+  text-decoration: none;
+}
+
+.app-shell__ai-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #3d35c4;
+}
+
+.app-shell__ai-title svg { flex-shrink: 0; }
+
+.app-shell__ai-copy {
+  display: block;
+  margin: 0.2rem 0 0.4rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--shell-muted);
+}
+
+.app-shell__ai-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #4338ca;
+}
+
 .app-shell__foot {
   padding: 0.85rem 1rem 1.1rem;
   border-top: 1px solid var(--shell-border);
@@ -404,12 +464,12 @@
 /*
  * Page padding, except for the screens that paint their own.
  *
- * `.purchase-workspace`, `.access-workspace` and `.purchase-profile-page`
- * paint their own background to the edges and bring their own padding, so
- * padding here would leave a border of the wrong colour around them. Every
- * other page gets the spacing this redesign gives it.
+ * `.purchase-workspace`, `.access-workspace`, `.requisitions-workspace` and
+ * `.purchase-profile-page` paint their own background to the edges and bring
+ * their own padding, so padding here would leave a border of the wrong colour
+ * around them. Every other page gets the spacing this redesign gives it.
  */
-.app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page) {
+.app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.requisitions-workspace):not(.purchase-profile-page) {
   padding: 1.5rem 1.25rem 3rem;
 }
 
@@ -465,7 +525,7 @@
   .app-shell__header { flex-wrap: wrap; padding: 0.55rem 0.85rem; }
   .app-shell__scope { order: 3; width: 100%; }
   .app-shell__pill { max-width: 100%; padding-inline: 0.4rem; }
-  .app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page) { padding: 1.1rem 0.85rem 3rem; }
+  .app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.requisitions-workspace):not(.purchase-profile-page) { padding: 1.1rem 0.85rem 3rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

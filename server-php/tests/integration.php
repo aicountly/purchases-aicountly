@@ -342,6 +342,151 @@ check('rejecting requires a reason', function () use ($ctx, $auth) {
     );
 });
 
+// The list screen reads three things the record alone does not answer: how many
+// lines a requisition has, how far through approval it is, and how many there
+// are in total. All three are new, and all three are counted in SQL.
+
+check('the list carries the counts its table draws', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new RequisitionService($ctx, $auth);
+
+    $laptops = $service->create([
+        'department' => 'IT',
+        'emergency'  => true,
+        'lines' => [
+            ['item_id' => 201, 'description' => 'Office laptops', 'required_qty' => 5, 'estimated_rate' => 90000],
+            ['item_id' => 202, 'description' => 'Docking stations', 'required_qty' => 5, 'estimated_rate' => 6000],
+        ],
+    ]);
+    $service->submit((int) $laptops['requisition_id']);
+    $service->create([
+        'department' => 'Admin',
+        'lines' => [['item_id' => 203, 'description' => 'Stationery', 'required_qty' => 12, 'estimated_rate' => 100]],
+    ]);
+
+    $rows = $service->search([], 50, 0, 'requisition_date', 'DESC')['rows'];
+    $byNo = [];
+    foreach ($rows as $row) {
+        $byNo[$row['department']] = $row;
+    }
+
+    assertSame(2, $byNo['IT']['line_count'], 'line count');
+    assertSame('Office laptops', $byNo['IT']['first_description'], 'title comes from the first line');
+    assertSame(1, $byNo['IT']['approval_stages'], 'one stage was raised');
+    assertSame(1, $byNo['IT']['approval_pending'], 'and it is waiting');
+    assertSame('PENDING', $byNo['IT']['approval_chain'][0]['status'], 'the chain comes back decoded');
+    assertTrue($byNo['IT']['is_mine'], 'raised by the caller');
+
+    // A requisition that needed no approval has no stages, which is what draws
+    // a dash in the Approval column rather than an empty progress bar.
+    assertSame(0, $byNo['Admin']['approval_stages'], 'no approval, no stages');
+    assertSame(1, $byNo['Admin']['line_count'], 'line count');
+});
+
+check('the summary counts everything the filters match, not the page on screen', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new RequisitionService($ctx, $auth);
+
+    $draft = $service->create(['department' => 'IT', 'lines' => [['item_id' => 201, 'required_qty' => 1, 'estimated_rate' => 1000]]]);
+    $pending = $service->create(['department' => 'IT', 'emergency' => true, 'lines' => [['item_id' => 201, 'required_qty' => 1, 'estimated_rate' => 2000]]]);
+    $approved = $service->create(['department' => 'Admin', 'lines' => [['item_id' => 201, 'required_qty' => 1, 'estimated_rate' => 3000]]]);
+    $service->submit((int) $pending['requisition_id']);
+    // No threshold and no flags, so submitting approves it outright.
+    $service->submit((int) $approved['requisition_id']);
+
+    // One row per page, which is the case that makes deriving totals from the
+    // page on screen wrong.
+    $page = $service->search([], 1, 0, 'requisition_date', 'DESC');
+    assertSame(1, count($page['rows']), 'one row on the page');
+    assertSame(3, $page['total'], 'and three in total');
+
+    $summary = $service->summary([]);
+    assertSame(3, $summary['totals']['total'], 'total');
+    assertSame(1, $summary['totals']['draft'], 'draft');
+    assertSame(1, $summary['totals']['pending'], 'pending');
+    assertSame(1, $summary['totals']['approved'], 'approved');
+    assertSame(0, $summary['totals']['rejected'], 'rejected');
+    assertSame(6000.0, $summary['totals']['estimated_value'], 'requested value');
+    assertSame(2000.0, $summary['totals']['pending_value'], 'value waiting for approval');
+    assertSame(12, count($summary['series']), 'twelve monthly buckets, gaps filled');
+    assertSame('IT', $summary['departments'][0]['department'], 'busiest department first');
+    assertSame(2, $summary['departments'][0]['total'], 'its count');
+    assertTrue((int) $draft['requisition_id'] > 0, 'the draft exists');
+});
+
+check('a tab name and a stored status both narrow the list', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new RequisitionService($ctx, $auth);
+    $requisition = $service->create(['emergency' => true, 'lines' => [['item_id' => 201, 'required_qty' => 1, 'estimated_rate' => 10]]]);
+    $service->submit((int) $requisition['requisition_id']);
+    $service->create(['lines' => [['item_id' => 201, 'required_qty' => 1, 'estimated_rate' => 10]]]);
+
+    // `pending` is what the tabs send; APPROVAL_PENDING is what every existing
+    // dashboard drill-down has always sent. Both have to keep working.
+    assertSame(1, $service->search(['status' => 'pending'], 50, 0, 'requisition_date', 'DESC')['total'], 'by tab name');
+    assertSame(1, $service->search(['status' => 'APPROVAL_PENDING'], 50, 0, 'requisition_date', 'DESC')['total'], 'by stored status');
+    assertSame(1, $service->search(['status' => 'draft'], 50, 0, 'requisition_date', 'DESC')['total'], 'drafts');
+    assertSame(2, $service->search([], 50, 0, 'requisition_date', 'DESC')['total'], 'everything');
+});
+
+check('the list narrows by department, value, date and routing exception', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new RequisitionService($ctx, $auth);
+    $service->create(['department' => 'IT', 'lines' => [['item_id' => 201, 'description' => 'Laptop battery', 'required_qty' => 1, 'estimated_rate' => 500]]]);
+    $service->create(['department' => 'Production', 'single_source' => true, 'lines' => [['item_id' => 202, 'description' => 'Conveyor belt', 'required_qty' => 1, 'estimated_rate' => 250000]]]);
+
+    $only = static fn (array $filters) => $service->search($filters, 50, 0, 'requisition_date', 'DESC')['total'];
+
+    assertSame(1, $only(['department' => 'IT']), 'by department');
+    assertSame(1, $only(['min_value' => 1000]), 'by minimum value');
+    assertSame(1, $only(['max_value' => 1000]), 'by maximum value');
+    assertSame(1, $only(['exception' => 'single_source']), 'by routing exception');
+    assertSame(2, $only(['date_from' => gmdate('Y-m-d'), 'date_to' => gmdate('Y-m-d')]), 'raised today');
+    assertSame(0, $only(['date_from' => gmdate('Y-m-d', strtotime('+1 day'))]), 'raised tomorrow');
+    // The item description is searched too — "find the conveyor thing" is what
+    // a buyer actually types into a requisition list.
+    assertSame(1, $only(['q' => 'conveyor']), 'by what was asked for');
+});
+
+check('the insight signals are counts, and a quiet company has none', function () use ($ctx, $auth) {
+    resetDatabase();
+    Db::run('INSERT INTO purchase_settings (cmp_id, requisition_approval_above_amount) VALUES (:cmp, 100000)
+             ON CONFLICT (cmp_id) DO UPDATE SET requisition_approval_above_amount = 100000', ['cmp' => $ctx->cmpId]);
+
+    $service = new RequisitionService($ctx, $auth);
+    $quiet = $service->summary([]);
+    assertSame(0, $quiet['signals']['aged_pending'], 'nothing aged');
+    assertSame(null, $quiet['signals']['busiest_department'], 'no department is busiest');
+
+    $big = $service->create(['department' => 'Production', 'lines' => [['item_id' => 201, 'required_qty' => 1, 'estimated_rate' => 250000]]]);
+    $service->submit((int) $big['requisition_id']);
+    // Raised eleven days ago, so it is both aged and overdue against a date it
+    // was needed by last week.
+    Db::run("UPDATE purchase_requisitions SET requisition_date = CURRENT_DATE - 11, required_by = CURRENT_DATE - 4
+             WHERE requisition_id = :id", ['id' => (int) $big['requisition_id']]);
+
+    $signals = $service->summary([])['signals'];
+    assertSame(1, $signals['aged_pending'], 'one has been waiting too long');
+    assertSame(11, $signals['oldest_pending_days'], 'and for how long');
+    assertSame(1, $signals['high_value_pending'], 'above this company\'s own threshold');
+    assertSame(100000.0, $signals['high_value_threshold'], 'which is the threshold it reports');
+    assertSame(1, $signals['overdue'], 'needed before today');
+    assertSame('Production', $signals['busiest_department']['department'], 'busiest department');
+});
+
+check('the export is the filtered list, header first', function () use ($ctx, $auth) {
+    resetDatabase();
+    $service = new RequisitionService($ctx, $auth);
+    $service->create(['department' => 'IT', 'lines' => [['item_id' => 201, 'description' => 'Laptops', 'required_qty' => 2, 'estimated_rate' => 50000]]]);
+    $service->create(['department' => 'Admin', 'lines' => [['item_id' => 202, 'description' => 'Pens', 'required_qty' => 10, 'estimated_rate' => 10]]]);
+
+    $rows = $service->exportRows(['department' => 'IT']);
+    assertSame('Requisition no', $rows[0][0], 'header first');
+    assertSame(2, count($rows), 'one header and one filtered row');
+    assertSame('IT', $rows[1][3], 'the department that was asked for');
+    assertSame('1', $rows[1][5], 'its line count');
+});
+
 echo "\nSourcing\n";
 
 check('records competing quotes and compares them on landed cost', function () use ($ctx, $auth) {
