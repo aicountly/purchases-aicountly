@@ -255,6 +255,26 @@ function poInput(array $overrides = []): array
 }
 
 /** A purchase order taken all the way to RECEIVED, for the matching tests. */
+/** @return list<array<string, mixed>> the requests the stub received whose path contains $fragment */
+function stubRequestsTo(string $fragment): array
+{
+    return array_values(array_filter(stubRequests(), static fn (array $r) => str_contains((string) $r['path'], $fragment)));
+}
+
+/** @return list<array<string, mixed>> bodies of the documents posted to Inventory */
+function inventoryPosts(): array
+{
+    return array_map(static fn (array $r) => (array) $r['body'], stubRequestsTo('/v1/inventory-documents/post'));
+}
+
+/** @return array<string, mixed> the payload of the last Books draft of this voucher type */
+function lastDraftPayload(int $vchTypeId): array
+{
+    $drafts = array_values(array_filter(stubRequestsTo('/vouchers/drafts'), static fn (array $r) => $r['method'] === 'POST' && !str_contains((string) $r['path'], '/post') && (int) ($r['body']['vch_type_id'] ?? 0) === $vchTypeId));
+
+    return $drafts === [] ? [] : (array) ($drafts[count($drafts) - 1]['body']['payload'] ?? []);
+}
+
 function receivedOrder(Context $ctx, Auth $auth): array
 {
     $orders = new PurchaseOrderService($ctx, $auth);
@@ -734,6 +754,145 @@ check('a duplicate supplier invoice number is refused', function () use ($ctx, $
         'already been entered',
         'duplicate invoice number',
     );
+});
+
+check('the PO -> GRN -> bill journey receives the goods once, at the bill, settling the GRN challan', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+
+    $grn = inventoryPosts();
+    assertSame(1, count($grn), 'one document for the goods receipt');
+    assertSame('INWARD_CHALLAN', $grn[0]['document_type'], 'the GRN is goods in on challan, pending the bill');
+    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'which values nothing and does not put the goods on hand yet');
+    foreach ($grn[0]['lines'] as $line) {
+        assertTrue(!array_key_exists('landed_cost_amount', $line), 'no charge on a challan that values nothing: Inventory would refuse it');
+    }
+    $grnDocumentId = (int) $po['receipts'][0]['inventory_document_id'];
+
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'],
+        'supplier_invoice_no' => 'DST/2026/1001', 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [
+            ['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250],
+            ['po_line_id' => (int) $po['lines'][1]['line_id'], 'qty' => 40, 'rate' => 900],
+        ],
+    ]);
+    $posted = $bills->post((int) $bill['request_id']);
+
+    assertSame('POSTED', $posted['status'], 'posted to Books');
+    assertSame(1, count(inventoryPosts()), 'Purchases posted no stock of its own for the bill');
+    $payload = lastDraftPayload(11);
+    assertSame(601, (int) ($payload['party']['acc_id'] ?? 0), 'the supplier is party.acc_id, where Books reads it');
+    assertSame('DST/2026/1001', $payload['bill']['bill_ref'] ?? null, 'the supplier invoice is the bill Books tracks the payable against');
+    assertSame('from_challan', $payload['stock_effect'] ?? null, 'the bill settles the GRN instead of receiving the goods again');
+    assertSame(2, count($payload['challan_settlements']), 'one settlement per billed line');
+    foreach ($payload['challan_settlements'] as $settlement) {
+        assertSame($grnDocumentId, (int) $settlement['source_document_id'], 'against the GRN challan');
+    }
+    assertSame(1, (int) $payload['inventory_lines'][0]['dr_cr'], 'a purchase line on the debit side');
+    assertTrue(!array_key_exists('receipt_references', $payload) && !array_key_exists('party_acc_id', $payload), 'nothing Books would drop unread');
+});
+
+check('a second bill on the same order settles only what the first did not', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $receipts = new ReceiptService($ctx, $auth);
+    $receipts->request((int) $po['po_id'], ['lines' => [['line_id' => $lineId, 'qty' => 60]]]);
+    $receipts->request((int) $po['po_id'], ['lines' => [['line_id' => $lineId, 'qty' => 40]]]);
+    $po = $orders->find((int) $po['po_id']);
+    $first = (int) $po['receipts'][0]['inventory_document_id'];
+    $second = (int) $po['receipts'][1]['inventory_document_id'];
+    if ($first > $second) {
+        [$first, $second] = [$second, $first];
+    }
+
+    $bills = new BillService($ctx, $auth);
+    $a = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'A-1', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
+    $bills->post((int) $a['request_id']);
+    assertSame([[$first, 50.0]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty']], lastDraftPayload(11)['challan_settlements']), 'the first bill takes from the first GRN');
+
+    $b = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'A-2', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
+    $bills->post((int) $b['request_id']);
+    assertSame([[$first, 10.0], [$second, 40.0]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty']], lastDraftPayload(11)['challan_settlements']), 'the second takes the rest of the first GRN, then the second');
+});
+
+check('a bill with nothing received behind it receives the goods itself', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'DIRECT-1', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 10, 'rate' => 250]]]);
+    // Nothing received is a match exception; the buyer accepts it knowingly (goods billed ahead).
+    $bills->resolveException((int) $bill['matches'][0]['exceptions'][0]['exception_id'], 'accept', ['note' => 'Supplier billed ahead of delivery.']);
+    $bills->post((int) $bill['request_id']);
+
+    $payload = lastDraftPayload(11);
+    assertSame('on_invoice', $payload['stock_effect'] ?? null, 'Books receives the goods with the bill');
+    assertSame([], $payload['challan_settlements'], 'nothing to settle');
+});
+
+check('a purchase return leaves stock once: dispatched on challan, issued by the debit note', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $returns = new ReturnClaimService($ctx, $auth);
+    $return = $returns->createReturn([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'reason_code' => 'quality',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'item_id' => 201, 'warehouse_id' => 3, 'return_qty' => 10, 'rate' => 250]],
+    ]);
+    $returnId = (int) $return['return_id'];
+    $returns->approveReturn($returnId, []);
+    $returns->dispatchReturn($returnId);
+
+    $posts = inventoryPosts();
+    $dispatch = $posts[count($posts) - 1];
+    assertSame('DELIVERY_CHALLAN', $dispatch['document_type'], 'the goods go back on a challan');
+    assertSame('challan_only', $dispatch['stock_effect'] ?? null, 'pending the debit note');
+
+    $returns->requestDebitNote($returnId);
+    assertSame(count($posts), count(inventoryPosts()), 'the debit note posted no stock from Purchases');
+    $note = lastDraftPayload(3);
+    assertSame(601, (int) ($note['party']['acc_id'] ?? 0), 'the supplier is party.acc_id');
+    assertSame('from_challan', $note['stock_effect'] ?? null, 'the debit note settles the dispatch challan');
+    assertSame(10.0, (float) $note['challan_settlements'][0]['qty'], 'for what went back');
+    assertSame(2, (int) $note['inventory_lines'][0]['dr_cr'], 'a debit note line on the credit side');
+});
+
+check('every document Purchases sends to Inventory is a type Inventory has', function () use ($ctx, $auth) {
+    resetDatabase();
+    receivedOrder($ctx, $auth);
+    $allowed = ['INWARD_CHALLAN', 'DELIVERY_CHALLAN'];
+    foreach (inventoryPosts() as $post) {
+        assertTrue(in_array($post['document_type'], $allowed, true), 'sent ' . $post['document_type']);
+    }
+    $refused = (new \Aicountly\Api\Clients\InventoryClient())->withService($auth->uuid)->postDocument($ctx, ['document_type' => 'GOODS_RECEIPT', 'lines' => []], 'contract-unknown-type');
+    assertSame(422, $refused['status'], 'and an unknown type is refused the way Inventory refuses it');
+});
+
+check('a company that does not block bills on a failed match can post one with an exception open', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+    Db::run(
+        'INSERT INTO purchase_settings (cmp_id, block_bill_on_match_failure) VALUES (:cmp, FALSE)
+         ON CONFLICT (cmp_id) DO UPDATE SET block_bill_on_match_failure = FALSE',
+        ['cmp' => $ctx->cmpId],
+    );
+
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'OPEN-1', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 10, 'rate' => 250]]]);
+    assertTrue(count($bill['matches'][0]['exceptions']) > 0, 'nothing received: an exception is open');
+
+    $posted = $bills->post((int) $bill['request_id']);
+    assertSame('POSTED', $posted['status'], 'the setting is honoured: FALSE is not read as "not set"');
 });
 
 check('posting a bill twice is refused, so Books gets one voucher', function () use ($ctx, $auth) {

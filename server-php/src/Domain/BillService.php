@@ -155,10 +155,14 @@ final class BillService
             ['id' => $requestId],
         );
 
-        $blockOnFailure = (bool) (Db::scalar(
+        // Read as a row, not a scalar: Db::scalar() maps fetchColumn()'s false to null (its "no
+        // row"), so a setting stored as FALSE came back null, "?? true" made it true, and turning
+        // this setting off had no effect at all.
+        $settings = Db::first(
             'SELECT block_bill_on_match_failure FROM purchase_settings WHERE cmp_id = :cmp',
             ['cmp' => $this->ctx->cmpId],
-        ) ?? true);
+        );
+        $blockOnFailure = $settings === null || (bool) $settings['block_bill_on_match_failure'];
 
         if ($latestMatch !== null && $blockOnFailure) {
             $openExceptions = (int) Db::scalar(
@@ -180,6 +184,10 @@ final class BillService
             }
         }
 
+        // Built before the command is opened: a bill that cannot say which receipts it settles is
+        // refused as it stands, without leaving a command POSTING that was never sent.
+        $payload = $this->buildVoucherPayload($bill, $input);
+
         $command = IntegrationCommand::open(
             $this->ctx,
             'books',
@@ -190,8 +198,6 @@ final class BillService
         );
         $commandId = (int) $command['command_id'];
         IntegrationCommand::markPosting($commandId);
-
-        $payload = $this->buildVoucherPayload($bill, $input);
 
         $response = (new BooksClient())
             ->withService($this->auth->uuid)
@@ -686,9 +692,12 @@ final class BillService
             }
             $inventoryLines[] = [
                 'source_line_ref' => (string) ($line['po_line_id'] ?? ''),
+                'po_line_id'      => (int) ($line['po_line_id'] ?? 0),
                 'item_id'         => (int) $line['item_id'],
                 'unit_id'         => $line['unit_id'] ?? null,
                 'mc_id'           => $line['warehouse_id'] ?? null,
+                // A purchase line is on the debit side in Books.
+                'dr_cr'           => 1,
                 'qty'             => (float) ($line['qty'] ?? 0),
                 'rate'            => (float) ($line['rate'] ?? 0),
                 'discount_pc'     => (float) ($line['discount_pc'] ?? 0),
@@ -698,12 +707,18 @@ final class BillService
                 'description'     => $line['description'] ?? null,
             ];
         }
+        $stock = $this->stockEffectFor($bill, $inventoryLines);
 
         return [
             'vch_date'        => (string) ($bill['supplier_invoice_date'] ?? gmdate('Y-m-d')),
-            'party_acc_id'    => (int) $bill['supplier_account_id'],
-            'supplier_invoice_no'   => $bill['supplier_invoice_no'],
-            'supplier_invoice_date' => $bill['supplier_invoice_date'],
+            // Books composes a bill from party.acc_id and its lines; the flat party_acc_id this
+            // used to send was never read, and the bill posted with nothing on it.
+            'party'           => ['acc_id' => (int) $bill['supplier_account_id']],
+            // The supplier's invoice number is the bill Books tracks the payable against.
+            'bill'            => array_filter([
+                'bill_ref'  => self::text($bill['supplier_invoice_no'] ?? null),
+                'bill_date' => self::text($bill['supplier_invoice_date'] ?? null),
+            ], static fn ($v) => $v !== null),
             'narration'       => self::text($input['narration'] ?? null)
                 ?? ('Supplier bill ' . $bill['supplier_invoice_no']),
             'reference_no'    => $bill['supplier_invoice_no'],
@@ -715,12 +730,113 @@ final class BillService
             'source_document_type' => 'purchases.bill',
             'source_document_id'   => (int) $bill['request_id'],
             'source_document_no'   => $bill['supplier_invoice_no'],
-            // The receipts this bill settles, as Inventory's own uuids.
-            'receipt_references'   => Db::jsonColumn($bill['receipt_references']),
 
-            'inventory_lines' => $inventoryLines,
+            // The goods are received once, by this bill. Against goods already in on a GRN
+            // challan the bill settles those challans (from_challan) instead of receiving them a
+            // second time; a bill with no receipt behind it receives the goods itself.
+            'stock_effect'        => $stock['stock_effect'],
+            'challan_settlements' => $stock['challan_settlements'],
+
+            'inventory_lines' => array_map(static function (array $l): array {
+                unset($l['po_line_id']);
+
+                return $l;
+            }, $inventoryLines),
             'service_lines'   => $serviceLines,
         ];
+    }
+
+    /**
+     * How this bill's goods enter stock, and which GRN challans it settles.
+     *
+     * The GRNs of the order are INWARD_CHALLANs (ReceiptService): goods in, pending their bill.
+     * The bill settles them — first in, first out per order line, after what earlier bills of
+     * the order already settled (billed_qty) — and Books sends the settlement with the bill's
+     * PURCHASE_RECEIPT, so Inventory receives the goods once, at the billed cost.
+     *
+     * Refused rather than guessed: a bill for more than its order has received and not yet
+     * billed (one Books voucher has one stock effect, so part-settle and part-receive cannot be
+     * mixed), and goods received before the GRN was a challan — those were received into stock
+     * by the GRN itself, and settling nothing would receive them again.
+     *
+     * @param list<array<string, mixed>> $inventoryLines
+     * @return array{stock_effect: string, challan_settlements: list<array<string, mixed>>}
+     */
+    private function stockEffectFor(array $bill, array $inventoryLines): array
+    {
+        $onInvoice = ['stock_effect' => 'on_invoice', 'challan_settlements' => []];
+        if ($bill['po_id'] === null || $inventoryLines === []) {
+            return $onInvoice;
+        }
+        $receipts = Db::all(
+            "SELECT r.request_id, r.inventory_document_id, r.requested_lines, c.external_reference
+             FROM purchase_receipt_requests r
+             LEFT JOIN purchase_integration_commands c
+               ON c.cmp_id = r.cmp_id AND c.entity_type = 'receipt_request' AND c.entity_id = r.request_id AND c.command_type = :type
+             WHERE r.po_id = :po AND r.cmp_id = :cmp AND r.status = 'ACCEPTED'
+             ORDER BY r.request_id",
+            ['type' => ReceiptService::COMMAND_RECEIPT, 'po' => (int) $bill['po_id'], 'cmp' => $this->ctx->cmpId],
+        );
+        if ($receipts === []) {
+            // Billed before anything arrived: the bill receives the goods itself.
+            return $onInvoice;
+        }
+
+        // Per order line, what each receipt brought in, oldest first.
+        $portions = [];
+        foreach ($receipts as $receipt) {
+            $reference = Db::jsonColumn($receipt['external_reference'] ?? null);
+            $isChallan = ($reference['document_type'] ?? null) === 'INWARD_CHALLAN';
+            foreach (Db::jsonColumn($receipt['requested_lines']) as $line) {
+                $portions[(int) $line['line_id']][] = [
+                    'document_id'  => (int) $receipt['inventory_document_id'],
+                    'item_id'      => (int) $line['item_id'],
+                    'warehouse_id' => isset($line['warehouse_id']) ? ((int) $line['warehouse_id'] ?: null) : null,
+                    'qty'          => (float) $line['qty'],
+                    'challan'      => $isChallan,
+                ];
+            }
+        }
+        // What earlier bills of this order settled comes off the front.
+        foreach (Db::all('SELECT line_id, billed_qty FROM purchase_order_lines WHERE po_id = :po AND cmp_id = :cmp', ['po' => (int) $bill['po_id'], 'cmp' => $this->ctx->cmpId]) as $row) {
+            $done = (float) $row['billed_qty'];
+            foreach ($portions[(int) $row['line_id']] ?? [] as $i => $portion) {
+                $take = min($done, $portion['qty']);
+                $portions[(int) $row['line_id']][$i]['qty'] -= $take;
+                $done -= $take;
+            }
+        }
+
+        $settlements = [];
+        foreach ($inventoryLines as $line) {
+            $need = (float) $line['qty'];
+            foreach ($portions[(int) $line['po_line_id']] ?? [] as $i => $portion) {
+                if ($need <= 0.00005) {
+                    break;
+                }
+                $take = round(min($need, $portion['qty']), 4);
+                if ($take <= 0) {
+                    continue;
+                }
+                if (!$portion['challan']) {
+                    Http::conflict(
+                        'Some of these goods were received before goods receipts became challans, so they are already in stock; posting this bill here would receive them again. Post it in Books, where the stock effect can be chosen, or ask for the old receipt to be converted.',
+                        ['po_line_id' => (int) $line['po_line_id']],
+                    );
+                }
+                $settlements[] = ['source_document_id' => $portion['document_id'], 'item_id' => $portion['item_id'], 'qty' => $take, 'mc_id' => $portion['warehouse_id']];
+                $portions[(int) $line['po_line_id']][$i]['qty'] -= $take;
+                $need -= $take;
+            }
+            if ($need > 0.00005) {
+                Http::conflict(
+                    'This bill is for more than its order has received and not yet billed. Bill what has arrived, or receive the rest first — one bill cannot both settle goods already in and receive new ones.',
+                    ['po_line_id' => (int) $line['po_line_id'], 'unreceived_qty' => round($need, 4)],
+                );
+            }
+        }
+
+        return ['stock_effect' => 'from_challan', 'challan_settlements' => $settlements];
     }
 
     /** @return list<array<string, mixed>> */

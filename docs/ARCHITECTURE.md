@@ -54,6 +54,37 @@ behaviours worth knowing:
 - **An unreachable Inventory is `REVIEW_REQUIRED`, never `MATCHED`.** "We could
   not check" and "we checked and it was fine" are different facts.
 
+## Stock moves once: GRN on challan, received by the bill
+
+```
+PO ──▶ GRN                    ──▶ bill
+       INWARD_CHALLAN               Books purchase (party.acc_id, bill.bill_ref = supplier invoice)
+       challan_only:                stock_effect from_challan + challan_settlements
+       goods in, pending the bill   → Books sends PURCHASE_RECEIPT to Inventory, which
+                                      settles the challans and receives the goods ONCE,
+                                      valued at the billed cost
+```
+
+The GRN used to be a `PURCHASE_RECEIPT` of its own, and the bill's item lines made
+Books post another one: every billed purchase received its goods twice. Now the
+bill is the single owner of the stock receipt. The settlements are allocated first
+in, first out per order line, after what earlier bills settled (`billed_qty`). A
+bill for more than was received and not yet billed is refused (one Books voucher
+has one stock effect), and so is a bill whose goods were received before this
+change (they are already in stock; post that bill in Books). A bill with nothing
+received behind it (goods billed ahead) receives the goods itself (`on_invoice`).
+
+**The trade-off, to be decided on:** received goods sit on Inventory's pending-in
+register — not on hand, not sellable — until their bill is posted. Receiving them
+into stock at the GRN needs a valued inward challan that the bill settles without
+receiving again (a "physical GRN"); neither Inventory nor Books has that path yet.
+Freight captured on the GRN is no longer sent (a challan values nothing): charges
+are capitalised from the bill, where Books allocates bill sundries onto the goods.
+
+Purchase returns follow the same rule: the dispatch is a `DELIVERY_CHALLAN`
+(challan_only) and the debit note settles it (`from_challan`), so the goods leave
+stock once, with the debit note.
+
 ## What is stored here, and what is not
 
 `server-php/database/migrations/` is the complete list. The reference columns —
