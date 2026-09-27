@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run the Purchases integration tests against a throwaway PostgreSQL database and a
-# local stub standing in for Books and Inventory.
+# local stub standing in for Books, Inventory, Manage and AI Pulse — then the AI
+# gateway client tests, which need neither (tests/ai_gateway.php, fake transport).
 #
 #   server-php/tests/run.sh
 #
@@ -27,6 +28,7 @@ DB_PASS=$DB_PASS
 BOOKS_API_BASE=http://127.0.0.1:$STUB_PORT
 INVENTORY_API_BASE=http://127.0.0.1:$STUB_PORT
 MANAGE_API_BASE=http://127.0.0.1:$STUB_PORT
+PULSE_API_ORIGIN=http://127.0.0.1:$STUB_PORT
 BOOKS_SERVICE_KEY=test-books-key
 INVENTORY_SERVICE_KEY=test-inventory-key
 ENVEOF
@@ -43,4 +45,8 @@ for _ in $(seq 1 40); do
   sleep 0.25
 done
 
-php "$ROOT/tests/integration.php"
+# Both suites always run; the script fails if either did.
+status=0
+php "$ROOT/tests/integration.php" || status=$?
+php "$ROOT/tests/ai_gateway.php" || status=$?
+exit $status

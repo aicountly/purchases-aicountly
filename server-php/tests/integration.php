@@ -26,6 +26,7 @@ use Aicountly\Api\Domain\RequisitionService;
 use Aicountly\Api\Domain\ReturnClaimService;
 use Aicountly\Api\Domain\SourcingService;
 use Aicountly\Api\Domain\ThreeWayMatchService;
+use Aicountly\Api\Ai\AiClient;
 use Aicountly\Api\Ai\AskEngine;
 use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\DashboardsController;
@@ -1620,16 +1621,26 @@ check('an open exception carries the rule that failed and both endpoints to reso
 
 echo "\nDashboard 5 — AI Insights\n";
 
-check('with no model configured the screen still works and says so', function () use ($ctx, $auth) {
+check('with no model available through AI Pulse the screen still works and says so', function () use ($ctx, $auth) {
     resetDatabase();
+    AiClient::useClient(null);
+    $before = count(stubRequests());
     $insights = dashboardFor('ai-insights', $ctx, $auth);
 
-    assertSame(false, $insights['ai']['available'], 'no model is configured in this deployment');
+    assertSame(false, $insights['ai']['available'], 'the stub Pulse has no model bound for Purchases');
     assertTrue(str_contains((string) $insights['ai']['reason'], 'AI insights are currently unavailable'), 'the exact wording is used');
+    assertSame('AI Pulse', $insights['ai']['provider'], 'and it is AI Pulse that was asked');
     assertSame('rules', $insights['panels']['opportunities']['method'], 'opportunities are rules-based');
     assertSame('rules', $insights['panels']['anomalies']['method'], 'so are anomalies');
+    assertSame(false, $insights['panels']['forecast']['commentary']['available'] ?? false, 'no commentary is offered');
     assertTrue($insights['panels']['ask']['questions'] !== [], 'the questions still work');
     assertTrue(str_contains($insights['panels']['ask']['security'], 'never writes a query'), 'the security position is on the screen');
+
+    $asked = array_values(array_filter(array_slice(stubRequests(), $before), static fn (array $r) => str_starts_with((string) $r['path'], '/api/ai/v1/')));
+    assertSame(1, count($asked), 'availability was asked once for the whole screen');
+    assertSame(['GET', '/api/ai/v1/status'], [$asked[0]['method'], $asked[0]['path']], 'of the status endpoint');
+    assertSame('purchases', $asked[0]['headers']['x-pulse-product'] ?? null, 'as Purchases');
+    assertSame('Bearer ' . $auth->sesKey(), $asked[0]['headers']['authorization'] ?? null, 'with the user\'s own session');
 });
 
 check('an opportunity carries its baseline and its assumption', function () use ($ctx, $auth) {
@@ -1938,6 +1949,107 @@ check('a question outside the catalogue is refused with the list of what works',
 
     assertSame(false, $answer['understood'], 'it was not understood, and nothing was run');
     assertTrue($answer['suggestions'] !== [], 'the approved questions are offered instead');
+});
+
+/** The AI calls the stub Pulse received since $before. */
+function pulseCalls(int $before): array
+{
+    return array_values(array_filter(
+        array_slice(stubRequests(), $before),
+        static fn (array $r) => str_starts_with((string) $r['path'], '/api/ai/v1/'),
+    ));
+}
+
+/** A delayed order: something for the Ask panel to find. */
+function delayedOrder(Context $ctx, Auth $auth): void
+{
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput(['promised_date' => '2020-01-01']));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+}
+
+check('with a model bound in AI Pulse, the summary is written there — as this user, for this company', function () use ($ctx) {
+    resetDatabase();
+    AiClient::useClient(null);
+    // `.ai-on` is the stub's switch for a Pulse with the economy tier bound.
+    $auth = rawAuth('user-owner', 'stub-ses-key.role-1.ai-on');
+    $auth->noteCompanyAccess(88, 1);
+    delayedOrder($ctx, $auth);
+
+    $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0'];
+    $before = count(stubRequests());
+    $answer = AskEngine::answer($ctx, $auth, Period::fromRequest(), 'which orders are delayed this week?');
+
+    assertSame('delayed_orders', $answer['intent'], 'the keywords chose the question');
+    assertSame('ai_narrated', $answer['method'], 'the summary sentence came from AI Pulse');
+    assertSame('Stub summary written through AI Pulse.', $answer['answer'], 'word for word');
+    assertTrue(str_contains($answer['method_label'], 'through AI Pulse'), 'and the label says where it came from');
+    assertTrue($answer['records'] !== [] && $answer['records'][0]['reference'] !== '', 'the figures are still the query\'s own');
+
+    $calls = pulseCalls($before);
+    assertSame(1, count($calls), 'one call: no routing was needed');
+    $call = $calls[0];
+    assertSame(['POST', '/api/ai/v1/generate'], [$call['method'], $call['path']], 'to the generate endpoint');
+    assertSame('purchases', $call['headers']['x-pulse-product'] ?? null, 'as Purchases');
+    assertSame('Bearer stub-ses-key.role-1.ai-on', $call['headers']['authorization'] ?? null, 'with this user\'s own session');
+    assertTrue(!isset($call['headers']['x-pulse-service-key']), 'never with a service key');
+    assertSame('insight.ask_summary', $call['body']['feature'] ?? null, 'the feature');
+    assertSame('economy', $call['body']['tier'] ?? null, 'the tier');
+    assertSame([88, 6, 0], [$call['body']['cmp_id'] ?? null, $call['body']['fy_id'] ?? null, $call['body']['bo_id'] ?? null], 'the scope');
+    assertTrue(str_contains((string) ($call['body']['input'] ?? ''), 'UNTRUSTED_DATA'), 'the rows travel as untrusted data');
+    assertTrue(!array_key_exists('attachments', (array) $call['body']), 'and no file goes with them');
+
+    // The Ask endpoint states availability from what it just learned.
+    $status = AiClient::status($auth);
+    assertSame(true, $status['available'], 'AI is available');
+    assertSame(1, count(pulseCalls($before)), 'without asking Pulse a second time');
+});
+
+check('a question the keywords miss is routed by AI Pulse, to an approved question, and labelled so', function () use ($ctx) {
+    resetDatabase();
+    AiClient::useClient(null);
+    $auth = rawAuth('user-owner', 'stub-ses-key.role-1.ai-on');
+    $auth->noteCompanyAccess(88, 1);
+
+    $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0'];
+    $before = count(stubRequests());
+    $answer = AskEngine::answer($ctx, $auth, Period::fromRequest(), 'which POs are running behind?');
+
+    assertSame('delayed_orders', $answer['intent'], 'the stub Pulse chose from the catalogue');
+    assertSame('ai_routed', $answer['method'], 'routing is recorded as AI');
+    assertSame([], $answer['records'], 'nothing is late, so there is nothing to summarise');
+    assertTrue(str_contains($answer['method_label'], 'only chose which approved question'), 'and the label does not claim "no AI"');
+
+    $calls = pulseCalls($before);
+    assertSame(1, count($calls), 'one call');
+    assertSame('insight.ask_intent', $calls[0]['body']['feature'] ?? null, 'the routing feature');
+    assertTrue(str_contains((string) ($calls[0]['body']['input'] ?? ''), 'which POs are running behind?'), 'the question is data');
+    assertTrue(!str_contains((string) ($calls[0]['body']['system'] ?? ''), 'running behind'), 'not instructions');
+});
+
+check('a sibling product calling with a service key gets the rules answer, and nothing reaches AI Pulse', function () use ($ctx, $auth) {
+    resetDatabase();
+    AiClient::useClient(null);
+    delayedOrder($ctx, $auth);
+
+    // What Auth::resolve() builds for X-Service-Key: a product, and no session.
+    $r = new \ReflectionClass(Auth::class);
+    $service = $r->newInstanceWithoutConstructor();
+    foreach (['uuid' => 'service:books', 'kind' => 'service', 'sourceApp' => 'books', 'sesKey' => '', 'session' => null] as $prop => $value) {
+        $p = $r->getProperty($prop);
+        $p->setAccessible(true);
+        $p->setValue($service, $value);
+    }
+
+    $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0'];
+    $before = count(stubRequests());
+    $answer = AskEngine::answer($ctx, $service, Period::fromRequest(), 'which orders are delayed this week?');
+
+    assertSame('rules', $answer['method'], 'the rules answered');
+    assertTrue($answer['records'] !== [], 'with the same figures');
+    assertTrue(!str_contains((string) $answer['uncertainty'], 'AI insights are currently unavailable'), 'and no AI error is added to the answer');
+    assertSame([], pulseCalls($before), 'AI Pulse was never called');
 });
 
 echo "\nExport\n";

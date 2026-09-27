@@ -83,8 +83,77 @@ if (str_contains($path, '/seskey')) {
     // Nothing like this exists in the real portal — a ses key there is opaque.
     $incoming = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     $role = preg_match('/role-([a-z0-9]+)/i', $incoming, $m) === 1 ? '.role-' . strtolower($m[1]) : '';
-    echo json_encode(['ses_key' => 'preview-ses-key' . $role, 'expires_in' => 900]);
+    // `.ai-on` rides through the same way, for a preview against a Pulse that has
+    // a model bound (see the AI Pulse section below).
+    $ai = str_contains($incoming, '.ai-on') ? '.ai-on' : '';
+    echo json_encode(['ses_key' => 'preview-ses-key' . $role . $ai, 'expires_in' => 900]);
     exit;
+}
+
+// --- AI Pulse (the AI gateway) --------------------------------------------
+//
+// Only reached when PULSE_API_ORIGIN points here, which tests/run.sh and the
+// local preview both do. It answers in the shape pulse-aicountly's
+// docs/AI_GATEWAY.md documents, and checks what Pulse checks before anything
+// else: a product header, and a signed-in user's session.
+//
+// By default it is a Pulse with NO model bound in Console — the state these
+// tests were written against when "no model configured" meant no key in this
+// product's own .env. A bearer carrying `.ai-on` gets a Pulse whose economy tier
+// is bound, with answers fixed so a test can recognise them. Nothing like this
+// exists in the real Pulse.
+if (str_starts_with($path, '/api/ai/v1/')) {
+    $bearer = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    $product = strtolower(trim((string) ($headers['x-pulse-product'] ?? '')));
+    $pulseError = static function (int $status, string $code, string $message, bool $retryable = false): void {
+        http_response_code($status);
+        echo json_encode(['status' => 0, 'code' => $code, 'message' => $message, 'retryable' => $retryable]);
+        exit;
+    };
+    if (preg_match('/^[a-z][a-z0-9_]{1,31}$/', $product) !== 1) {
+        $pulseError(400, 'product_required', 'Send X-Pulse-Product: <product>.');
+    }
+    if (!str_starts_with($bearer, 'Bearer ') || trim(substr($bearer, 7)) === '') {
+        $pulseError(401, 'unauthenticated', 'Send the user\'s session key (Authorization: Bearer …).');
+    }
+    $bound = str_contains($bearer, '.ai-on');
+
+    if ($path === '/api/ai/v1/status' && $method === 'GET') {
+        echo json_encode(['status' => 1, 'data' => [
+            'enabled'   => true,
+            'available' => $bound,
+            'reason'    => $bound ? null : 'module_not_bound',
+            'tiers'     => ['economy' => $bound, 'strong' => false],
+            'caller'    => ['product' => $product, 'auth' => 'user'],
+        ]]);
+        exit;
+    }
+
+    if ($path === '/api/ai/v1/generate' && $method === 'POST') {
+        if (!$bound) {
+            $pulseError(503, 'ai_unavailable', 'No AI model is bound for this product in Console.');
+        }
+        $feature = (string) ($body['feature'] ?? '');
+        echo json_encode(['status' => 1, 'data' => [
+            'id'          => 'stub-task-' . $n,
+            'text'        => $feature === 'insight.ask_intent' ? 'delayed_orders' : 'Stub summary written through AI Pulse.',
+            'json'        => null,
+            'tool_calls'  => [],
+            'stop_reason' => 'end',
+            'model'       => 'stub-model',
+            'provider'    => 'stub',
+            'tier'        => (string) ($body['tier'] ?? 'strong'),
+            'usage'       => ['input_tokens' => 10, 'output_tokens' => 5, 'cached_input_tokens' => 0],
+            'cost_usd'    => null,
+            'latency_ms'  => 1,
+            'attempts'    => 1,
+            'replayed'    => false,
+            'cached'      => false,
+        ]]);
+        exit;
+    }
+
+    $pulseError(404, 'not_found', 'The stub Pulse has no route for ' . $path . '.');
 }
 
 if (str_contains($path, '/validatesession')) {

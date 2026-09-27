@@ -2,7 +2,8 @@
  * Dashboard 5 — Purchase intelligence.
  *
  * Three kinds of statement, never mixed: obligations that already exist,
- * arithmetic over history, and — only where a model is configured — commentary.
+ * arithmetic over history, and — only where AI Pulse has a model for Purchases —
+ * commentary.
  * Each is labelled on the screen, because a reader who cannot tell them apart
  * will treat the weakest as if it were the strongest.
  *

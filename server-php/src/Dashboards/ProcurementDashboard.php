@@ -58,7 +58,7 @@ final class ProcurementDashboard extends Dashboard
         $currency = $reportingCurrency ?? 'INR';
         $mixed = $reportingCurrency === null;
 
-        $ai = AiClient::status();
+        $ai = AiClient::status($this->auth);
         if (!$this->can('settings.manage')) {
             $ai['admin_hint'] = null;
         }
@@ -1465,7 +1465,7 @@ final class ProcurementDashboard extends Dashboard
      *
      * Deterministic rules over this company's own records. Nothing here is a
      * prediction and nothing here was written by a model: the panel says which
-     * of the two it is, and when no model is configured the rules still run.
+     * of the two it is, and when AI Pulse has no model the rules still run.
      *
      * @param array<string, mixed> $ai
      * @return array<string, mixed>

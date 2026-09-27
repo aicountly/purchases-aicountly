@@ -145,8 +145,8 @@ uses, so the two screens cannot disagree. Every finding clears a stated
 threshold; "approval bottleneck" over a two-hour-old queue is an insight nobody
 can act on and everybody learns to ignore.
 
-`AiClient::status()` travels in the envelope so the panel can say whether a
-model is configured. It changes nothing on this panel: no finding here is
+`AiClient::status()` travels in the envelope so the panel can say whether AI is
+available through AI Pulse. It changes nothing on this panel: no finding here is
 written by a model, none is phrased as a prediction, and an empty list says so
 rather than being filled.
 
@@ -197,24 +197,52 @@ A regression test asserts the `acc_id` requirement, so the second gap cannot be
 
 ## AI
 
-`Ai\AiClient` is the only place this product talks to a model. Three rules:
+`Ai\AiClient` is the only place this product asks for AI, and it asks
+**AI Pulse** — through `Ai\PulseAiClient`, Purchases' copy of the Pulse AI
+gateway client (contract: `docs/AI_GATEWAY.md` in pulse-aicountly). Purchases
+holds no model key and calls no model provider: Pulse picks the model Console
+binds to it, enforces the AI budgets, and reports usage to Console under product
+`purchases` and the feature.
 
-1. **The key stays on the server.** Read from the server `.env` at request time;
-   never returned by an endpoint, never in the bundle, never logged.
+| Feature | Pulse `feature` | Tier | Asked when |
+|---|---|---|---|
+| Ask — which approved question was meant | `insight.ask_intent` | economy | the keyword matcher did not decide |
+| Ask — the summary sentence | `insight.ask_summary` | economy | the answer has records behind it |
+
+Every call carries the **signed-in user's own session** — the Bearer this API
+received — and the company, financial year and branch in scope, so Pulse checks
+the person and the company itself and the usage is attributed to them.
+Purchases has no background AI job, so it holds no Pulse service key; a sibling
+product calling `v1/insights/ask` with a service key gets the rules answer.
+
+Three rules:
+
+1. **No key here.** The only credential that leaves the server is the user's
+   own session, sent to AI Pulse as it is sent to Books and Inventory — there is
+   no AI key for the browser or a log to leak. A failed call logs its feature,
+   its outcome and Pulse's task id; never the prompt, the data or the answer.
 2. **The model never writes a query.** `Ai\AskEngine` holds a fixed catalogue of
    questions, each naming the permission it needs and the parameterised query
    behind it. The model only picks which question was meant and writes the
    summary sentence over rows already fetched.
-3. **Everything it is given is data.** Supplier names and document text are
-   wrapped and labelled untrusted. A supplier called "ignore previous
-   instructions" is a supplier with an odd name.
+3. **Everything it is given is data.** Our instructions go to Pulse as `system`;
+   the question, supplier names and document text go as `input`, wrapped and
+   labelled untrusted. A supplier called "ignore previous instructions" is a
+   supplier with an odd name.
 
 Permissions are applied **before retrieval**, not before display.
 
-With no key configured the rules engine answers instead, every panel says it is
-rules-based, and the screen reads "AI insights are currently unavailable". Set
-`PURCHASES_AI_API_KEY` on the server to enable commentary; the hint naming that
-variable is shown only to somebody holding `settings.manage`.
+Availability comes from AI Pulse's status endpoint, asked once per request as
+the signed-in user; both features need Pulse's economy tier (Console's `chat`
+module). With no model available — or Pulse out of reach, or the day's AI
+allowance used — the rules engine answers instead, every panel says it is
+rules-based, and the screen reads "AI insights are currently unavailable". The
+hint saying what to fix is shown only to somebody holding `settings.manage`.
+Nothing ever falls back to a model of this product's own.
+
+The origin is derived from the host like every sibling product's (sandbox hosts
+use `https://pulse.gh.aicountly.com`, production `https://pulse.aicountly.com`);
+`PULSE_API_ORIGIN` in the server `.env` overrides it.
 
 ## Purchase intelligence
 
@@ -242,8 +270,8 @@ Three panels are worth stating in full:
   live on the request. With Inventory unavailable the panel says so rather than
   grouping the spend by something else and calling the result a category.
 - **AI Insights** labels every row as an observation, an estimate or a
-  projection. Where a model is configured it can comment on these figures in Ask
-  Aicountly AI; it writes none of them.
+  projection. Where AI Pulse has a model for Purchases it can comment on these
+  figures in Ask Aicountly AI; it writes none of them.
 
 Opportunities and risks are recomputed from the records on every load. There is
 nowhere to record that one was reviewed or dismissed, and the drawer says so
