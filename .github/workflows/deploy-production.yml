@@ -296,11 +296,16 @@ jobs:
           # uploaded is an instruction nobody can follow. It holds placeholders
           # only, and the .htaccess deployed beside it 404s every dotfile, so
           # it is not readable over HTTP.
+          #
+          # tests/ is dev-only and is never sent. The filter is a sender-side
+          # hide (H), not an --exclude, so --delete also removes a copy that an
+          # earlier deploy left on the server; an --exclude would protect it.
           rsync -avz --delete \
             --include='.env.example' \
             --exclude='.env' \
             --exclude='.env.*' \
             --exclude='.git*' \
+            --filter='H /tests/' \
             --chmod=D755,F644 \
             -e ssh \
             server-php/ "deploy-target:$REMOTE_ROOT/api/"

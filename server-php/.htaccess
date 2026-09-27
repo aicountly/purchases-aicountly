@@ -20,6 +20,15 @@
   RewriteCond %{HTTP:Authorization} .
   RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
+  # Only index.php may answer. Every other real file or folder shipped here
+  # (src/, bin/, tests/, database/, a PHP error_log) would otherwise be served
+  # as text or run as PHP against the live .env — the test suite alone TRUNCATEs
+  # every table on load. .well-known is kept reachable for SSL validation. The
+  # pattern is relative to this directory, like the rule above.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule !^(index\.php|\.well-known/.*)?$ - [R=404,L]
+
   # Everything that is not a real file goes to the front controller.
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteCond %{REQUEST_FILENAME} !-d
@@ -33,5 +42,13 @@
 </IfModule>
 
 # The API's .env sits inside the document root, so without this it would be
-# fetchable over HTTP at https://purchases.aicountly.com/api/.env.
+# fetchable over HTTP at https://purchases.aicountly.com/api/.env. RedirectMatch
+# is mod_alias, so unlike the rewrite rules above it still applies inside a
+# subdirectory that ships its own .htaccess — the dotfile ban holds at any depth.
 RedirectMatch 404 /\.(?!well-known)
+
+# PHP writes an "error_log" in whatever directory a script errors in; one left
+# under the API would leak file paths, SQL and secrets. Refuse it at any depth,
+# including a rotated error_log.1, and again via mod_alias so a nested
+# public/.htaccess cannot re-expose it.
+RedirectMatch 404 (?i)/error_log(\.[^/]*)?$
