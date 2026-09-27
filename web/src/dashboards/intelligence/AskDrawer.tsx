@@ -6,11 +6,12 @@
  * produced it, the records behind it, how it was calculated and what might be
  * missing — in that order, every time.
  *
- * The model, where one is configured, decides which approved question was
- * meant and writes the summary sentence. It never writes a query, never reaches
- * the database and cannot take an action; permissions are applied before a
- * record is fetched, not before it is displayed. That sentence is on the screen
- * as well as in this comment.
+ * The model — reached by this product's API through AI Pulse, when Pulse has one
+ * for Purchases — decides which approved question was meant and writes the
+ * summary sentence. It never writes a query, never reaches the database and
+ * cannot take an action; permissions are applied before a record is fetched, not
+ * before it is displayed. That sentence is on the screen as well as in this
+ * comment. The browser only ever talks to this product's own API.
  */
 
 import { useState } from 'react'
@@ -77,7 +78,7 @@ export function AskDrawer({ open, panel, onClose }: { open: boolean; panel: AskP
         <div className="purchase-ask-drawer">
           <div className="purchase-ask-drawer__state">
             <Badge tone={panel.ai.available ? 'success' : 'neutral'}>
-              {panel.ai.available ? 'Model configured' : 'Rules only'}
+              {panel.ai.available ? 'Powered by AI Pulse' : 'Rules only'}
             </Badge>
             <p className="purchase-muted">{panel.notice}</p>
           </div>

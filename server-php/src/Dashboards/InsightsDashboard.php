@@ -16,10 +16,11 @@ use Aicountly\Api\Http;
  *
  *   OBLIGATION  what is already committed. A fact with a document behind it.
  *   FORECAST    arithmetic over history, with the method and the window stated.
- *   COMMENTARY  what a model said. Only present when one is configured, always
- *               labelled, and never the source of a figure.
+ *   COMMENTARY  what a model said, through AI Pulse. Only present when Pulse has
+ *               a model for Purchases, always labelled, and never the source of
+ *               a figure.
  *
- * With no model configured, the first two still work and the screen says so.
+ * With no model available, the first two still work and the screen says so.
  * "AI insights are currently unavailable" is a statement about the commentary,
  * not an empty page.
  *
@@ -45,10 +46,7 @@ final class InsightsDashboard extends Dashboard
     public function build(): array
     {
         $currency = $this->documentCurrency() ?? 'INR';
-        $ai = AiClient::status();
-        if (!$this->can('settings.manage')) {
-            $ai['admin_hint'] = null;
-        }
+        $ai = $this->aiStatus();
 
         $opportunities = $this->can('cost.view') || $this->can('reports.view')
             ? InsightRules::opportunities($this->ctx, $this->period, $currency)
@@ -72,7 +70,7 @@ final class InsightsDashboard extends Dashboard
 
         // Computed once: the card and the panel must never disagree about the
         // projection, which they would if each derived its own.
-        $forecastPanel = $this->forecastPanel($currency, $history);
+        $forecastPanel = $this->forecastPanel($currency, $history, $ai);
         $forecastSummary = ($forecastPanel['spend_forecast']['available'] ?? false) === true
             ? $forecastPanel['spend_forecast']
             : null;
@@ -469,7 +467,7 @@ final class InsightsDashboard extends Dashboard
             'withheld_count' => count($catalogue) - count($allowed),
             'endpoint'   => 'v1/insights/ask',
             'notice'     => $ai['available']
-                ? 'A model is configured. It picks which of the approved questions you meant and writes the summary sentence; every figure comes from your records.'
+                ? 'AI is available through AI Pulse. It picks which of the approved questions you meant and writes the summary sentence; every figure comes from your records.'
                 : (string) $ai['reason'] . ' The questions below still work — they are answered by fixed queries over your own records.',
             'security'   => 'Questions run approved, parameterised queries. The model never writes a query, never reaches the database, and cannot take an action. Your permissions are applied before any record is fetched, not before it is displayed.',
         ]);
@@ -1054,8 +1052,8 @@ final class InsightsDashboard extends Dashboard
         return $this->panel([
             'method'       => $ai['available'] ? 'rules_with_commentary' : 'rules',
             'method_label' => $ai['available']
-                ? 'Each read below is arithmetic over your records. A model can comment on them in Ask Aicountly AI; it writes none of these figures.'
-                : 'Each read below is arithmetic over your records. No model is configured, and none is needed for any of them.',
+                ? 'Each read below is arithmetic over your records. AI, through AI Pulse, can comment on them in Ask Aicountly AI; it writes none of these figures.'
+                : 'Each read below is arithmetic over your records. No AI model is available, and none is needed for any of them.',
             'ai'           => ['available' => (bool) $ai['available'], 'reason' => $ai['reason'] ?? null],
             'rows'         => $rows,
             'basis'        => 'Every row states whether it is an observation, an estimate or a projection, and opens the records behind it.',
@@ -1156,13 +1154,14 @@ final class InsightsDashboard extends Dashboard
      * Panel C — forecasts.
      *
      * Three sections that are never merged: what is contractually committed,
-     * what the arithmetic suggests, and — only where a model is configured —
-     * what it had to say about the two.
+     * what the arithmetic suggests, and — only where AI Pulse has a model for
+     * Purchases — what it had to say about the two.
      *
      * @param list<array{month: string, value: string, orders: int}> $history
+     * @param array<string, mixed> $ai
      * @return array<string, mixed>
      */
-    private function forecastPanel(string $currency, array $history): array
+    private function forecastPanel(string $currency, array $history, array $ai): array
     {
         if (!$this->canSeeValues()) {
             return $this->withheld('reports.view');
@@ -1200,7 +1199,7 @@ final class InsightsDashboard extends Dashboard
                     . 'These are commitments already made, not a prediction. Tax is excluded.',
             ],
             'spend_forecast' => $forecast,
-            'commentary'  => AiClient::isConfigured()
+            'commentary'  => $ai['available']
                 ? ['available' => true, 'note' => 'Commentary can be requested on the Ask panel. It is written over these same figures and adds none of its own.']
                 : ['available' => false, 'note' => 'AI insights are currently unavailable. The obligations and the projection above are unaffected — both are arithmetic over your own records.'],
             'payables_note' => 'Upcoming payment obligations come from Smart Books due dates and are shown on Bills & Payables, not projected here.',
@@ -1368,6 +1367,24 @@ final class InsightsDashboard extends Dashboard
             ($intent === null || $intent === '') ? null : (string) $intent,
         );
 
-        return $answer + ['ai' => AiClient::status()];
+        return $answer + ['ai' => $this->aiStatus()];
+    }
+
+    /**
+     * Whether AI is available through AI Pulse, as this screen may state it.
+     *
+     * Asked once per request (AiClient remembers the answer), and the hint about
+     * what to fix goes only to somebody who could act on it.
+     *
+     * @return array<string, mixed>
+     */
+    private function aiStatus(): array
+    {
+        $ai = AiClient::status($this->auth);
+        if (!$this->can('settings.manage')) {
+            $ai['admin_hint'] = null;
+        }
+
+        return $ai;
     }
 }

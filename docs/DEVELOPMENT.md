@@ -36,6 +36,7 @@ BOOKS_API_BASE=http://127.0.0.1:8792
 INVENTORY_API_BASE=http://127.0.0.1:8792
 MANAGE_API_BASE=http://127.0.0.1:8792
 PORTAL_AUTH_BASE=http://127.0.0.1:8792
+PULSE_API_ORIGIN=http://127.0.0.1:8792
 
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173
 ```
@@ -43,6 +44,12 @@ CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173
 `PORTAL_AUTH_BASE` pointing at the stub is what lets you sign in without a real
 portal session. **It belongs in a local `.env` and nowhere else** — a deployed
 build always talks to `my.aicountly.com`.
+
+`PULSE_API_ORIGIN` pointing at the stub keeps AI local too. The stub answers as
+an AI Pulse with no model bound, so AI Insights shows its rules-only state; sign
+in with the auth token `preview-auth-token.ai-on` (below) to see it with a model
+bound. Unset, a local API asks the sandbox AI Pulse, which will not accept a
+preview session.
 
 ```bash
 php bin/migrate.php
@@ -80,7 +87,8 @@ is the real one.
 ## Checks
 
 ```bash
-server-php/tests/run.sh          # integration tests, real PostgreSQL + stub
+server-php/tests/run.sh          # integration tests, real PostgreSQL + stub, then the AI gateway tests
+php server-php/tests/ai_gateway.php   # the AI Pulse client alone: fake transport, no database
 npm --prefix web run typecheck
 npm --prefix web run build
 

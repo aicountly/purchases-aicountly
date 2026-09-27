@@ -21,8 +21,9 @@ use Aicountly\Api\Permissions;
  * permissions, and no amount of prompt engineering fixes that. Here the
  * questions are a fixed catalogue: each one names the permission it needs, the
  * parameterised query behind it and how its answer is calculated. The model —
- * when there is one — only helps pick which question was meant, and writes the
- * sentence at the top. Everything factual comes from the query.
+ * reached through AI Pulse, when Pulse has one for Purchases — only helps pick
+ * which question was meant, and writes the sentence at the top. Everything
+ * factual comes from the query.
  *
  * Without a model the keyword matcher picks the intent and the answer is
  * identical apart from the summary line, which is then marked as rules-based.
@@ -116,9 +117,9 @@ final class AskEngine
         }
 
         // The model is asked only when the keywords did not decide it, and only
-        // to pick from this same list.
-        if ($intentId === null && AiClient::isConfigured()) {
-            $classified = AiClient::classify($question, array_map(
+        // to pick from this same list — through AI Pulse, as this user.
+        if ($intentId === null) {
+            $classified = AiClient::classify($ctx, $auth, $question, array_map(
                 static fn (array $i) => ['id' => $i['id'], 'description' => $i['description']],
                 $catalogue,
             ));
@@ -183,21 +184,26 @@ final class AskEngine
             return ['understood' => false, 'method' => 'rules', 'answer' => 'That question could not be answered.', 'scope' => self::scope($ctx, $period), 'records' => [], 'sources' => []];
         }
 
-        $methodLabel = 'Answered from your purchase records by a fixed rule. No AI model was consulted.';
+        // Said as it happened: when the model picked the question, the label says
+        // so even if it wrote nothing else.
+        $methodLabel = $method === 'ai_routed'
+            ? 'Answered from your purchase records by a fixed rule. AI, through AI Pulse, only chose which approved question you meant.'
+            : 'Answered from your purchase records by a fixed rule. No AI model was consulted.';
 
-        // With a model configured, it writes the opening sentence over rows we
+        // Where AI Pulse has a model, it writes the opening sentence over rows we
         // already have. It cannot change a figure: the records below are what
         // the query returned and are shown alongside.
-        if (AiClient::isConfigured() && $result['records'] !== []) {
-            $narrated = AiClient::narrate($intent['question'], [
+        if ($result['records'] !== []) {
+            $narrated = AiClient::narrate($ctx, $auth, $intent['question'], [
                 'scope'   => self::scope($ctx, $period),
                 'summary' => $result['summary_facts'] ?? [],
                 'records' => array_slice($result['records'], 0, 15),
             ]);
             if ($narrated['ok']) {
                 $result['answer'] = (string) $narrated['text'];
+                $methodLabel = 'Figures come from your purchase records; the summary sentence was written by AI, through AI Pulse, from those same figures.'
+                    . ($method === 'ai_routed' ? ' AI also chose which approved question you meant.' : '');
                 $method = 'ai_narrated';
-                $methodLabel = 'Figures come from your purchase records; the summary sentence was written by the configured model from those same figures.';
             } else {
                 $aiError = $narrated['error'];
             }

@@ -4,8 +4,8 @@
  * Every row is labelled with what KIND of statement it is — observed, an
  * estimate, or a projection — because a reader who cannot tell them apart will
  * treat the weakest as if it were the strongest. None of them is written by a
- * model: where one is configured it can comment on these figures in Ask
- * Aicountly AI, and it still writes none of them.
+ * model: where AI Pulse has one for Purchases it can comment on these figures in
+ * Ask Aicountly AI, and it still writes none of them.
  */
 
 import { useNavigate } from 'react-router-dom'
