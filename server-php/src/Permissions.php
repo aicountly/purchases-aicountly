@@ -54,6 +54,7 @@ final class Permissions
         'Returns and claims' => [
             'return.create'  => 'Raise a purchase return',
             'return.approve' => 'Approve a purchase return',
+            'return.financial_adjustment' => 'Raise a debit note for a return with no goods going back',
             'claim.create'   => 'Raise a supplier claim',
             'claim.settle'   => 'Settle a supplier claim',
         ],

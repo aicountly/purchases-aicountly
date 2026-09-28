@@ -59,7 +59,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ### 4. Books
 - [x] User-initiated writes use the user's session; no generic service key for company writes (bills and debit notes)
-- [~] Bill and debit-note payloads: party, bill (supplier invoice no/date, due date), lines, tax inputs, references — bill done; debit note with section 6
+- [x] Bill and debit-note payloads: party, bill (supplier invoice no/date, due date / return no), lines, tax inputs, references
 - [x] Supplier invoice reference kept apart from Books' voucher number (`bill.bill_ref`)
 - [x] Books refuses an empty or ambiguous financial posting — empty commercial voucher refused (Books `awesome-hypatia`, merged); a stock effect an integration declares is posted as declared or refused 422 (books `InventorySettlementService::assertDeclaredEffectHonoured`)
 - [x] Acceptance on ledger effect, creditor, bill reference and totals — not HTTP 200 (`posting_check`)
@@ -71,11 +71,12 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Purchase: GRN posts goods on hand at provisional cost; bill settles it (capability-gated; deploy Inventory and Books first)
 
 ### 6. Returns and claims
-- [ ] Runtime answer: does Books trigger Inventory for a Purchase debit note?
-- [ ] One initiation path per physical movement
-- [ ] Physical return: dispatch confirmed before the accounting step; financial-only adjustment separately authorised
-- [ ] Return quantities validated against receipts, prior returns and pending returns
-- [ ] Claim resolution types: financial adjustment, physical, refund, non-financial; effect shown and authorised; settled only after the upstream operation
+- [x] Runtime answer: does Books trigger Inventory for a Purchase debit note? **Yes** — Books sends the debit note's item lines to Inventory as `PURCHASE_RETURN` (books `DebitNoteReachesInventoryTest`); Books' own pending register skips Purchase's challans; Inventory moves the goods once (inventory `PurchaseReturnSingleMovementTest`)
+- [x] One initiation path per physical movement — dispatch is a `challan_only` delivery challan (moves nothing), the debit note settles it (the one movement); Purchase never posts a `PURCHASE_RETURN` itself
+- [x] Physical return: dispatch confirmed before the accounting step; financial-only adjustment separately authorised (`return.financial_adjustment`, reason, ledger; no stock); recall reverses the challan
+- [x] Return quantities validated against receipts, prior returns and pending returns — received ∧ billed, less every undispatched return, under the order lock (race-tested)
+- [d] Return of goods received but **not yet billed** — refused with guidance (bill what arrived, then return against the bill). A safe single-movement path needs an Inventory "GRN return" that settles the GRN's pending-in; deferred as a design item, not patched
+- [x] Claim resolution types: financial adjustment, physical return, replacement, refund, non-financial; effect shown and authorised; settled only after the upstream operation (debit note posted, return debited, GRN applied, Books receipt verified); partial settlement; retries on the same key; direct "settle" retired
 
 ### 7. Supplier identity, duplicate bills, periods
 - [ ] Contacts client on Contacts' real routes; communication identity from Contacts, creditor from Books
@@ -102,12 +103,12 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ## Continuation checkpoint
 
-Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 30/0
+Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 40/0
 (remediation suite looped 6× for race stability).
 
 Next, in order:
 1. ~~`bin/receipt-repair.php`~~ done.
 2. ~~Inventory producer change~~ done (Inventory-aicountly, same branch).
 3. ~~Books producer change + supplier invoice register~~ done (books-react-app, same branch).
-4. Section 6 returns/claims; section 7 Contacts routes + Manage FY/branch; section 8; section 9.
+4. ~~Section 6~~ done (API; screens with item 5). Next: section 7 Contacts routes + Manage FY/branch; section 8; section 9.
 5. Web UI for sections 1–4 (per-line receipt, CommandStrip controls, short-close, direct/service bill).

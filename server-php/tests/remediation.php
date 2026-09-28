@@ -717,6 +717,240 @@ check('two submissions of the same supplier invoice together make one bill (real
 });
 
 // ---------------------------------------------------------------------------
+echo "\nReturns and claims: one movement, settled only by what happened\n";
+
+/** An order received and billed in full, for returns to go back against. */
+function billedOrder(Context $ctx, Auth $auth, float $billQty = 100): array
+{
+    $po = orderOf($ctx, $auth);
+    receive($ctx, $auth, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 100);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'RB-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => $billQty, 'rate' => 250]]]);
+    $bills->post((int) $bill['request_id']);
+
+    return (new PurchaseOrderService($ctx, $auth))->find((int) $po['po_id']);
+}
+
+function returnOf(Context $ctx, Auth $auth, array $po, float $qty, array $extra = []): array
+{
+    return (new Domain\ReturnClaimService($ctx, $auth))->createReturn($extra + [
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'reason_code' => 'quality',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'return_qty' => $qty]],
+    ]);
+}
+
+check('a physical return\'s debit note waits for Inventory to confirm the dispatch, and the goods leave once', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $return = returnOf($ctx, $owner, $po, 10);
+    $id = (int) $return['return_id'];
+    same(250.0, (float) $return['lines'][0]['rate'], 'priced from the order when no rate is given');
+    $returns->approveReturn($id, []);
+
+    refused(fn () => $returns->requestDebitNote($id), 'Send the goods back first', 'debit note before the dispatch');
+    stubFail('inventory-documents/post', 503);
+    refused(fn () => $returns->dispatchReturn($id), 'press Retry', 'Inventory down');
+    stubRecover();
+    refused(fn () => $returns->requestDebitNote($id), 'Send the goods back first', 'debit note after a failed dispatch');
+
+    $dispatched = $returns->dispatchReturn($id);
+    same('DISPATCHED', $dispatched['status'], 'dispatched once Inventory confirmed it');
+    $challan = inventoryState()['by_id'][(string) $dispatched['inventory_document_id']] ?? null;
+    same('DELIVERY_CHALLAN', $challan['document_type'] ?? null, 'recorded as a delivery challan');
+    same('challan_only', $challan['stock_effect'] ?? null, 'which moves nothing on its own');
+
+    $debited = $returns->requestDebitNote($id);
+    same('DEBITED', $debited['status'], 'debited');
+    $notes = array_values(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3));
+    same(1, count($notes), 'one debit note');
+    same('from_challan', $notes[0]['stock']['stock_effect'] ?? null, 'which settles the dispatch challan');
+    same((int) $dispatched['inventory_document_id'], (int) $notes[0]['challan_settlements'][0]['source_document_id'], 'this return\'s challan');
+    $purchasePosts = array_filter(stubRequests('/v1/inventory-documents/post'), static fn ($r) => ($r['body']['document_type'] ?? '') === 'PURCHASE_RETURN');
+    same(0, count($purchasePosts), 'Purchase never issues the goods itself: the debit note is the one movement');
+
+    same('DEBITED', $returns->requestDebitNote($id)['status'], 'asking again changes nothing');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'still one debit note');
+});
+
+check('what can go back is what was received and billed, less every other return', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner, 60);
+
+    refused(fn () => returnOf($ctx, $owner, $po, 70), 'has not been billed yet', 'more than was billed');
+    returnOf($ctx, $owner, $po, 40);
+    refused(fn () => returnOf($ctx, $owner, $po, 30), 'already on another return', 'the pending return counts');
+    returnOf($ctx, $owner, $po, 20);
+});
+
+check('two returns raised together cannot send back more than was billed (real race)', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner, 60);
+    $input = ['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'return_qty' => 40]]];
+    $results = race([['create_return', ['input' => $input]], ['create_return', ['input' => $input]], ['create_return', ['input' => $input]]]);
+    same(1, count(array_filter($results, static fn ($r) => $r['ok'])), 'one return of 40 fits 60 billed: ' . json_encode(array_map(static fn ($r) => [$r['status'], $r['message'] ?? null], $results)));
+    same(40.0, (float) Db::scalar("SELECT COALESCE(SUM(return_qty), 0) FROM purchase_return_lines"), 'and only it was recorded');
+});
+
+check('a financial return needs its own authority, a reason and a ledger, and moves no stock', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $clerk = person('user-clerk', 0);
+    Db::insert('purchase_permission_profiles', ['cmp_id' => 88, 'profile_name' => 'Returns desk', 'permissions' => ['return.create', 'return.approve', 'po.view'], 'is_active' => true], 'profile_id');
+    Db::run("INSERT INTO purchase_permission_assignments (cmp_id, user_uuid, profile_id) SELECT 88, 'user-clerk', profile_id FROM purchase_permission_profiles WHERE profile_name = 'Returns desk'");
+    $input = ['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'return_kind' => 'financial', 'adjustment_acc_id' => 7310, 'adjustment_reason' => 'Rate agreed down after quality review.', 'lines' => [['description' => 'Rate difference', 'return_qty' => 1, 'rate' => 1500]]];
+
+    refused(fn () => (new Domain\ReturnClaimService($ctx, $clerk))->createReturn($input), 'permission', 'without return.financial_adjustment');
+    refused(fn () => (new Domain\ReturnClaimService($ctx, $owner))->createReturn(['adjustment_reason' => null] + $input), 'Say why', 'without a reason');
+    refused(fn () => (new Domain\ReturnClaimService($ctx, $owner))->createReturn(['adjustment_acc_id' => null] + $input), 'ledger', 'without a ledger');
+
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $return = $returns->createReturn($input);
+    refused(fn () => $returns->dispatchReturn((int) $return['return_id']), 'Nothing goes back', 'a financial return has nothing to dispatch');
+    $returns->approveReturn((int) $return['return_id'], []);
+    $debited = $returns->requestDebitNote((int) $return['return_id']);
+    same('DEBITED', $debited['status'], 'debited');
+    $note = array_values(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3))[0];
+    same(null, $note['stock'], 'no stock in the debit note');
+    same(0, count(array_filter(stubRequests('/v1/inventory-documents/post'), static fn ($r) => ($r['body']['source_document_type'] ?? '') === 'purchases.return')), 'and nothing sent to Inventory');
+    same('0.0000', (string) Db::scalar('SELECT debited_qty FROM purchase_order_lines WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'the order\'s quantities are untouched by money-only adjustments');
+});
+
+check('a dispatched return can be recalled: Inventory reverses the challan and the order counts the goods again', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
+    $returns->approveReturn($id, []);
+    $dispatched = $returns->dispatchReturn($id);
+    same('10.0000', (string) Db::scalar('SELECT returned_qty FROM purchase_order_lines WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'counted as gone');
+
+    refused(fn () => $returns->recallReturn($id, []), 'Say why', 'a recall needs a reason');
+    $recalled = $returns->recallReturn($id, ['reason' => 'Supplier refused the consignment at their gate.']);
+    same('RECALLED', $recalled['status'], 'recalled');
+    same('REVERSED', inventoryState()['by_id'][(string) $dispatched['inventory_document_id']]['status'] ?? null, 'the challan is reversed in Inventory');
+    same('0.0000', (string) Db::scalar('SELECT returned_qty FROM purchase_order_lines WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'the goods count as received again');
+    refused(fn () => $returns->requestDebitNote($id), 'recalled', 'no debit note for goods that came back');
+});
+
+check('goods sent back for good close the order; goods to be replaced keep it waiting', function () use ($ctx, $owner) {
+    reset();
+    $orders = new PurchaseOrderService($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+
+    $po = billedOrder($ctx, $owner);
+    same('CLOSED', $po['status'], 'received and billed in full');
+    $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
+    $returns->approveReturn($id, []);
+    $returns->dispatchReturn($id);
+    same('RECEIVED', $orders->find((int) $po['po_id'])['status'], 'an open return keeps the order from closing');
+    $returns->requestDebitNote($id);
+    $after = $orders->find((int) $po['po_id']);
+    same('CLOSED', $after['status'], 'no replacement coming: closed once the debit note posts');
+    same('10.0000', (string) $after['lines'][0]['short_closed_qty'], 'the returned quantity is no longer awaited');
+
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $id = (int) returnOf($ctx, $owner, $po, 10, ['expect_replacement' => true])['return_id'];
+    $returns->approveReturn($id, []);
+    $returns->dispatchReturn($id);
+    $returns->requestDebitNote($id);
+    $waiting = $orders->find((int) $po['po_id']);
+    same('PARTIALLY_RECEIVED', $waiting['status'], 'a replacement is coming: the order waits for it');
+    same(10.0, $waiting['progress']['lines'][0]['to_receive_qty'], 'for the 10 sent back');
+});
+
+/** A claim approved for an amount, ready for resolutions. */
+function approvedClaim(Context $ctx, Auth $auth, float $amount, ?int $poId = null): int
+{
+    $claims = new Domain\ReturnClaimService($ctx, $auth);
+    $claim = $claims->createClaim(['supplier_account_id' => 601, 'claim_kind' => 'shortage', 'claimed_amount' => $amount, 'po_id' => $poId]);
+    $claims->updateClaim((int) $claim['claim_id'], 'submit', []);
+    $claims->updateClaim((int) $claim['claim_id'], 'approve', []);
+
+    return (int) $claim['claim_id'];
+}
+
+check('a claim settles only when its debit note is in Books, partly along the way, and a failure settles nothing', function () use ($ctx, $owner) {
+    reset();
+    $claimId = approvedClaim($ctx, $owner, 5000);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $claims = new Domain\ReturnClaimService($ctx, $owner);
+
+    $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 3000, 'adjustment_acc_id' => 7310]);
+    stubFail('/vouchers/drafts', 503);
+    refused(fn () => $resolutions->approve((int) $r['resolution_id']), 'press Retry', 'Books down');
+    stubRecover();
+    same('FAILED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution says it failed');
+    same('APPROVED', $claims->findClaim($claimId)['status'], 'and the claim is not settled by hope');
+
+    $resolutions->approve((int) $r['resolution_id']);
+    $claim = $claims->findClaim($claimId);
+    same('PARTIALLY_SETTLED', $claim['status'], '3000 of 5000');
+    same('3000.0000', (string) $claim['settled_amount'], 'counted');
+    same(1, count(booksVouchers()), 'one debit note for the retried resolution');
+
+    $n = $resolutions->propose($claimId, ['kind' => 'non_financial', 'amount' => 2000, 'note' => 'Supplier will credit the balance against the October order.']);
+    $resolutions->approve((int) $n['resolution_id']);
+    same('SETTLED', $claims->findClaim($claimId)['status'], 'settled when the resolutions cover the approved amount');
+});
+
+check('a refund completes only against a Books receipt that shows the money came from this supplier', function () use ($ctx, $owner) {
+    reset();
+    file_put_contents(sys_get_temp_dir() . '/stub-vouchers.json', json_encode([
+        '5001' => ['vch_txn_id' => 5001, 'vch_type_id' => 3, 'vch_number' => 'DN/9', 'lines' => [['acc_id' => 601, 'dr_cr' => 1, 'amount' => 1000]]],
+        '5002' => ['vch_txn_id' => 5002, 'vch_type_id' => 13, 'vch_number' => 'RCT/7', 'lines' => [['acc_id' => 612, 'dr_cr' => 2, 'amount' => 1000], ['acc_id' => 1101, 'dr_cr' => 1, 'amount' => 1000]]],
+        '5003' => ['vch_txn_id' => 5003, 'vch_type_id' => 13, 'vch_number' => 'RCT/8', 'vch_date' => '2026-09-26', 'lines' => [['acc_id' => 601, 'dr_cr' => 2, 'amount' => 1000], ['acc_id' => 1101, 'dr_cr' => 1, 'amount' => 1000]]],
+    ]));
+    $claimId = approvedClaim($ctx, $owner, 1000);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'refund', 'amount' => 1000]);
+    $resolutions->approve((int) $r['resolution_id']);
+    same('IN_PROGRESS', $resolutions->find((int) $r['resolution_id'])['status'], 'waits for the money');
+
+    refused(fn () => $resolutions->link((int) $r['resolution_id'], ['books_voucher_id' => 5001]), 'not a receipt', 'a debit note is not money received');
+    refused(fn () => $resolutions->link((int) $r['resolution_id'], ['books_voucher_id' => 5002]), 'does not credit this supplier', 'someone else\'s receipt');
+    $resolutions->link((int) $r['resolution_id'], ['books_voucher_id' => 5003]);
+    same('SETTLED', (new Domain\ReturnClaimService($ctx, $owner))->findClaim($claimId)['status'], 'settled by the verified receipt');
+});
+
+check('a replacement completes on a recorded GRN of the claim\'s order, once', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $claimId = approvedClaim($ctx, $owner, 2500, (int) $po['po_id']);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'replacement', 'amount' => 2500]);
+    $resolutions->approve((int) $r['resolution_id']);
+
+    stubFail('inventory-documents/post', 503);
+    refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10), 'press Retry', 'a GRN Inventory has not recorded');
+    stubRecover();
+    $pending = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
+    refused(fn () => $resolutions->link((int) $r['resolution_id'], ['receipt_request_id' => $pending]), 'not been recorded', 'an unapplied GRN is not a replacement');
+    (new ReceiptService($ctx, $owner))->retry($pending);
+    $resolutions->link((int) $r['resolution_id'], ['receipt_request_id' => $pending]);
+    same('SETTLED', (new Domain\ReturnClaimService($ctx, $owner))->findClaim($claimId)['status'], 'settled by the replacement');
+});
+
+check('a claim settled by sending goods back completes when that return\'s debit note posts', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $claimId = approvedClaim($ctx, $owner, 2500, (int) $po['po_id']);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'physical_return', 'amount' => 2500, 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'return_qty' => 10]]]);
+    $resolutions->approve((int) $r['resolution_id']);
+    $returnId = (int) $resolutions->find((int) $r['resolution_id'])['reference']['return_id'];
+    same('APPROVED', (new Domain\ReturnClaimService($ctx, $owner))->findClaim($claimId)['status'], 'nothing settled while the goods are still here');
+
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $returns->approveReturn($returnId, []);
+    $returns->dispatchReturn($returnId);
+    same('APPROVED', $returns->findClaim($claimId)['status'], 'nor while they are on their way back');
+    $returns->requestDebitNote($returnId);
+    same('SETTLED', $returns->findClaim($claimId)['status'], 'settled by the return\'s debit note');
+});
+
+// ---------------------------------------------------------------------------
 echo "\nHistorical repair\n";
 
 check('the repair tool reports historical damage, plans for review, and applies only local bookkeeping', function () use ($ctx, $owner) {

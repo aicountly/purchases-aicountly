@@ -61,4 +61,16 @@ final class ReturnsController extends Controller
         [$auth, $ctx] = self::enter();
         Http::data((new ReturnClaimService($ctx, $auth))->requestDebitNote((int) $id));
     }
+
+    public static function cancel(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ReturnClaimService($ctx, $auth))->cancelReturn((int) $id, Http::body()));
+    }
+
+    public static function recall(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ReturnClaimService($ctx, $auth))->recallReturn((int) $id, Http::body()));
+    }
 }

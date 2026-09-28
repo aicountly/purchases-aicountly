@@ -23,7 +23,7 @@ if (!function_exists(__NAMESPACE__ . '\\resetPurchaseTables')) {
         $tables = [
             'purchase_match_exceptions', 'purchase_match_results', 'purchase_match_policies',
             'purchase_bill_requests', 'purchase_receipt_requests',
-            'purchase_return_lines', 'purchase_returns', 'purchase_claims',
+            'purchase_return_lines', 'purchase_returns', 'purchase_claim_resolutions', 'purchase_claims',
             'purchase_delivery_schedules', 'purchase_order_lines', 'purchase_orders',
             'purchase_agreement_lines', 'purchase_agreements',
             'purchase_bid_awards', 'purchase_quote_lines', 'purchase_quotes',

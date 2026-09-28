@@ -56,6 +56,7 @@ try {
         'post_bill'  => (new BillService($ctx, $auth))->post((int) $args['request_id']),
         'cancel_po'  => (new PurchaseOrderService($ctx, $auth))->cancel((int) $args['po_id'], ['reason' => 'race']),
         'cancel_bill' => (new BillService($ctx, $auth))->cancel((int) $args['request_id'], ['reason' => 'race']),
+        'create_return' => (new \Aicountly\Api\Domain\ReturnClaimService($ctx, $auth))->createReturn((array) $args['input']),
         'retry_receipt' => (new ReceiptService($ctx, $auth))->retry((int) $args['request_id']),
         'cancel_receipt' => (new ReceiptService($ctx, $auth))->cancel((int) $args['request_id'], ['reason' => 'race']),
         'ensure_claim' => (static function () use ($ctx, $args): array {

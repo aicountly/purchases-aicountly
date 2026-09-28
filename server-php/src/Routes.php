@@ -125,10 +125,17 @@ final class Routes
         $router->post('v1/returns/{id}/approve', [ReturnsController::class, 'approve']);
         $router->post('v1/returns/{id}/dispatch', [ReturnsController::class, 'dispatch']);
         $router->post('v1/returns/{id}/debit-note', [ReturnsController::class, 'debitNote']);
+        $router->post('v1/returns/{id}/cancel', [ReturnsController::class, 'cancel']);
+        $router->post('v1/returns/{id}/recall', [ReturnsController::class, 'recall']);
 
         $router->get('v1/claims', [ClaimsController::class, 'index']);
         $router->post('v1/claims', [ClaimsController::class, 'create']);
         $router->get('v1/claims/{id}', [ClaimsController::class, 'show']);
+        // Before the generic transition, which would otherwise read "resolutions" as an action.
+        $router->post('v1/claims/{id}/resolutions', [ClaimsController::class, 'propose']);
+        $router->post('v1/claim-resolutions/{id}/approve', [ClaimsController::class, 'approveResolution']);
+        $router->post('v1/claim-resolutions/{id}/link', [ClaimsController::class, 'linkResolution']);
+        $router->post('v1/claim-resolutions/{id}/cancel', [ClaimsController::class, 'cancelResolution']);
         $router->post('v1/claims/{id}/{action}', [ClaimsController::class, 'transition']);
 
         // Suppliers — the procurement profile, not the ledger.

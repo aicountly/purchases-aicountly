@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Controllers;
 
+use Aicountly\Api\Domain\ClaimResolutionService;
 use Aicountly\Api\Domain\ReturnClaimService;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
@@ -49,5 +50,29 @@ final class ClaimsController extends Controller
     {
         [$auth, $ctx] = self::enter();
         Http::data((new ReturnClaimService($ctx, $auth))->updateClaim((int) $id, $action, Http::body()));
+    }
+
+    public static function propose(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ClaimResolutionService($ctx, $auth))->propose((int) $id, Http::body()), 201);
+    }
+
+    public static function approveResolution(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ClaimResolutionService($ctx, $auth))->approve((int) $id, Http::body()));
+    }
+
+    public static function linkResolution(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ClaimResolutionService($ctx, $auth))->link((int) $id, Http::body()));
+    }
+
+    public static function cancelResolution(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ClaimResolutionService($ctx, $auth))->cancel((int) $id, Http::body()));
     }
 }

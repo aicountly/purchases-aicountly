@@ -67,7 +67,8 @@ final class PoProgress
         if (in_array($status, self::PROGRESSABLE, true)) {
             $done = $figures['receipt_status'] === 'COMPLETE'
                 && $figures['billing_status'] === 'COMPLETE'
-                && !$figures['bill_work_open'];
+                && !$figures['bill_work_open']
+                && !$figures['return_work_open'];
 
             if ($done) {
                 $next = 'CLOSED';
@@ -106,7 +107,7 @@ final class PoProgress
     /**
      * The figures behind the statuses, without writing anything.
      *
-     * @return array{receipt_status: string, billing_status: string, bill_work_open: bool, short_closed: bool, has_stock_lines: bool, lines: list<array<string, mixed>>}
+     * @return array{receipt_status: string, billing_status: string, bill_work_open: bool, return_work_open: bool, short_closed: bool, has_stock_lines: bool, lines: list<array<string, mixed>>}
      */
     public static function figures(int $poId, int $cmpId): array
     {
@@ -174,10 +175,21 @@ final class PoProgress
             ['id' => $poId, 'cmp' => $cmpId],
         );
 
+        // A return not yet settled by its debit note (or cancelled, or recalled) is money still
+        // to be agreed with the supplier: the order is not finished while one is open.
+        $returnWorkOpen = (bool) Db::scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM purchase_returns r
+                  WHERE r.po_id = :id AND r.cmp_id = :cmp AND r.status IN ('DRAFT', 'APPROVED', 'DISPATCHED')
+             )",
+            ['id' => $poId, 'cmp' => $cmpId],
+        );
+
         return [
             'receipt_status'  => !$hasStock || $receiptComplete ? 'COMPLETE' : ($anyReceived ? 'PARTIAL' : 'NOT_STARTED'),
             'billing_status'  => $billingComplete ? 'COMPLETE' : ($anyBilled ? 'PARTIAL' : 'NOT_BILLED'),
             'bill_work_open'  => $billWorkOpen,
+            'return_work_open' => $returnWorkOpen,
             'short_closed'    => $shortClosed,
             'has_stock_lines' => $hasStock,
             'lines'           => $out,

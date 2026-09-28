@@ -287,6 +287,20 @@ function receivedOrder(Context $ctx, Auth $auth): array
     return $orders->find((int) $po['po_id']);
 }
 
+/** Received and billed in full: what a return goes back against. */
+function billedOrder(Context $ctx, Auth $auth): array
+{
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'BILLED-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    $bills->post((int) $bill['request_id']);
+
+    return (new PurchaseOrderService($ctx, $auth))->find((int) $po['po_id']);
+}
+
 // ---------------------------------------------------------------------------
 
 $ctx = freshContext();
@@ -884,7 +898,7 @@ check('a service bill books to the chosen ledger and moves no stock', function (
 
 check('a purchase return leaves stock once: dispatched on challan, issued by the debit note', function () use ($ctx, $auth) {
     resetDatabase();
-    $po = receivedOrder($ctx, $auth);
+    $po = billedOrder($ctx, $auth);
     $returns = new ReturnClaimService($ctx, $auth);
     $return = $returns->createReturn([
         'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'reason_code' => 'quality',
@@ -960,7 +974,7 @@ echo "\nReturns and claims\n";
 
 check('a return runs approve, dispatch and debit note, keeping only references', function () use ($ctx, $auth) {
     resetDatabase();
-    $po = receivedOrder($ctx, $auth);
+    $po = billedOrder($ctx, $auth);
     $returns = new ReturnClaimService($ctx, $auth);
 
     $return = $returns->createReturn([
@@ -996,16 +1010,20 @@ check('a claim moves through its lifecycle and cannot over-settle', function () 
     $claimId = (int) $claim['claim_id'];
 
     $service->updateClaim($claimId, 'submit', []);
-    $service->updateClaim($claimId, 'approve', []);
+    $service->updateClaim($claimId, 'approve', ['approved_amount' => 4500]);
 
-    assertThrows(
-        static fn () => $service->updateClaim($claimId, 'settle', ['settled_amount' => 9000]),
-        'cannot settle for more',
-        'over-settlement',
-    );
+    // Settled by what happens, never by hand.
+    assertThrows(static fn () => $service->updateClaim($claimId, 'settle', ['settled_amount' => 4500]), 'propose a resolution', 'marking it settled by hand');
+    $resolutions = new \Aicountly\Api\Domain\ClaimResolutionService($ctx, $auth);
+    assertThrows(static fn () => $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 9000, 'adjustment_acc_id' => 7302]), 'Only 4,500.00', 'over-settlement');
 
-    $settled = $service->updateClaim($claimId, 'settle', ['settled_amount' => 4500]);
-    assertSame('SETTLED', $settled['status'], 'status');
+    $resolution = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 4500, 'adjustment_acc_id' => 7302]);
+    assertTrue(str_contains((string) $resolution['proposed_effect']['summary'], 'debit note'), 'the effect is spelt out before approval');
+    assertSame('APPROVED', $service->findClaim($claimId)['status'], 'nothing is settled by a proposal');
+    $resolutions->approve((int) $resolution['resolution_id']);
+
+    $settled = $service->findClaim($claimId);
+    assertSame('SETTLED', $settled['status'], 'settled once Books posted the debit note');
     assertSame('4500.0000', (string) $settled['settled_amount'], 'settled amount');
 });
 
