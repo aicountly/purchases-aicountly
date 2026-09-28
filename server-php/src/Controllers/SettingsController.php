@@ -203,6 +203,22 @@ final class SettingsController extends Controller
             }
         }
 
+        if (array_key_exists('sod_policy', $body)) {
+            $policy = trim((string) $body['sod_policy']);
+            if (!in_array($policy, \Aicountly\Api\Domain\SegregationOfDuties::POLICIES, true)) {
+                Http::validationFailed('Segregation of duties is "strict" (nobody decides on what they raised) or "owner_with_reason" (the owner may, saying why).', ['field' => 'sod_policy', 'allowed' => \Aicountly\Api\Domain\SegregationOfDuties::POLICIES]);
+            }
+            $changes['sod_policy'] = $policy;
+        }
+
+        if (array_key_exists('over_receipt_tolerance_pc', $body)) {
+            $tolerance = $body['over_receipt_tolerance_pc'];
+            if (!is_numeric($tolerance) || (float) $tolerance < 0 || (float) $tolerance > 100) {
+                Http::validationFailed('Over-receipt tolerance is a percentage from 0 to 100.', ['field' => 'over_receipt_tolerance_pc']);
+            }
+            $changes['over_receipt_tolerance_pc'] = round((float) $tolerance, 3);
+        }
+
         if (array_key_exists('default_warehouse_id', $body)) {
             $warehouse = $body['default_warehouse_id'];
             $changes['default_warehouse_id'] = ($warehouse === null || $warehouse === '') ? null : (int) $warehouse;
@@ -211,7 +227,13 @@ final class SettingsController extends Controller
         if ($changes !== []) {
             $changes['updated_at'] = gmdate('Y-m-d H:i:s');
             Db::run('INSERT INTO purchase_settings (cmp_id) VALUES (:cmp) ON CONFLICT (cmp_id) DO NOTHING', ['cmp' => $ctx->cmpId]);
+            $before = Db::first('SELECT sod_policy, over_receipt_tolerance_pc FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]) ?? [];
             Db::update('purchase_settings', $changes, ['cmp_id' => $ctx->cmpId]);
+            // Controls, not preferences: who changed them, from what, to what.
+            $governed = array_intersect_key($changes, ['sod_policy' => true, 'over_receipt_tolerance_pc' => true]);
+            if ($governed !== []) {
+                \Aicountly\Api\Audit::record($ctx, $auth, 'settings.controls_changed', 'settings', $ctx->cmpId, array_intersect_key($before, $governed), $governed, (string) ($body['reason'] ?? ''));
+            }
         }
 
         self::show();

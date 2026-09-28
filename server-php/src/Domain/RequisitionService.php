@@ -179,19 +179,18 @@ final class RequisitionService
             Http::conflict('This requisition is not waiting for approval.');
         }
 
-        // Segregation of duties. The person who raised it may not approve it,
-        // however senior they are — that is the point of the control, and a
-        // permission that lets you approve does not let you approve your own.
-        if ((string) $requisition['requester_uuid'] === $this->auth->uuid && !$this->auth->ownsCompany($this->ctx->cmpId)) {
-            Http::forbidden('You raised this requisition, so somebody else has to approve it.');
-        }
-
         $approved = $action === 'approve';
         $note = self::text($input['note'] ?? null);
 
         if (!$approved && $note === null) {
             Http::validationFailed('Say why this requisition is being rejected.', ['field' => 'note']);
         }
+
+        // Segregation of duties. The person who raised it may not approve it,
+        // however senior they are — that is the point of the control, and a
+        // permission that lets you approve does not let you approve your own.
+        // The owner's exception is the company's stated policy, and needs a reason.
+        SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) $requisition['requester_uuid'], 'requisition', 'requisition', $requisitionId, $note);
 
         Db::transaction(function () use ($requisitionId, $approved, $note) {
             Db::update('purchase_requisitions', [
@@ -379,6 +378,70 @@ final class RequisitionService
         }
 
         return gmdate('Y-m-d');
+    }
+
+    /**
+     * May sourcing or ordering refer to this requisition, and to these lines of it?
+     *
+     * Only an approved requisition (or one already being sourced) can be sourced or ordered
+     * against, and a line reference must be a line of that requisition in this company. An
+     * order may not take more of a line than was asked for. Called under the caller's
+     * transaction; the requisition row is locked so two orders cannot both take the last of it.
+     *
+     * @param array<int, float> $qtyByLine requisition_line_id => quantity about to be ordered (0 to only check)
+     */
+    public function assertSourceable(?int $requisitionId, array $qtyByLine, bool $ordering): void
+    {
+        $lineIds = array_keys($qtyByLine);
+        if ($requisitionId === null && $lineIds === []) {
+            return;
+        }
+        if ($requisitionId === null) {
+            $requisitionId = (int) (Db::scalar(
+                'SELECT requisition_id FROM purchase_requisition_lines WHERE line_id = :id AND cmp_id = :cmp',
+                ['id' => (int) $lineIds[0], 'cmp' => $this->ctx->cmpId],
+            ) ?? 0);
+        }
+        $requisition = Db::first(
+            'SELECT requisition_id, requisition_no, status FROM purchase_requisitions WHERE requisition_id = :id AND cmp_id = :cmp FOR UPDATE',
+            ['id' => $requisitionId, 'cmp' => $this->ctx->cmpId],
+        );
+        if ($requisition === null) {
+            Http::validationFailed('That requisition does not exist in this company.', ['field' => 'requisition_id']);
+        }
+        if (!in_array($requisition['status'], ['APPROVED', 'SOURCING'], true)) {
+            Http::conflict(sprintf(
+                'Requisition %s is %s. Only an approved requisition can be sourced or ordered against.',
+                $requisition['requisition_no'],
+                strtolower(str_replace('_', ' ', (string) $requisition['status'])),
+            ), ['requisition_status' => $requisition['status']]);
+        }
+        if ($lineIds === []) {
+            return;
+        }
+        $lines = [];
+        foreach (Db::all(
+            'SELECT line_id, line_no, requisition_id, required_qty, ordered_qty FROM purchase_requisition_lines WHERE cmp_id = :cmp AND line_id IN (' . implode(',', array_map('intval', $lineIds)) . ')',
+            ['cmp' => $this->ctx->cmpId],
+        ) as $l) {
+            $lines[(int) $l['line_id']] = $l;
+        }
+        foreach ($qtyByLine as $lineId => $qty) {
+            $line = $lines[(int) $lineId] ?? null;
+            if ($line === null || (int) $line['requisition_id'] !== (int) $requisitionId) {
+                Http::validationFailed(sprintf('Line reference %d is not a line of requisition %s.', (int) $lineId, $requisition['requisition_no']), ['field' => 'lines']);
+            }
+            if ($ordering && (float) $line['ordered_qty'] + $qty > (float) $line['required_qty'] + 0.00005) {
+                Http::validationFailed(sprintf(
+                    'Requisition %s line %d asked for %s; %s is already ordered, so %s more cannot be.',
+                    $requisition['requisition_no'],
+                    (int) $line['line_no'],
+                    rtrim(rtrim(number_format((float) $line['required_qty'], 4, '.', ''), '0'), '.'),
+                    rtrim(rtrim(number_format((float) $line['ordered_qty'], 4, '.', ''), '0'), '.'),
+                    rtrim(rtrim(number_format($qty, 4, '.', ''), '0'), '.'),
+                ), ['field' => 'lines', 'requisition_line_id' => (int) $lineId]);
+            }
+        }
     }
 
     private static function now(): string

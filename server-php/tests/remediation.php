@@ -1091,6 +1091,92 @@ check('an order is prepared, sent and acknowledged as three facts, each with its
 });
 
 // ---------------------------------------------------------------------------
+echo "\nProcurement decisions: segregation of duties, requisitions, awards\n";
+
+check('segregation of duties is the company\'s stated policy: the owner\'s own approval needs a reason, and strict allows none', function () use ($ctx, $owner) {
+    reset();
+    Db::run('INSERT INTO purchase_settings (cmp_id, po_approval_above_amount) VALUES (88, 1000) ON CONFLICT (cmp_id) DO UPDATE SET po_approval_above_amount = 1000');
+    $orders = new PurchaseOrderService($ctx, $owner);
+    $po = $orders->create(['supplier_account_id' => 601, 'po_date' => '2026-09-01', 'lines' => [['item_id' => 201, 'ordered_qty' => 100, 'agreed_rate' => 250]]]);
+    $orders->submit((int) $po['po_id']);
+
+    refused(fn () => $orders->decide((int) $po['po_id'], 'approve', []), 'sod_reason_required', 'the owner, silently');
+    $orders->decide((int) $po['po_id'], 'approve', ['note' => 'Urgent: plant shutdown on Monday; CFO on leave.']);
+    same('APPROVED', Db::scalar('SELECT status FROM purchase_orders WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'approved with a reason');
+    same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'sod.owner_exception' AND reason LIKE 'Urgent%'"), 'recorded as an exception, with it');
+
+    Db::run("UPDATE purchase_settings SET sod_policy = 'strict' WHERE cmp_id = 88");
+    $po2 = $orders->create(['supplier_account_id' => 601, 'po_date' => '2026-09-01', 'lines' => [['item_id' => 201, 'ordered_qty' => 100, 'agreed_rate' => 250]]]);
+    $orders->submit((int) $po2['po_id']);
+    refused(fn () => $orders->decide((int) $po2['po_id'], 'approve', ['note' => 'Still me.']), 'somebody else', 'strict: not even the owner');
+});
+
+check('an RFQ or order may only refer to an approved requisition, and may not order more than it asked for', function () use ($ctx, $owner) {
+    reset();
+    $requisitions = new \Aicountly\Api\Domain\RequisitionService($ctx, $owner);
+    $draft = $requisitions->create(['lines' => [['item_id' => 201, 'required_qty' => 50, 'estimated_rate' => 240]]]);
+    refused(fn () => (new \Aicountly\Api\Domain\SourcingService($ctx, $owner))->createRfq(['title' => 'x', 'requisition_id' => (int) $draft['requisition_id'], 'lines' => [['item_id' => 201, 'required_qty' => 50]]]), 'Only an approved requisition', 'sourcing a draft');
+    same('DRAFT', Db::scalar('SELECT status FROM purchase_requisitions WHERE requisition_id = :id', ['id' => (int) $draft['requisition_id']]), 'and it is not flipped to sourcing');
+
+    $requisitions->submit((int) $draft['requisition_id']);
+    $lineId = (int) Db::scalar('SELECT line_id FROM purchase_requisition_lines WHERE requisition_id = :id', ['id' => (int) $draft['requisition_id']]);
+    $orders = new PurchaseOrderService($ctx, $owner);
+    refused(fn () => $orders->create(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'requisition_line_id' => $lineId, 'ordered_qty' => 60, 'agreed_rate' => 240]]]), 'asked for 50', 'ordering more than was asked for');
+    $orders->create(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'requisition_line_id' => $lineId, 'ordered_qty' => 50, 'agreed_rate' => 240]]]);
+    refused(fn () => $orders->create(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'requisition_line_id' => $lineId, 'ordered_qty' => 1, 'agreed_rate' => 240]]]), 'already ordered', 'and nothing after it is fully ordered');
+});
+
+/** An RFQ for two items, quoted by two suppliers, line 1 awarded to 601 and line 2 to 602. */
+function awardedRfq(Context $ctx, Auth $auth): array
+{
+    $sourcing = new \Aicountly\Api\Domain\SourcingService($ctx, $auth);
+    $rfq = $sourcing->createRfq(['title' => 'Q4 steel', 'delivery_warehouse_id' => 3, 'commercial_terms' => 'Delivered, unloaded.', 'supplier_account_ids' => [601, 602], 'lines' => [['item_id' => 201, 'required_qty' => 100], ['item_id' => 202, 'required_qty' => 40]]]);
+    $rfqId = (int) $rfq['rfq_id'];
+    [$l1, $l2] = [(int) $rfq['lines'][0]['line_id'], (int) $rfq['lines'][1]['line_id']];
+    $sourcing->issueRfq($rfqId);
+    $sourcing->recordQuote($rfqId, ['supplier_account_id' => 601, 'quote_ref' => 'DS-Q-17', 'payment_terms' => '30 days', 'freight_amount' => 1200, 'delivery_days' => 7, 'lines' => [['rfq_line_id' => $l1, 'item_id' => 201, 'quoted_qty' => 100, 'quoted_rate' => 245, 'discount_pc' => 2], ['rfq_line_id' => $l2, 'item_id' => 202, 'quoted_qty' => 40, 'quoted_rate' => 900]]]);
+    $sourcing->recordQuote($rfqId, ['supplier_account_id' => 602, 'quote_ref' => 'KM-88', 'payment_terms' => '45 days', 'lines' => [['rfq_line_id' => $l1, 'item_id' => 201, 'quoted_qty' => 100, 'quoted_rate' => 260], ['rfq_line_id' => $l2, 'item_id' => 202, 'quoted_qty' => 40, 'quoted_rate' => 860]]]);
+    // recordQuote answers with the RFQ; the quotes are found by supplier.
+    $quoteOf = static fn (int $supplier) => (int) Db::scalar('SELECT quote_id FROM purchase_quotes WHERE rfq_id = :r AND supplier_account_id = :s', ['r' => $rfqId, 's' => $supplier]);
+    $sourcing->award($rfqId, ['awards' => [
+        ['rfq_line_id' => $l1, 'quote_id' => $quoteOf(601), 'qty' => 100, 'rate' => 242, 'rationale' => 'Negotiated down'],
+        ['rfq_line_id' => $l2, 'quote_id' => $quoteOf(602), 'qty' => 40, 'rate' => 0, 'rationale' => 'Cheapest'],
+    ]]);
+
+    return ['rfq_id' => $rfqId];
+}
+
+check('an award becomes draft orders carrying the supplier, lines, prices and terms — once', function () use ($ctx, $owner) {
+    reset();
+    $rfq = awardedRfq($ctx, $owner);
+    $sourcing = new \Aicountly\Api\Domain\SourcingService($ctx, $owner);
+    $orders = $sourcing->convertAward($rfq['rfq_id']);
+
+    same(2, count($orders), 'one order per winning supplier');
+    $bySupplier = array_column($orders, null, 'supplier_account_id');
+    $a = $bySupplier[601];
+    same('DRAFT', $a['status'], 'a draft, to go through the approval rules');
+    same(1, count($a['lines']), 'only the line awarded to it');
+    same('242.0000', (string) $a['lines'][0]['agreed_rate'], 'at the awarded rate');
+    same('2.000', (string) $a['lines'][0]['discount_pc'], 'with the quoted discount');
+    same('30 days', $a['payment_terms'], 'on the quoted terms');
+    same('1200.0000', (string) $a['freight_amount'], 'and freight');
+    same('860.0000', (string) $bySupplier[602]['lines'][0]['agreed_rate'], 'an award with no rate takes the quoted one');
+
+    refused(fn () => $sourcing->convertAward($rfq['rfq_id']), 'already become purchase order', 'converting it again');
+    (new PurchaseOrderService($ctx, $owner))->cancel((int) $a['po_id'], ['reason' => 'Raised against the wrong plant.']);
+    same(1, count($sourcing->convertAward($rfq['rfq_id'], ['quote_id' => (int) $a['quote_id']])), 'a cancelled order frees its award');
+});
+
+check('two people converting the same award at once raise one set of orders (real race)', function () use ($ctx, $owner) {
+    reset();
+    $rfq = awardedRfq($ctx, $owner);
+    $results = race([['convert_award', ['rfq_id' => $rfq['rfq_id']]], ['convert_award', ['rfq_id' => $rfq['rfq_id']]], ['convert_award', ['rfq_id' => $rfq['rfq_id']]]]);
+    same(1, count(array_filter($results, static fn ($r) => $r['ok'])), 'one conversion: ' . json_encode(array_map(static fn ($r) => [$r['status'], $r['message'] ?? null], $results)));
+    same(2, (int) Db::scalar('SELECT COUNT(*) FROM purchase_orders WHERE rfq_id = :id', ['id' => $rfq['rfq_id']]), 'two orders, not six');
+});
+
+// ---------------------------------------------------------------------------
 echo "\nHistorical repair\n";
 
 check('the repair tool reports historical damage, plans for review, and applies only local bookkeeping', function () use ($ctx, $owner) {

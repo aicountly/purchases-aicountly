@@ -53,9 +53,9 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [~] Authorised short-close with reason, audit and remaining quantities (API + tests done; UI open)
 - [x] Bill entry and posting refuse invalid PO states, under a row lock; `CANCELLED` is never overwritten — cancel-vs-bill race tested
 - [x] Over-receipt: zero tolerance by default, company tolerance on the order total (not per delivery), authorised exception with a reason
-- [ ] Award carries supplier, lines, prices and terms into a PO draft; one award converts once
-- [ ] Segregation of duties as a documented company policy; any owner exception explicit, reasoned and audited
-- [ ] Requisition status enforced when an RFQ or PO references it
+- [x] Award carries supplier, lines, prices and terms into a PO draft; one award converts once (`convertAward`, row-locked, race-tested; a cancelled order frees it; `award()` now locks the RFQ and refuses a row with no quotation)
+- [x] Segregation of duties as a documented company policy; any owner exception explicit, reasoned and audited (`sod_policy`: `strict` | `owner_with_reason` default — preserves what owners could do, now with a recorded reason; changes to it are audited)
+- [x] Requisition status enforced when an RFQ or PO references it (approved/sourcing only; line references must belong; no ordering beyond what was asked, under the requisition's lock)
 
 ### 4. Books
 - [x] User-initiated writes use the user's session; no generic service key for company writes (bills and debit notes)
@@ -104,7 +104,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ## Continuation checkpoint
 
-Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 47/0
+Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 51/0
 (remediation suite looped 6× for race stability).
 
 Next, in order:

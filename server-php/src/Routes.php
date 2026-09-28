@@ -83,6 +83,7 @@ final class Routes
         $router->post('v1/rfqs', [SourcingController::class, 'create']);
         $router->get('v1/rfqs/{id}', [SourcingController::class, 'show']);
         $router->post('v1/rfqs/{id}/issue', [SourcingController::class, 'issue']);
+        $router->post('v1/rfqs/{id}/convert', [SourcingController::class, 'convert']);
         $router->post('v1/rfqs/{id}/invite', [SourcingController::class, 'invite']);
         $router->post('v1/rfqs/{id}/quotes', [SourcingController::class, 'recordQuote']);
         $router->get('v1/rfqs/{id}/comparison', [SourcingController::class, 'compare']);

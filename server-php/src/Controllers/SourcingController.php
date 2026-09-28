@@ -83,4 +83,11 @@ final class SourcingController extends Controller
         [$auth, $ctx] = self::enter();
         Http::data((new SourcingService($ctx, $auth))->award((int) $id, Http::body()));
     }
+
+    /** Raise the draft purchase order(s) an award becomes — once. */
+    public static function convert(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new SourcingService($ctx, $auth))->convertAward((int) $id, Http::body()), 201);
+    }
 }

@@ -38,6 +38,13 @@ final class SourcingService
         }
 
         return Db::transaction(function () use ($input, $lines) {
+            $lineRefs = [];
+            foreach ($lines as $line) {
+                if ($line['requisition_line_id'] !== null) {
+                    $lineRefs[(int) $line['requisition_line_id']] = 0.0;
+                }
+            }
+            (new RequisitionService($this->ctx, $this->auth))->assertSourceable(self::id($input['requisition_id'] ?? null), $lineRefs, false);
             $no = NumberSeries::next($this->ctx, 'rfq');
 
             $rfqId = (int) Db::insert('purchase_rfqs', [
@@ -341,6 +348,11 @@ final class SourcingService
         }
 
         return Db::transaction(function () use ($rfqId, $awards) {
+            // Checked again under the RFQ's lock: two awards pressed together cannot both land.
+            $locked = Db::first('SELECT status FROM purchase_rfqs WHERE rfq_id = :id AND cmp_id = :cmp FOR UPDATE', ['id' => $rfqId, 'cmp' => $this->ctx->cmpId]);
+            if (($locked['status'] ?? '') === 'AWARDED') {
+                Http::conflict('This RFQ has already been awarded.');
+            }
             $awardedQuoteIds = [];
 
             foreach ($awards as $award) {
@@ -349,7 +361,9 @@ final class SourcingService
                 }
                 $quoteId = (int) ($award['quote_id'] ?? 0);
                 if ($quoteId <= 0) {
-                    continue;
+                    // Silently dropped, an award row would leave the RFQ awarded with a line
+                    // nobody won.
+                    Http::validationFailed('Each award must name the quotation it goes to.', ['field' => 'awards']);
                 }
                 $quote = Db::first(
                     'SELECT quote_id FROM purchase_quotes WHERE quote_id = :id AND rfq_id = :rfq AND cmp_id = :cmp',
@@ -390,6 +404,134 @@ final class SourcingService
             ]);
 
             return $this->findRfq($rfqId);
+        });
+    }
+
+    /**
+     * Turn an award into a draft purchase order — once.
+     *
+     * The winning quote's supplier, the awarded lines at the awarded quantities and rates (the
+     * quote's where the award named none), the quote's discount, tax estimate, freight, payment
+     * terms and currency, and the RFQ's delivery point and terms. The order then goes through the
+     * company's ordinary approval rules like any other. Each award row records the order it
+     * became; converting it again is refused while that order stands.
+     *
+     * @param array<string, mixed> $input {quote_id?, supplier_name?, promised_date?}
+     * @return list<array<string, mixed>> the purchase orders created
+     */
+    public function convertAward(int $rfqId, array $input = []): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'po.create');
+
+        return Db::transaction(function () use ($rfqId, $input) {
+            $rfq = Db::first('SELECT * FROM purchase_rfqs WHERE rfq_id = :id AND cmp_id = :cmp FOR UPDATE', ['id' => $rfqId, 'cmp' => $this->ctx->cmpId]);
+            if ($rfq === null) {
+                Http::notFound('That RFQ does not exist.');
+            }
+            if ($rfq['status'] !== 'AWARDED') {
+                Http::conflict('Award the RFQ before raising orders from it.');
+            }
+            $onlyQuote = self::id($input['quote_id'] ?? null);
+            $awards = Db::all(
+                'SELECT a.*, o.status AS po_status, o.po_no
+                   FROM purchase_bid_awards a LEFT JOIN purchase_orders o ON o.po_id = a.po_id
+                  WHERE a.rfq_id = :rfq AND a.cmp_id = :cmp' . ($onlyQuote !== null ? ' AND a.quote_id = :quote' : '') . '
+                  ORDER BY a.award_id FOR UPDATE OF a',
+                ['rfq' => $rfqId, 'cmp' => $this->ctx->cmpId] + ($onlyQuote !== null ? ['quote' => $onlyQuote] : []),
+            );
+            if ($awards === []) {
+                Http::conflict('Nothing on this RFQ was awarded' . ($onlyQuote !== null ? ' to that quotation' : '') . '.');
+            }
+            foreach ($awards as $a) {
+                if ($a['po_id'] !== null && $a['po_status'] !== 'CANCELLED') {
+                    Http::conflict(sprintf('This award has already become purchase order %s. Cancel that order to raise it again.', $a['po_no']), ['po_id' => (int) $a['po_id']]);
+                }
+            }
+
+            $byQuote = [];
+            foreach ($awards as $a) {
+                $byQuote[(int) $a['quote_id']][] = $a;
+            }
+            $orders = new PurchaseOrderService($this->ctx, $this->auth);
+            $created = [];
+            foreach ($byQuote as $quoteId => $rows) {
+                $quote = Db::first('SELECT * FROM purchase_quotes WHERE quote_id = :id AND cmp_id = :cmp', ['id' => $quoteId, 'cmp' => $this->ctx->cmpId]);
+                $quoteLines = [];
+                foreach (Db::all('SELECT * FROM purchase_quote_lines WHERE quote_id = :id ORDER BY line_no', ['id' => $quoteId]) as $ql) {
+                    $quoteLines[(int) $ql['rfq_line_id']] = $ql;
+                }
+                $rfqLines = [];
+                foreach (Db::all('SELECT * FROM purchase_rfq_lines WHERE rfq_id = :id ORDER BY line_no', ['id' => $rfqId]) as $rl) {
+                    $rfqLines[(int) $rl['line_id']] = $rl;
+                }
+
+                // A whole-quote award (no line named) takes every line the supplier quoted.
+                $picked = [];
+                foreach ($rows as $a) {
+                    if ($a['rfq_line_id'] === null) {
+                        foreach ($quoteLines as $rfqLineId => $ql) {
+                            $picked[$rfqLineId] = ['qty' => (float) $ql['quoted_qty'], 'rate' => (float) $ql['quoted_rate']];
+                        }
+                    } else {
+                        $ql = $quoteLines[(int) $a['rfq_line_id']] ?? null;
+                        $picked[(int) $a['rfq_line_id']] = [
+                            'qty'  => (float) $a['awarded_qty'] > 0 ? (float) $a['awarded_qty'] : (float) ($ql['quoted_qty'] ?? 0),
+                            'rate' => (float) $a['awarded_rate'] > 0 ? (float) $a['awarded_rate'] : (float) ($ql['quoted_rate'] ?? 0),
+                        ];
+                    }
+                }
+
+                $lines = [];
+                foreach ($picked as $rfqLineId => $p) {
+                    $rl = $rfqLines[$rfqLineId] ?? null;
+                    $ql = $quoteLines[$rfqLineId] ?? null;
+                    if ($rl === null || $p['qty'] <= 0) {
+                        continue;
+                    }
+                    $lines[] = [
+                        'requisition_line_id' => $rl['requisition_line_id'],
+                        'quote_line_id'       => $ql['line_id'] ?? null,
+                        'item_id'             => $rl['item_id'],
+                        'unit_id'             => $rl['unit_id'] ?? ($ql['unit_id'] ?? null),
+                        'is_service'          => $rl['is_service'] === true || $rl['is_service'] === 't',
+                        'description'         => $rl['description'],
+                        'ordered_qty'         => $p['qty'],
+                        'agreed_rate'         => $p['rate'],
+                        'discount_pc'         => (float) ($ql['discount_pc'] ?? 0),
+                        'estimated_tax_pc'    => (float) ($ql['estimated_tax_pc'] ?? 0),
+                        'promised_date'       => $rl['required_by'],
+                        'warehouse_id'        => $rfq['delivery_warehouse_id'],
+                    ];
+                }
+                if ($lines === []) {
+                    continue;
+                }
+                $promised = self::text($input['promised_date'] ?? null)
+                    ?? ((int) ($quote['delivery_days'] ?? 0) > 0 ? gmdate('Y-m-d', strtotime('+' . (int) $quote['delivery_days'] . ' days')) : $rfq['required_by']);
+                $po = $orders->create([
+                    'supplier_account_id'   => (int) $quote['supplier_account_id'],
+                    'supplier_name'         => self::text($input['supplier_name'] ?? null),
+                    'rfq_id'                => $rfqId,
+                    'quote_id'              => $quoteId,
+                    'delivery_warehouse_id' => $rfq['delivery_warehouse_id'],
+                    'promised_date'         => $promised,
+                    'payment_terms'         => $quote['payment_terms'],
+                    'currency_code'         => $quote['currency_code'] ?? $rfq['currency_code'],
+                    'exchange_rate'         => (float) ($quote['exchange_rate'] ?? 1),
+                    'freight_amount'        => (float) ($quote['freight_amount'] ?? 0),
+                    'other_charges'         => (float) ($quote['other_charges'] ?? 0),
+                    'terms_text'            => trim(implode("\n\n", array_filter([(string) $rfq['commercial_terms'], $quote['warranty_terms'] ? 'Warranty: ' . $quote['warranty_terms'] : '']))) ?: null,
+                    'notes'                 => sprintf('From RFQ %s, quotation %s.', $rfq['rfq_no'], $quote['quote_ref'] ?? ('#' . $quoteId)),
+                    'lines'                 => $lines,
+                ]);
+                foreach ($rows as $a) {
+                    Db::update('purchase_bid_awards', ['po_id' => (int) $po['po_id'], 'converted_at' => self::now(), 'converted_by' => $this->auth->uuid], ['award_id' => (int) $a['award_id']]);
+                }
+                Audit::record($this->ctx, $this->auth, 'rfq.award_converted', 'rfq', $rfqId, null, ['quote_id' => $quoteId, 'po_id' => (int) $po['po_id'], 'po_no' => $po['po_no']]);
+                $created[] = $po;
+            }
+
+            return $created;
         });
     }
 

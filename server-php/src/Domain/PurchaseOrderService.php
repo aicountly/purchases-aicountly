@@ -47,6 +47,13 @@ final class PurchaseOrderService
         $this->guardApprovedVendor($supplierId, $settings);
 
         return Db::transaction(function () use ($input, $supplierId, $lines, $settings) {
+            $lineRefs = [];
+            foreach ($lines as $line) {
+                if ($line['requisition_line_id'] !== null) {
+                    $lineRefs[(int) $line['requisition_line_id']] = ($lineRefs[(int) $line['requisition_line_id']] ?? 0.0) + (float) $line['ordered_qty'];
+                }
+            }
+            (new RequisitionService($this->ctx, $this->auth))->assertSourceable(self::id($input['requisition_id'] ?? null), $lineRefs, true);
             $no = NumberSeries::next($this->ctx, 'po');
             $totals = self::totals($lines, (float) ($input['freight_amount'] ?? 0), (float) ($input['other_charges'] ?? 0));
 
@@ -154,16 +161,14 @@ final class PurchaseOrderService
         if ($po['status'] !== 'APPROVAL_PENDING') {
             Http::conflict('This purchase order is not waiting for approval.');
         }
-        // Segregation of duties: the buyer who raised it may not approve it.
-        if ((string) $po['created_by'] === $this->auth->uuid && !$this->auth->ownsCompany($this->ctx->cmpId)) {
-            Http::forbidden('You raised this purchase order, so somebody else has to approve it.');
-        }
-
         $approved = $action === 'approve';
         $note = self::text($input['note'] ?? null);
         if (!$approved && $note === null) {
             Http::validationFailed('Say why this purchase order is being rejected.', ['field' => 'note']);
         }
+
+        // Segregation of duties, as the company's stated policy (SegregationOfDuties).
+        SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) $po['created_by'], 'purchase order', 'purchase_order', $poId, $note);
 
         Db::transaction(function () use ($poId, $approved, $note) {
             Db::update('purchase_orders', [
