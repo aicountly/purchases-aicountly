@@ -62,6 +62,7 @@ export interface ProfileFile {
       po_approval_above_amount: number
       enforce_approved_vendors: boolean
       block_bill_on_match_failure: boolean
+      receive_stock_at_grn?: boolean
     }
   }
   match_policies: ExportedPolicy[]
@@ -98,6 +99,7 @@ export function buildExport(form: ProfileForm, policies: MatchPolicy[]): Profile
         po_approval_above_amount: amount(form.approvals.purchaseOrderLimit),
         enforce_approved_vendors: form.approvals.approvedSuppliersOnly,
         block_bill_on_match_failure: form.approvals.blockBillOnMatchException,
+        receive_stock_at_grn: form.approvals.receiveStockAtGrn,
       },
     },
     // Named tolerances only. `policy_id` is this database's key and means
@@ -294,6 +296,7 @@ export function parseProfileFile(text: string, knownTypes: string[]): ImportResu
       ),
       approvedSuppliersOnly: readBoolean(approvals, 'enforce_approved_vendors', false),
       blockBillOnMatchException: readBoolean(approvals, 'block_bill_on_match_failure', true),
+      receiveStockAtGrn: readBoolean(approvals, 'receive_stock_at_grn', false),
     },
     active: readBoolean(profile, 'active', true),
   }

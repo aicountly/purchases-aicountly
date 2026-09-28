@@ -241,6 +241,7 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
         'document_uuid' => 'invdoc-' . $n,
         'document_no'   => 'SI/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT),
         'document_type' => strtoupper((string) $body['document_type']),
+        'stock_effect'  => $body['stock_effect'] ?? null,
         'status'        => 'POSTED',
         'source_app'           => $body['source_app'] ?? null,
         'source_document_type' => $body['source_document_type'] ?? null,

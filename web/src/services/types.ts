@@ -431,6 +431,8 @@ export interface PurchaseSettings {
   requisition_approval_above_amount: string
   enforce_approved_vendors: boolean
   block_bill_on_match_failure: boolean
+  /** Goods go on hand at the goods receipt (accrued to GRNI) instead of at the bill. */
+  receive_stock_at_grn?: boolean
   default_warehouse_id: number | null
   updated_at?: string | null
 }
@@ -458,6 +460,7 @@ export interface ProfileSavePayload {
   po_approval_above_amount: number
   enforce_approved_vendors: boolean
   block_bill_on_match_failure: boolean
+  receive_stock_at_grn: boolean
 }
 
 export interface ProfileTypeOption {

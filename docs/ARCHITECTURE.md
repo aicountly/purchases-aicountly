@@ -74,12 +74,29 @@ has one stock effect), and so is a bill whose goods were received before this
 change (they are already in stock; post that bill in Books). A bill with nothing
 received behind it (goods billed ahead) receives the goods itself (`on_invoice`).
 
-**The trade-off, to be decided on:** received goods sit on Inventory's pending-in
-register — not on hand, not sellable — until their bill is posted. Receiving them
-into stock at the GRN needs a valued inward challan that the bill settles without
-receiving again (a "physical GRN"); neither Inventory nor Books has that path yet.
-Freight captured on the GRN is no longer sent (a challan values nothing): charges
-are capitalised from the bill, where Books allocates bill sundries onto the goods.
+**Goods on hand at the GRN (`purchase_settings.receive_stock_at_grn`, off by
+default).** Off, received goods sit on Inventory's pending-in register — not on
+hand, not sellable — until their bill is posted. On, the GRN is a `physical`
+INWARD_CHALLAN:
+
+```
+PO ──▶ GRN (physical)                         ──▶ bill (unchanged: from_challan + settlements)
+       goods on hand at the order rate              Inventory sees the receipts moved the goods:
+       Books: Dr Stock-in-Hand / Cr GRNI            settles them WITHOUT moving stock again,
+                                                    clears GRNI at the provisional value and trues
+                                                    the cost up to the billed rate
+```
+
+Goods consumed or sold before the bill take their share of the price difference
+(Inventory replays the year; Books posts the revisions at the bill date). A bill in
+a later financial year than its GRN expenses the difference instead of rewriting
+the closed year. Each receipt records what it did (`stock_effect` on its command
+reference), so turning the setting on or off never changes how an existing receipt
+is billed, and one bill cannot settle both kinds (refused: bill them separately).
+Returning goods before the bill means reversing the GRN; a partial return before
+the bill is not supported yet. Freight captured on the GRN is not sent (an inward
+challan carries no valuation of its own): charges are capitalised from the bill,
+where Books allocates bill sundries onto the goods.
 
 Purchase returns follow the same rule: the dispatch is a `DELIVERY_CHALLAN`
 (challan_only) and the debit note settles it (`from_challan`), so the goods leave

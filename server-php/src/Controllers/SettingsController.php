@@ -54,6 +54,7 @@ final class SettingsController extends Controller
     private const FLAG_FIELDS = [
         'enforce_approved_vendors',
         'block_bill_on_match_failure',
+        'receive_stock_at_grn',
         'is_active',
     ];
 

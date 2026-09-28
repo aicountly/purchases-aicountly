@@ -796,6 +796,8 @@ final class BillService
                     'warehouse_id' => isset($line['warehouse_id']) ? ((int) $line['warehouse_id'] ?: null) : null,
                     'qty'          => (float) $line['qty'],
                     'challan'      => $isChallan,
+                    // Receipts recorded before the kind was stored only ever noted the goods.
+                    'physical'     => ($reference['stock_effect'] ?? 'challan_only') === 'physical',
                 ];
             }
         }
@@ -810,6 +812,7 @@ final class BillService
         }
 
         $settlements = [];
+        $kinds = [];
         foreach ($inventoryLines as $line) {
             $need = (float) $line['qty'];
             foreach ($portions[(int) $line['po_line_id']] ?? [] as $i => $portion) {
@@ -826,6 +829,14 @@ final class BillService
                         ['po_line_id' => (int) $line['po_line_id']],
                     );
                 }
+                $kinds[$portion['physical'] ? 'physical' : 'noted'] = true;
+                if (count($kinds) > 1) {
+                    // Inventory would refuse it too; said here with the order's words.
+                    Http::conflict(
+                        'This bill covers goods a receipt already put into stock together with goods a receipt only noted. One bill cannot both receive goods and not receive them: bill the two receipts separately.',
+                        ['po_line_id' => (int) $line['po_line_id']],
+                    );
+                }
                 $settlements[] = ['source_document_id' => $portion['document_id'], 'item_id' => $portion['item_id'], 'qty' => $take, 'mc_id' => $portion['warehouse_id']];
                 $portions[(int) $line['po_line_id']][$i]['qty'] -= $take;
                 $need -= $take;
@@ -838,6 +849,9 @@ final class BillService
             }
         }
 
+        // from_challan either way: Inventory settles a receipt that already moved the goods
+        // without moving them again (and trues its cost up), and receives the goods of one
+        // that only noted them.
         return ['stock_effect' => 'from_challan', 'challan_settlements' => $settlements];
     }
 

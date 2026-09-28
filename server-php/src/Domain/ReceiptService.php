@@ -17,19 +17,26 @@ use Aicountly\Api\Permissions;
  * Goods receipt — ORCHESTRATION ONLY.
  *
  * THE GRN IS INVENTORY'S. Purchases says "these goods arrived against this
- * order"; Inventory records it as an INWARD_CHALLAN (challan_only) — goods in on
- * challan, pending the bill — and hands back its id and uuid. That is all that
- * is stored here.
+ * order"; Inventory records it as an INWARD_CHALLAN and hands back its id and
+ * uuid. That is all that is stored here.
  *
- * ONE OWNER PER MOVEMENT. The stock is received once, by the bill: Books sends
- * the bill's item lines to Inventory as a PURCHASE_RECEIPT that settles these
- * challans (stock_effect from_challan) and values the goods at the billed cost.
+ * ONE OWNER PER MOVEMENT, whichever kind of receipt the company chose
+ * (purchase_settings.receive_stock_at_grn):
+ *
+ *   off (default)  challan_only: the receipt only notes the goods, and the bill
+ *                  receives them — Books sends the bill's lines to Inventory as a
+ *                  PURCHASE_RECEIPT settling these challans (from_challan). Goods
+ *                  are on the pending-in register, not on hand, until billed.
+ *   on             physical: the receipt brings the goods into stock at the order
+ *                  rate and Books accrues them (Goods Received Not Invoiced). The
+ *                  bill settles the receipt WITHOUT receiving the goods again —
+ *                  Inventory sees the receipts moved stock — clears the accrual and
+ *                  trues the cost up to the billed rate; goods already consumed or
+ *                  sold take their share of the difference.
+ *
  * The GRN used to be a PURCHASE_RECEIPT of its own, so every billed purchase
- * received its goods twice — once here, once from the bill. The consequence of
- * the single owner: received goods are on the pending-in register, not on hand,
- * until their bill is posted. Receiving them into stock at the GRN (a "physical
- * GRN") needs a valued inward challan that the bill settles without receiving
- * again, which neither Inventory nor Books supports yet.
+ * received its goods twice — once here, once from the bill. Neither kind can now:
+ * Inventory refuses a bill that would receive goods a receipt already brought in.
  *
  * `received_qty` on our PO line is progress against OUR commitment, written
  * from Inventory's own response. When a screen needs to show what was actually
@@ -135,9 +142,14 @@ final class ReceiptService
         $commandId = (int) $command['command_id'];
         IntegrationCommand::markPosting($commandId);
 
+        // Decided when the receipt is sent, and recorded with it: a bill settles each
+        // receipt according to what that receipt did, not what the setting says today.
+        $physical = (bool) (Db::first('SELECT receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $this->ctx->cmpId])['receive_stock_at_grn'] ?? false);
+        $stockEffect = $physical ? 'physical' : 'challan_only';
+
         $payload = [
             'document_type'        => 'INWARD_CHALLAN',
-            'stock_effect'         => 'challan_only',
+            'stock_effect'         => $stockEffect,
             'document_date'        => self::date($input['received_at'] ?? null),
             // The GRN's own identity, not its purchase order's. Inventory keeps ONE
             // live document per source, so every GRN sent under the order came
@@ -172,10 +184,10 @@ final class ReceiptService
                 'amount'          => round((float) $line['qty'] * (float) $line['rate'], 4),
                 'direction'       => 'in',
                 'hsn_sac'         => $line['hsn_sac'],
-                // No landed cost here: a challan_only challan values nothing, so
-                // Inventory refuses a charge on it. Freight and charges are
-                // capitalised from the bill, where Books allocates its bill
-                // sundries onto the goods.
+                // No landed cost here: an inward challan carries no valuation of
+                // its own, so Inventory refuses a charge on it. Freight and charges
+                // are capitalised from the bill (Books' bill sundries) or a landed
+                // cost document.
             ], static fn ($value) => $value !== null && $value !== []), $received),
         ];
 
@@ -221,6 +233,9 @@ final class ReceiptService
             // receipt recorded before this was a PURCHASE_RECEIPT and has no
             // pending quantity to settle (BillService::challanSettlements).
             'document_type'           => 'INWARD_CHALLAN',
+            // Whether this receipt brought the goods into stock (physical) or only noted
+            // them (challan_only); BillService keeps the two apart on one bill.
+            'stock_effect'            => (string) ($document['stock_effect'] ?? $stockEffect),
         ]);
 
         Db::update('purchase_receipt_requests', [
