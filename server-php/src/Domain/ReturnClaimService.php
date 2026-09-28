@@ -312,8 +312,9 @@ final class ReturnClaimService
             ], $stockLines)),
         ];
 
+        // As the person raising the debit note: Books' voucher routes take a session, never a service key.
         $response = (new BooksClient())
-            ->withService($this->auth->uuid)
+            ->withSession($this->auth->sesKey())
             ->createAndPostVoucher($this->ctx, BooksClient::VCH_DEBIT_NOTE, $payload, (string) $command['idempotency_key']);
 
         if (!$response['ok']) {

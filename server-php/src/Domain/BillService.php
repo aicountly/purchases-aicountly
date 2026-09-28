@@ -199,8 +199,10 @@ final class BillService
         $commandId = (int) $command['command_id'];
         IntegrationCommand::markPosting($commandId);
 
+        // As the person posting the bill: Books' voucher routes take a person's session,
+        // never a service key, and check that person's own right to post.
         $response = (new BooksClient())
-            ->withService($this->auth->uuid)
+            ->withSession($this->auth->sesKey())
             ->createAndPostVoucher($this->ctx, BooksClient::VCH_PURCHASE, $payload, (string) $command['idempotency_key']);
 
         if (!$response['ok']) {
