@@ -79,15 +79,16 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Claim resolution types: financial adjustment, physical return, replacement, refund, non-financial; effect shown and authorised; settled only after the upstream operation (debit note posted, return debited, GRN applied, Books receipt verified); partial settlement; retries on the same key; direct "settle" retired
 
 ### 7. Supplier identity, duplicate bills, periods
-- [ ] Contacts client on Contacts' real routes; communication identity from Contacts, creditor from Books
+- [x] Contacts client on Contacts' real routes; communication identity from Contacts, creditor from Books — company routes only (`/api/companies/{cmp}/contacts…`, the in-flight Contacts `fervent-volta` release), linked by Contacts' `books/ledger_account` identity reference, idempotent, nothing copied; personal contacts never read; undeployed Contacts reported as unavailable
 - [x] Cross-app supplier-invoice duplicate protection at the Books boundary — Books migration 174 register (company, supplier, type, normalised number, April–March year); PostgreSQL race test; Purchase journey test; Purchase now reads Books' `messages.error` refusals
 - [x] Branch and FY validated through Manage — the same `companyinfo` answer that confirms the company must list the year (`fy_list`) and branch (`branch_list`), else 403; its dates bound a bill's new posting date (migration 010), kept apart from the supplier's invoice date. Manage has no closed-year flag, so a carried-forward year is not treated as closed
 - [x] Books' closed/locked-period policy enforced for Purchase postings — Purchase posts through Books' own draft→post path, which applies `FinancialYearPostingGuardService` (archived year, date within year); a refusal blocks the bill for revision (tested). Books has no separate lock-date setting today
 
 ### 8. Permissions and supplier communication
-- [ ] `v1/approvals` permission-gated; legacy `v1/dashboard` retired or gated
-- [ ] Amount/cost permissions consistent across APIs, exports and UI
-- [ ] PO PDF; prepared / sent / supplier-acknowledged distinguished; manual acknowledgement with evidence
+- [x] `v1/approvals` permission-gated (approve permission per kind, stage permission, this year; values with the document's view permission); legacy `v1/dashboard` retired (410 → `v1/dashboards/overview`; no caller — Insights uses `v1/dashboards/*`)
+- [~] Amount/cost permissions consistent across APIs, exports and UI — rule: a document's own amounts go with its view permission; spend, historical prices and aggregates need `cost.view`/`reports.view`; exports and PDFs render the same withheld payload as the screen. API side done for approvals and dashboards; UI pass with item 5
+- [x] PO PDF; prepared / sent / supplier-acknowledged distinguished; manual acknowledgement with source and evidence (migration 011); names read live from Manage and Inventory; fingerprint ties "sent" to the version
+- [d] Sending the PO through a connected service (Email / Connect) — not built: no real supplier communication is allowed in this phase; the channel is recorded by the buyer. The Connect widget (section 9) is the intended channel
 
 ### 9. Connect, Pulse, Advisor
 - [ ] Embedded Connect widget (Connect APIs, calling, live Contacts); user-facing "Connect"
@@ -103,7 +104,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ## Continuation checkpoint
 
-Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 42/0
+Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 47/0
 (remediation suite looped 6× for race stability).
 
 Next, in order:

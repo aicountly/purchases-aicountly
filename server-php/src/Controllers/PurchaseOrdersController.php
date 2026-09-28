@@ -74,6 +74,28 @@ final class PurchaseOrdersController extends Controller
         Http::data((new PurchaseOrderService($ctx, $auth))->issue((int) $id));
     }
 
+    /** The order's document as a PDF, recorded as prepared. */
+    public static function document(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        $doc = (new PurchaseOrderService($ctx, $auth))->document((int) $id);
+        if (PHP_SAPI === 'cli') {
+            Http::data(['file_name' => $doc['file_name'], 'fingerprint' => $doc['fingerprint'], 'bytes' => strlen($doc['pdf']), 'pdf' => base64_encode($doc['pdf'])]);
+        }
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . $doc['file_name'] . '"');
+        header('Cache-Control: no-store');
+        header('X-Document-Fingerprint: ' . $doc['fingerprint']);
+        echo $doc['pdf'];
+        exit;
+    }
+
+    public static function sent(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new PurchaseOrderService($ctx, $auth))->markSent((int) $id, Http::body()));
+    }
+
     public static function acknowledge(string $id): void
     {
         [$auth, $ctx] = self::enter();

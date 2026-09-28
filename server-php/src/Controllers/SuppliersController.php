@@ -7,6 +7,7 @@ namespace Aicountly\Api\Controllers;
 use Aicountly\Api\Audit;
 use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Db;
+use Aicountly\Api\Domain\SupplierContactService;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
 
@@ -253,5 +254,24 @@ final class SuppliersController extends Controller
         $trimmed = trim($value);
 
         return $trimmed === '' ? null : $trimmed;
+    }
+
+    /** Who to talk to at this supplier: the company contact Contacts links to its ledger. */
+    public static function contact(string $supplierId): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new SupplierContactService($ctx, $auth))->contactFor((int) $supplierId));
+    }
+
+    public static function linkContact(string $supplierId): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new SupplierContactService($ctx, $auth))->link((int) $supplierId, Http::body()));
+    }
+
+    public static function contactCandidates(): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new SupplierContactService($ctx, $auth))->candidates((string) (Http::param('q') ?? '')));
     }
 }

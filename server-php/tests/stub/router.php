@@ -227,6 +227,79 @@ if (str_contains($path, '/validatesession')) {
 }
 
 // --- Manage ---------------------------------------------------------------
+// --- Contacts (company contacts, the in-flight company-scope release) ---------
+//
+// Only /api/companies/{cmp}/contacts…: a user's personal contacts are never asked for. The
+// books/ledger_account reference is Contacts' identity link, one contact per ledger per company.
+// Mode contacts_undeployed answers these routes the way a Contacts without the release does.
+if (preg_match('#^/api/companies/(\d+)/contacts#', $path, $cm) === 1) {
+    if (!empty($modes['contacts_undeployed'])) {
+        http_response_code(404);
+        echo '<html>404 Page Not Found</html>';
+        exit;
+    }
+    $contactStore = sys_get_temp_dir() . '/stub-contacts.json';
+    $cstate = is_file($contactStore) ? (json_decode((string) file_get_contents($contactStore), true) ?: []) : [];
+    $cstate += ['contacts' => [
+        '0b0e8c7e-1111-4a4a-9c9c-000000000001' => ['id' => '0b0e8c7e-1111-4a4a-9c9c-000000000001', 'displayName' => 'Anita Rao', 'organizationName' => 'Deccan Steel Traders', 'emails' => [['value' => 'orders@deccansteel.example']], 'phones' => [['value' => '+919800000001']], 'taxIds' => [['type' => 'GSTIN', 'value' => '27AAPFU0939F1ZV']], 'cmpId' => (int) $cm[1], 'visibility' => 'company'],
+        '0b0e8c7e-2222-4a4a-9c9c-000000000002' => ['id' => '0b0e8c7e-2222-4a4a-9c9c-000000000002', 'displayName' => 'Ravi Kulkarni', 'organizationName' => 'Konkan Metals', 'emails' => [['value' => 'ravi@konkan.example']], 'phones' => [], 'taxIds' => [], 'cmpId' => (int) $cm[1], 'visibility' => 'company'],
+    ], 'references' => [], 'keys' => []];
+    $rest = substr($path, strlen($cm[0]));
+
+    if ($rest === '/by-reference' && $method === 'GET') {
+        $ref = ($_GET['product'] ?? '') . '/' . ($_GET['ref_type'] ?? '') . '/' . ($_GET['ref'] ?? '');
+        $holder = $cstate['references'][$ref] ?? null;
+        echo json_encode(['status' => 1, 'data' => $holder === null ? [] : [$cstate['contacts'][$holder]], 'identity' => true]);
+        exit;
+    }
+    if ($rest === '' && $method === 'GET') {
+        $q = strtolower((string) ($_GET['q'] ?? ''));
+        echo json_encode(['status' => 1, 'data' => array_values(array_filter($cstate['contacts'], static fn ($c) => $q === '' || str_contains(strtolower($c['displayName'] . ' ' . $c['organizationName']), $q)))]);
+        exit;
+    }
+    if (preg_match('#^/([0-9a-f-]{36})/references$#', $rest, $rm) === 1 && $method === 'POST') {
+        $ikey = $headers['idempotency-key'] ?? '';
+        if ($ikey !== '' && isset($cstate['keys'][$ikey])) {
+            header('Idempotent-Replayed: true');
+            echo json_encode($cstate['keys'][$ikey]);
+            exit;
+        }
+        $ref = ($body['product'] ?? '') . '/' . ($body['ref_type'] ?? $body['refType'] ?? '') . '/' . ($body['ref'] ?? '');
+        $holder = $cstate['references'][$ref] ?? null;
+        if ($holder !== null && $holder !== $rm[1]) {
+            http_response_code(409);
+            echo json_encode(['status' => 0, 'message' => 'That reference belongs to another contact.', 'error' => ['code' => 'reference_conflict', 'message' => 'That reference belongs to another contact.', 'details' => ['contactId' => $holder]], 'contactId' => $holder]);
+            exit;
+        }
+        $created = $holder === null;
+        $cstate['references'][$ref] = $rm[1];
+        $answer = ['status' => 1, 'created' => $created, 'data' => ['product' => $body['product'] ?? null, 'refType' => $body['ref_type'] ?? null, 'ref' => $body['ref'] ?? null, 'contactId' => $rm[1]]];
+        if ($ikey !== '') {
+            $cstate['keys'][$ikey] = $answer;
+        }
+        file_put_contents($contactStore, json_encode($cstate));
+        http_response_code($created ? 201 : 200);
+        echo json_encode($answer);
+        exit;
+    }
+    if (preg_match('#^/([0-9a-f-]{36})$#', $rest, $rm) === 1 && $method === 'GET') {
+        $contact = $cstate['contacts'][$rm[1]] ?? null;
+        if ($contact === null) {
+            http_response_code(404);
+            echo json_encode(['status' => 0, 'message' => 'Contact not found', 'error' => ['code' => 'not_found', 'message' => 'Contact not found']]);
+            exit;
+        }
+        echo json_encode(['status' => 1, 'data' => $contact]);
+        exit;
+    }
+}
+if (preg_match('#^/api/contacts#', $path) === 1) {
+    // A personal-contacts request from a product is a bug: those are the user's own.
+    http_response_code(418);
+    echo json_encode(['message' => 'personal contacts requested by a product']);
+    exit;
+}
+
 if (str_contains($path, '/companies') && !str_contains($path, '/companyinfo')) {
     // Manage's company list, as CompanyModel::listCompanies shapes it. Enough
     // rows to exercise the launcher's search, sort and default handling.

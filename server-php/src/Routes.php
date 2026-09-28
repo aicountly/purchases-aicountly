@@ -97,6 +97,8 @@ final class Routes
         $router->post('v1/purchase-orders/{id}/approve', [PurchaseOrdersController::class, 'approve']);
         $router->post('v1/purchase-orders/{id}/reject', [PurchaseOrdersController::class, 'reject']);
         $router->post('v1/purchase-orders/{id}/issue', [PurchaseOrdersController::class, 'issue']);
+        $router->get('v1/purchase-orders/{id}/document', [PurchaseOrdersController::class, 'document']);
+        $router->post('v1/purchase-orders/{id}/sent', [PurchaseOrdersController::class, 'sent']);
         $router->post('v1/purchase-orders/{id}/acknowledge', [PurchaseOrdersController::class, 'acknowledge']);
         $router->post('v1/purchase-orders/{id}/receive', [PurchaseOrdersController::class, 'receive']);
         $router->post('v1/purchase-orders/{id}/cancel', [PurchaseOrdersController::class, 'cancel']);
@@ -140,6 +142,9 @@ final class Routes
 
         // Suppliers — the procurement profile, not the ledger.
         $router->get('v1/suppliers', [SuppliersController::class, 'index']);
+        $router->get('v1/suppliers/contact-candidates', [SuppliersController::class, 'contactCandidates']);
+        $router->get('v1/suppliers/{id}/contact', [SuppliersController::class, 'contact']);
+        $router->post('v1/suppliers/{id}/contact', [SuppliersController::class, 'linkContact']);
         $router->post('v1/suppliers', [SuppliersController::class, 'upsert']);
         $router->post('v1/suppliers/{id}/status', [SuppliersController::class, 'setStatus']);
         $router->get('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);

@@ -7,20 +7,20 @@ namespace Aicountly\Api\Clients;
 use Aicountly\Api\Env;
 
 /**
- * Live reads and writes against the authoritative party directory.
+ * The company's shared business contacts, in Aicountly Contacts.
  *
- * A customer's identity — name, mobile, email, GSTIN, addresses — belongs to
- * Contacts. When a user adds a customer from inside this product the record is
- * created THERE and we keep the id. There is no customer table here.
+ * A supplier has three identities and each lives in one place: its ledger (the creditor
+ * account, its balance, its bills) in Books; the people and addresses you talk to in Contacts;
+ * the procurement workflow here. The link between the first two is Contacts' own identity
+ * reference — books / ledger_account / <acc_id> — one contact per ledger per company.
  *
- * Books separately holds the same party's ACCOUNTING identity (the ledger).
- * Those are two different facts about one party and both are read live; neither
- * is copied here.
+ * ONLY the company routes (`/api/companies/{cmp_id}/contacts…`). A user's personal contacts are
+ * private to them and are never read or written from here. Every call is made as the signed-in
+ * user (their session); Contacts checks their membership of the company with Manage itself.
+ * Nothing read here is stored: names, emails and numbers are read when shown.
  *
- * Contacts is optional in a deployment. Where CONTACTS_API_BASE is unset the
- * caller falls back to Books' own party ledger, which is why every method
- * reports its failure rather than throwing: a missing directory degrades the
- * party picker, it does not break the sale.
+ * Contacts answers 404 for these routes until its company-contacts release is deployed; callers
+ * report that as "not available", never fall back to personal contacts.
  */
 final class ContactsClient extends ApiClient
 {
@@ -58,22 +58,34 @@ final class ContactsClient extends ApiClient
         return Env::get('CONTACTS_API_BASE') !== '' || Env::get('CONTACTS_ENABLED') === '1';
     }
 
-    public function search(string $term, array $filters = []): array
+    /** Company contacts matching a search (never personal ones). */
+    public function companyContacts(int $cmpId, string $term, int $perPage = 20): array
     {
-        return $this->request('GET', 'api/v1/contacts' . self::query(['q' => $term, 'limit' => 20] + $filters), null, ['Authorization' => $this->authorization]);
+        return $this->request('GET', 'api/companies/' . $cmpId . '/contacts' . self::query(['q' => $term, 'per_page' => max(1, min(100, $perPage))]), null, ['Authorization' => $this->authorization]);
     }
 
-    public function contact(string $contactId): array
+    public function companyContact(int $cmpId, string $contactId): array
     {
-        return $this->request('GET', 'api/v1/contacts/' . rawurlencode($contactId), null, ['Authorization' => $this->authorization]);
+        return $this->request('GET', 'api/companies/' . $cmpId . '/contacts/' . rawurlencode($contactId), null, ['Authorization' => $this->authorization]);
     }
 
-    /** @param array<string, mixed> $payload */
-    public function create(array $payload, string $idempotencyKey): array
+    /** The contact Contacts has linked to this Books ledger account, if any. */
+    public function byLedgerAccount(int $cmpId, int $accId): array
     {
-        return $this->request('POST', 'api/v1/contacts', $payload, [
+        return $this->request('GET', 'api/companies/' . $cmpId . '/contacts/by-reference' . self::query(['product' => 'books', 'ref_type' => 'ledger_account', 'ref' => (string) $accId]), null, ['Authorization' => $this->authorization]);
+    }
+
+    /** Link a company contact to a Books ledger account — Contacts' identity reference. */
+    public function linkLedgerAccount(int $cmpId, string $contactId, int $accId, string $idempotencyKey): array
+    {
+        return $this->request('POST', 'api/companies/' . $cmpId . '/contacts/' . rawurlencode($contactId) . '/references', [
+            'product'  => 'books',
+            'ref_type' => 'ledger_account',
+            'ref'      => (string) $accId,
+            'caption'  => 'Supplier ledger in Smart Books',
+        ], [
             'Authorization'   => $this->authorization,
             'Idempotency-Key' => $idempotencyKey,
-        ], true);
+        ]);
     }
 }

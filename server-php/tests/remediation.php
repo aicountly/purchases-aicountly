@@ -25,6 +25,7 @@ use Aicountly\Api\Domain\BillService;
 use Aicountly\Api\Domain\PoProgress;
 use Aicountly\Api\Domain\PurchaseOrderService;
 use Aicountly\Api\Domain\ReceiptService;
+use Aicountly\Api\ResponseSent;
 
 $passed = 0;
 $failed = 0;
@@ -981,6 +982,112 @@ check('an invoice dated last year is booked in this one with its own posting dat
     $voucher = array_values(booksVouchers())[0];
     same('2026-04-03', $voucher['vch_date'], 'booked on the posting date');
     same('2026-03-31', $voucher['bill']['bill_date'], 'the supplier\'s invoice date travels as the bill\'s date');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nSuppliers, approvals and the order's document\n";
+
+/** Call a controller as a person, through the real company check; returns [status, payload]. */
+function endpoint(callable $action, Auth $auth, array $query = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0']): array
+{
+    $_GET = $query;
+    Auth::adopt($auth);
+    Context::forgetVerified();
+    try {
+        $action();
+    } catch (ResponseSent $sent) {
+        return [$sent->status, $sent->payload];
+    } finally {
+        Auth::adopt(null);
+    }
+    throw new \RuntimeException('the endpoint returned without responding');
+}
+
+function profile(string $uuid, string $name, array $permissions): void
+{
+    $id = (int) Db::insert('purchase_permission_profiles', ['cmp_id' => 88, 'profile_name' => $name, 'permissions' => $permissions, 'is_active' => true], 'profile_id');
+    Db::run('INSERT INTO purchase_permission_assignments (cmp_id, user_uuid, profile_id) VALUES (88, :u, :p)', ['u' => $uuid, 'p' => $id]);
+}
+
+check('a supplier\'s contact is the company contact Contacts links to its ledger, and linking it is idempotent', function () use ($ctx, $owner) {
+    reset();
+    $contacts = new Domain\SupplierContactService($ctx, $owner);
+    same(false, $contacts->contactFor(601)['linked'], 'no link yet');
+    $candidates = $contacts->candidates('deccan');
+    same(1, count($candidates), 'company contacts are searched');
+
+    $linked = $contacts->link(601, ['contact_id' => $candidates[0]['id']]);
+    same(true, $linked['linked'], 'linked in Contacts');
+    same(['orders@deccansteel.example'], $linked['contact']['emails'], 'read live from Contacts');
+    $contacts->link(601, ['contact_id' => $candidates[0]['id']]);
+    $keys = array_values(array_unique(array_map(static fn ($r) => $r['headers']['idempotency-key'] ?? '', array_filter(stubRequests('/references'), static fn ($r) => $r['method'] === 'POST'))));
+    same(1, count($keys), 'the same link asked twice carries one key');
+
+    $other = $contacts->candidates('konkan')[0]['id'];
+    refused(fn () => $contacts->link(601, ['contact_id' => $other]), 'supplier_contact_conflict', 'Contacts already links this ledger elsewhere');
+    same(0, count(stubRequests('/api/contacts')), 'a user\'s personal contacts were never asked for');
+
+    same(0, (int) Db::scalar("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'purchase_supplier_profiles' AND column_name IN ('email', 'phone', 'contact_name')"), 'and nothing of the contact is copied here');
+});
+
+check('a Contacts without company contacts is reported, never replaced by personal ones', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['contacts_undeployed' => true]);
+    $refusal = refused(fn () => (new Domain\SupplierContactService($ctx, $owner))->contactFor(601), 'contacts_unavailable', 'undeployed Contacts');
+    stubMode([]);
+    same(503, $refusal['status'], 'unavailable, retryable');
+    same(0, count(stubRequests('/api/contacts')), 'no personal fallback');
+});
+
+check('the approvals inbox shows only what the caller approves, and values only to those who may see the document', function () {
+    reset();
+    foreach ([['purchase_order', 1, 6], ['requisition', 2, 6], ['purchase_order', 3, 5]] as [$type, $id, $fy]) {
+        Db::insert('purchase_approval_requests', ['cmp_id' => 88, 'fy_id' => $fy, 'entity_type' => $type, 'entity_id' => $id, 'reason_kind' => 'value', 'status' => 'PENDING', 'actual_value' => 500000, 'requested_by' => 'user-buyer'], 'approval_id');
+    }
+    profile('user-viewer', 'Viewer', ['po.view']);
+    profile('user-approver', 'Approver', ['po.approve']);
+
+    [$status] = endpoint([Controllers\DashboardController::class, 'approvals'], person('user-viewer', 0));
+    same(403, $status, 'a viewer approves nothing');
+
+    [$status, $payload] = endpoint([Controllers\DashboardController::class, 'approvals'], person('user-approver', 0));
+    same(200, $status, 'an approver sees the inbox');
+    same(1, count($payload['data']), 'only purchase orders, only this year');
+    same(null, $payload['data'][0]['actual_value'], 'without po.view the value is withheld');
+
+    [, $payload] = endpoint([Controllers\DashboardController::class, 'approvals'], person());
+    same(2, count($payload['data']), 'the owner sees both kinds for this year');
+    truthy($payload['data'][0]['actual_value'] !== null, 'with values');
+});
+
+check('the first dashboard, which checked no permission, is retired with a pointer', function () {
+    [$status, $payload] = endpoint([Controllers\DashboardController::class, 'index'], person());
+    same(410, $status, 'gone');
+    same('v1/dashboards/overview', $payload['error']['details']['use'] ?? null, 'and says where to go');
+});
+
+check('an order is prepared, sent and acknowledged as three facts, each with its evidence', function () use ($ctx, $owner) {
+    reset();
+    $orders = new PurchaseOrderService($ctx, $owner);
+    $po = orderOf($ctx, $owner);
+
+    $doc = $orders->document((int) $po['po_id']);
+    truthy(str_starts_with($doc['pdf'], '%PDF'), 'a PDF');
+    truthy(str_contains($doc['pdf'], (string) $po['po_no']), 'naming the order');
+    truthy(str_contains($doc['pdf'], 'Stub Item 201'), 'with the item\'s name from Inventory, read now');
+    $orders->document((int) $po['po_id']);
+    same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_po_communications WHERE kind = 'prepared'"), 'the same document prepared twice is one fact');
+
+    refused(fn () => $orders->acknowledge((int) $po['po_id'], ['source' => 'supplier_email', 'evidence' => 'Re: PO']), 'sent', 'acknowledged before it was sent');
+    refused(fn () => $orders->markSent((int) $po['po_id'], ['channel' => 'email']), 'who at the supplier', 'sent to nobody');
+    $orders->markSent((int) $po['po_id'], ['channel' => 'email', 'recipient' => 'orders@deccansteel.example', 'reference' => 'Sent from the buyer\'s mailbox']);
+    refused(fn () => $orders->acknowledge((int) $po['po_id'], ['source' => 'supplier_email']), 'evidence', 'an acknowledgement without evidence');
+    $acked = $orders->acknowledge((int) $po['po_id'], ['source' => 'supplier_email', 'evidence' => 'Their reply "Confirmed, dispatch 25 Sep", 19 Sep 10:42', 'promised_date' => '2026-09-25']);
+
+    same('ACKNOWLEDGED', $acked['status'], 'acknowledged');
+    same('supplier_email', $acked['acknowledgement_source'], 'with its source');
+    same(['prepared', 'sent', 'acknowledged'], array_column($acked['communications'], 'kind'), 'three facts, in order');
+    same($doc['fingerprint'], $acked['communications'][1]['document_fingerprint'], 'the sent record names the version that went');
 });
 
 // ---------------------------------------------------------------------------

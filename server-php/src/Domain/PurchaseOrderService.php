@@ -211,30 +211,172 @@ final class PurchaseOrderService
         return $this->find($poId);
     }
 
-    public function acknowledge(int $poId, array $input): array
-    {
-        Permissions::assert($this->ctx, $this->auth, 'po.create');
+    public const SEND_CHANNELS = ['email', 'whatsapp', 'courier', 'hand_delivered', 'connect', 'other'];
+    public const ACK_SOURCES = ['supplier_email', 'phone', 'supplier_document', 'in_person', 'other'];
 
+    /**
+     * The order's document, as the supplier would receive it, and the fact that it was prepared.
+     *
+     * The names on it are read now from the products that own them (Manage, Inventory) and not
+     * stored. Its fingerprint — of what the order says — is recorded, so a later "sent" names
+     * exactly which version went out, and an amended order is visibly a different document.
+     *
+     * @return array{pdf: string, fingerprint: string, file_name: string}
+     */
+    public function document(int $poId): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'po.view');
         $po = $this->find($poId);
         if ($po === []) {
             Http::notFound('That purchase order does not exist.');
         }
-        if (!in_array($po['status'], ['ISSUED', 'ACKNOWLEDGED'], true)) {
-            Http::conflict('Issue the purchase order before recording the supplier acknowledgement.');
+        if (in_array($po['status'], ['DRAFT', 'APPROVAL_PENDING', 'REJECTED'], true)) {
+            Http::conflict('Only an approved order has a document to send; this one is ' . strtolower(str_replace('_', ' ', (string) $po['status'])) . '.');
         }
 
-        Db::update('purchase_orders', [
-            'status'          => 'ACKNOWLEDGED',
-            'acknowledged_at' => self::now(),
-            'promised_date'   => self::text($input['promised_date'] ?? null) ?? $po['promised_date'],
-            'updated_at'      => self::now(),
-        ], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+        $fingerprint = self::fingerprint($po);
+        $company = [];
+        $info = (new \Aicountly\Api\Clients\ManageClient())->withSession($this->auth->sesKey())->companyInfo($this->ctx->cmpId);
+        if ($info['ok']) {
+            $company = (array) ($info['body']['data'] ?? $info['body'] ?? []);
+        }
+        $names = [];
+        $itemIds = array_values(array_filter(array_map(static fn ($l) => $l['item_id'] === null ? null : (int) $l['item_id'], $po['lines'])));
+        $lookup = (new \Aicountly\Api\Clients\InventoryClient())->withSession($this->auth->sesKey())->bulkLookupItems($this->ctx, $itemIds);
+        if ($lookup['ok']) {
+            foreach ((array) ($lookup['body']['data'] ?? []) as $item) {
+                $names[(int) ($item['item_id'] ?? 0)] = (string) ($item['item_name'] ?? '');
+            }
+        }
+        $pdf = \Aicountly\Api\Pdf\PurchaseOrderDocument::render($po, $company, $names, $fingerprint);
 
-        Audit::record($this->ctx, $this->auth, 'po.acknowledged', 'purchase_order', $poId, null, [
-            'promised_date' => $input['promised_date'] ?? null,
-        ]);
+        $already = Db::scalar(
+            "SELECT 1 FROM purchase_po_communications WHERE cmp_id = :cmp AND po_id = :po AND kind = 'prepared' AND document_fingerprint = :fp",
+            ['cmp' => $this->ctx->cmpId, 'po' => $poId, 'fp' => $fingerprint],
+        );
+        if ($already === null) {
+            Db::insert('purchase_po_communications', [
+                'cmp_id' => $this->ctx->cmpId, 'po_id' => $poId, 'kind' => 'prepared', 'channel' => 'download',
+                'document_fingerprint' => $fingerprint, 'occurred_on' => gmdate('Y-m-d'), 'recorded_by' => $this->auth->uuid,
+            ], 'communication_id');
+        }
+
+        return ['pdf' => $pdf, 'fingerprint' => $fingerprint, 'file_name' => preg_replace('/[^A-Za-z0-9._-]+/', '-', (string) $po['po_no']) . '.pdf'];
+    }
+
+    /**
+     * Record that the order reached the supplier — by which channel, to whom — and which version.
+     *
+     * Recorded by the buyer; nothing is sent from here. Sending through a connected service is
+     * the channel's own act, and this records its outcome.
+     *
+     * @param array<string, mixed> $input {channel, recipient, reference?, note?, sent_on?}
+     */
+    public function markSent(int $poId, array $input): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'po.create');
+        $channel = self::text($input['channel'] ?? null);
+        if ($channel === null || !in_array($channel, self::SEND_CHANNELS, true)) {
+            Http::validationFailed('Say how the order reached the supplier: ' . implode(', ', self::SEND_CHANNELS) . '.', ['field' => 'channel']);
+        }
+        $recipient = self::text($input['recipient'] ?? null);
+        if ($recipient === null) {
+            Http::validationFailed('Say who at the supplier received it (an email address, a number, a name).', ['field' => 'recipient']);
+        }
+
+        Db::transaction(function () use ($poId, $input, $channel, $recipient) {
+            $po = PoProgress::lock($poId, $this->ctx->cmpId);
+            if ($po === null) {
+                Http::notFound('That purchase order does not exist.');
+            }
+            if (!in_array($po['status'], ['ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED'], true)) {
+                Http::conflict('Issue the order before recording that it was sent.');
+            }
+            $full = $this->find($poId);
+            Db::insert('purchase_po_communications', [
+                'cmp_id' => $this->ctx->cmpId, 'po_id' => $poId, 'kind' => 'sent', 'channel' => $channel, 'recipient' => $recipient,
+                'evidence' => self::text($input['reference'] ?? null), 'note' => self::text($input['note'] ?? null),
+                'document_fingerprint' => self::fingerprint($full), 'occurred_on' => self::validDate($input['sent_on'] ?? null) ?? gmdate('Y-m-d'),
+                'recorded_by' => $this->auth->uuid,
+            ], 'communication_id');
+            if ($po['sent_at'] === null) {
+                Db::update('purchase_orders', ['sent_at' => self::now(), 'updated_at' => self::now()], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+            }
+            Audit::record($this->ctx, $this->auth, 'po.sent', 'purchase_order', $poId, null, ['channel' => $channel, 'recipient' => $recipient]);
+        });
 
         return $this->find($poId);
+    }
+
+    /**
+     * Record the supplier's acknowledgement — only of an order that was sent, and only with where
+     * it came from and the evidence of it. There is no supplier portal; the buyer records what
+     * the supplier sent.
+     *
+     * @param array<string, mixed> $input {source, evidence, promised_date?, acknowledged_on?}
+     */
+    public function acknowledge(int $poId, array $input): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'po.create');
+
+        $source = self::text($input['source'] ?? null);
+        if ($source === null || !in_array($source, self::ACK_SOURCES, true)) {
+            Http::validationFailed('Say how the supplier confirmed the order: ' . implode(', ', self::ACK_SOURCES) . '.', ['field' => 'source']);
+        }
+        $evidence = self::text($input['evidence'] ?? null);
+        if ($evidence === null) {
+            Http::validationFailed('Record the evidence: their email\'s subject or reference, the call, the document number.', ['field' => 'evidence']);
+        }
+
+        Db::transaction(function () use ($poId, $input, $source, $evidence) {
+            $po = PoProgress::lock($poId, $this->ctx->cmpId);
+            if ($po === null) {
+                Http::notFound('That purchase order does not exist.');
+            }
+            if (!in_array($po['status'], ['ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED'], true)) {
+                Http::conflict('Issue the purchase order before recording the supplier acknowledgement.');
+            }
+            $sent = Db::scalar("SELECT 1 FROM purchase_po_communications WHERE cmp_id = :cmp AND po_id = :po AND kind = 'sent'", ['cmp' => $this->ctx->cmpId, 'po' => $poId]);
+            if ($sent === null) {
+                Http::conflict('Record how the order was sent to the supplier before recording their acknowledgement.');
+            }
+            Db::insert('purchase_po_communications', [
+                'cmp_id' => $this->ctx->cmpId, 'po_id' => $poId, 'kind' => 'acknowledged', 'source' => $source, 'evidence' => $evidence,
+                'note' => self::text($input['note'] ?? null), 'occurred_on' => self::validDate($input['acknowledged_on'] ?? null) ?? gmdate('Y-m-d'),
+                'recorded_by' => $this->auth->uuid,
+            ], 'communication_id');
+            Db::update('purchase_orders', [
+                // Acknowledgement does not move an order back: one already receiving stays so.
+                'status'                 => $po['status'] === 'ISSUED' ? 'ACKNOWLEDGED' : $po['status'],
+                'acknowledged_at'        => $po['acknowledged_at'] ?? self::now(),
+                'acknowledged_by'        => $this->auth->uuid,
+                'acknowledgement_source' => $source,
+                'promised_date'          => self::validDate($input['promised_date'] ?? null) ?? $po['promised_date'],
+                'updated_at'             => self::now(),
+            ], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+            Audit::record($this->ctx, $this->auth, 'po.acknowledged', 'purchase_order', $poId, null, ['source' => $source, 'promised_date' => $input['promised_date'] ?? null], $evidence);
+        });
+
+        return $this->find($poId);
+    }
+
+    /** What the order says, as a hash: the same order prints the same fingerprint. */
+    private static function fingerprint(array $po): string
+    {
+        $lines = array_map(static fn (array $l) => [
+            (int) $l['line_no'], $l['item_id'] === null ? null : (int) $l['item_id'], (string) ($l['description'] ?? ''),
+            (string) $l['ordered_qty'], (string) ($l['agreed_rate'] ?? ''), (string) ($l['line_amount'] ?? ''),
+        ], (array) ($po['lines'] ?? []));
+
+        return hash('sha256', json_encode([
+            $po['po_no'], (int) ($po['version_no'] ?? 0), (int) $po['supplier_account_id'], (string) $po['po_date'], (string) ($po['promised_date'] ?? ''),
+            (string) ($po['payment_terms'] ?? ''), (string) ($po['terms_text'] ?? ''), (string) ($po['total_amount'] ?? ''), $lines,
+        ]));
+    }
+
+    private static function validDate(mixed $value): ?string
+    {
+        return is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim($value)) === 1 ? trim($value) : null;
     }
 
     /**
@@ -434,6 +576,12 @@ final class PurchaseOrderService
             $entities[] = ['purchase_return', (int) $return['return_id']];
         }
         $row['commands'] = IntegrationCommand::forEntities($this->ctx, $entities);
+        // Prepared, sent, acknowledged — three facts, each with who, when and how.
+        $row['communications'] = Db::all(
+            'SELECT communication_id, kind, channel, recipient, source, evidence, note, document_fingerprint, occurred_on, recorded_by, created_at
+               FROM purchase_po_communications WHERE cmp_id = :cmp AND po_id = :po ORDER BY communication_id',
+            ['cmp' => $this->ctx->cmpId, 'po' => $poId],
+        );
         $row['approvals'] = Db::all(
             "SELECT * FROM purchase_approval_requests
              WHERE cmp_id = :cmp AND entity_type = 'purchase_order' AND entity_id = :id ORDER BY approval_id",
