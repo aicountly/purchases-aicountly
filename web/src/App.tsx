@@ -11,7 +11,7 @@ import { RequisitionDetail, RequisitionEditor, RequisitionsList } from './pages/
 import { RfqDetail, RfqEditor, RfqList } from './pages/Sourcing'
 import { PurchaseOrderDetail, PurchaseOrderEditor, PurchaseOrderList } from './pages/PurchaseOrders'
 import { BillDetail, BillEditor, BillsList } from './pages/Bills'
-import { ReturnDetail, ReturnsList } from './pages/Returns'
+import { ReturnDetail, ReturnEditor, ReturnsList } from './pages/Returns'
 import Claims from './pages/Claims'
 import Suppliers from './pages/Suppliers'
 import Approvals from './pages/Approvals'
@@ -159,6 +159,7 @@ export default function App() {
 
             <Route path="returns">
               <Route index element={<RequireScope><ReturnsList /></RequireScope>} />
+              <Route path="new" element={<RequireScope><ReturnEditor /></RequireScope>} />
               <Route path=":id" element={<RequireScope><ReturnDetail /></RequireScope>} />
             </Route>
 

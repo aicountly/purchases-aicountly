@@ -4,6 +4,7 @@ import type { CatalogSupplier, Scorecard, SupplierProfile } from '../services/ty
 import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
 import { SupplierPicker } from '../components/LivePicker'
+import { SupplierContactCard } from './supplier/SupplierContactCard'
 import { Card, DataTable, money, Notice, qty, Select, StatCard, StatusBadge } from '../ui'
 
 const STATUS_BADGE: Record<string, string> = {
@@ -114,6 +115,8 @@ export default function Suppliers() {
           ]}
         />
       </Card>
+
+      {openId !== null && <SupplierContactCard accId={openId} />}
 
       {openId !== null && card && (
         <Card title={`Scorecard — account #${openId}`}>

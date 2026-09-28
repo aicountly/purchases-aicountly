@@ -1,18 +1,19 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../services/api'
-import type { BillRequest, PurchaseOrder } from '../services/types'
+import type { BillRequest, CatalogSupplier, PurchaseOrder } from '../services/types'
 import { useApi } from '../hooks/useApi'
 import { useUrlFilter, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
+import { ItemPicker, LedgerPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 
-const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'POSTED', 'FAILED', 'CANCELLED']
+const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'POSTING', 'UNCERTAIN', 'POSTED', 'FAILED', 'BLOCKED', 'CANCELLED']
 
 export function BillsList() {
   const navigate = useNavigate()
-  const { scope } = usePurchases()
+  const { scope, can } = usePurchases()
   const [searchParams] = useSearchParams()
   // `exceptions=1` is the older spelling of the same thing and still works.
   const [urlStatus, setStatus] = useUrlFilter('status')
@@ -32,7 +33,10 @@ export function BillsList() {
 
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
-      <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Supplier bills</h1>
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Supplier bills</h1>
+        {can('bill.enter') && <Button tone="primary" onClick={() => navigate('/bills/new')}>Bill without an order</Button>}
+      </header>
 
       <Notice tone="info">
         Every bill is checked against the purchase order and what Inventory says actually arrived, before anything
@@ -99,6 +103,11 @@ export function BillDetail() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [decisionNote, setDecisionNote] = useState<Record<number, string>>({})
+  const [panel, setPanel] = useState<'none' | 'revise' | 'cancel'>('none')
+  const [reviseDate, setReviseDate] = useState('')
+  const [revisePosting, setRevisePosting] = useState('')
+  const [reviseNote, setReviseNote] = useState('')
+  const [cancelReason, setCancelReason] = useState('')
 
   const { data, loading, reload } = useApi(
     (signal) => api.one<BillRequest>(`v1/bills/${id}`, undefined, signal),
@@ -137,8 +146,10 @@ export function BillDetail() {
             <StatusBadge status={bill.status} />
           </h1>
           <p style={{ margin: '0.3rem 0 0', color: 'var(--muted)' }}>
-            Account {bill.supplier_account_id}
+            {bill.bill_kind === 'service' ? 'Service bill' : bill.bill_kind === 'direct' ? 'Direct purchase' : 'Against an order'} · Account {bill.supplier_account_id}
             {bill.supplier_invoice_date && ` · dated ${date(bill.supplier_invoice_date)}`}
+            {bill.posting_date && ` · booked ${date(bill.posting_date)}`}
+            {bill.due_date && ` · due ${date(bill.due_date)}`}
             {bill.po_id && (
               <>
                 {' · against '}
@@ -152,17 +163,90 @@ export function BillDetail() {
           {bill.status !== 'POSTED' && can('match.view') && (
             <Button disabled={busy} onClick={() => act(`v1/bills/${id}/rematch`)}>Re-run the match</Button>
           )}
-          {bill.status !== 'POSTED' && can('bill.post') && (
+          {!['POSTED', 'CANCELLED', 'BLOCKED'].includes(bill.status) && can('bill.post') && (
             <Button tone="primary" disabled={busy || openExceptions.length > 0} onClick={() => act(`v1/bills/${id}/post`)}>
               Post to Smart Books
             </Button>
           )}
+          {bill.status === 'BLOCKED' && can('bill.enter') && (
+            <Button tone="primary" disabled={busy} onClick={() => setPanel('revise')}>Revise</Button>
+          )}
+          {bill.status === 'POSTED' && can('bill.post') && (
+            <Button disabled={busy} onClick={() => act(`v1/bills/${id}/verify`)}>Check again in Smart Books</Button>
+          )}
+          {!['POSTED', 'CANCELLED'].includes(bill.status) && can('bill.enter') && (
+            <Button tone="danger" disabled={busy} onClick={() => setPanel('cancel')}>Cancel</Button>
+          )}
         </div>
       </header>
 
-      {error && <Notice tone="danger" title="That did not work">{error}</Notice>}
+      {error && <Notice tone="danger" title="That did not work" onDismiss={() => setError(null)}>{error}</Notice>}
 
       <CommandStrip commands={bill.commands} busy={busy} onRetry={() => act(`v1/bills/${id}/post`)} />
+
+      {bill.status === 'POSTED' && bill.posting_check && (
+        <Notice
+          tone={bill.posting_check.verified ? 'success' : 'danger'}
+          title={bill.posting_check.verified ? 'Smart Books recorded this bill as it should' : 'What Smart Books recorded does not match this bill'}
+        >
+          {bill.posting_check.verified ? (
+            <span>Balanced, the supplier credited with the total, under the supplier's invoice number. Checked {date(bill.posting_check.checked_at)}.</span>
+          ) : (
+            <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+              {bill.posting_check.problems.map((p) => <li key={p}>{p}</li>)}
+            </ul>
+          )}
+        </Notice>
+      )}
+
+      {panel === 'revise' && (
+        <Card title="Revise what Smart Books refused">
+          <div style={{ display: 'grid', gap: '0.6rem' }}>
+            <p style={{ margin: 0, fontSize: '0.88rem' }}>
+              {bill.last_error ?? 'Smart Books refused this bill.'} A revision is a new request; the refused one is withdrawn and cannot be sent again.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.6rem' }}>
+              <Field label="Supplier invoice date"><Input type="date" value={reviseDate} onChange={(e) => setReviseDate(e.target.value)} /></Field>
+              <Field label="Posting date"><Input type="date" value={revisePosting} onChange={(e) => setRevisePosting(e.target.value)} /></Field>
+            </div>
+            <Field label="What changed"><Input value={reviseNote} onChange={(e) => setReviseNote(e.target.value)} /></Field>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <Button onClick={() => setPanel('none')}>Back</Button>
+              <Button
+                tone="primary"
+                disabled={busy}
+                onClick={async () => {
+                  await act(`v1/bills/${id}/revise`, { supplier_invoice_date: reviseDate || undefined, posting_date: revisePosting || undefined, note: reviseNote || undefined })
+                  setPanel('none')
+                }}
+              >
+                Save the revision
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {panel === 'cancel' && (
+        <Card title="Cancel this bill">
+          <div style={{ display: 'grid', gap: '0.6rem' }}>
+            <Input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} placeholder="Why" />
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <Button onClick={() => setPanel('none')}>Keep it</Button>
+              <Button
+                tone="danger"
+                disabled={busy || cancelReason.trim() === ''}
+                onClick={async () => {
+                  await act(`v1/bills/${id}/cancel`, { reason: cancelReason.trim() })
+                  setPanel('none')
+                }}
+              >
+                Cancel the bill
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {latest && (
         <Card title="Three-way match">
@@ -258,6 +342,28 @@ function LegCard({ title, owner, detail }: { title: string; owner: string; detai
   )
 }
 
+interface DirectLine {
+  key: string
+  kind: 'service' | 'item'
+  description: string
+  item_id: number | null
+  item_label: string | null
+  purchase_acc_id: number | null
+  ledger_label: string | null
+  qty: string
+  rate: string
+}
+
+function blankLine(kind: 'service' | 'item'): DirectLine {
+  return { key: Math.random().toString(36).slice(2), kind, description: '', item_id: null, item_label: null, purchase_acc_id: null, ledger_label: null, qty: '1', rate: '' }
+}
+
+/**
+ * A supplier's bill: against an order (the goods on it arrived on GRNs, which the bill settles —
+ * it never receives them again), or with no order at all — a service, an expense, a direct
+ * purchase. A bill with no order is reviewed before it posts, and a service line names the
+ * Books ledger it is booked to.
+ */
 export function BillEditor() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -266,11 +372,15 @@ export function BillEditor() {
 
   const [invoiceNo, setInvoiceNo] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [dueDate, setDueDate] = useState('')
+  const [postingDate, setPostingDate] = useState('')
   const [quantities, setQuantities] = useState<Record<number, string>>({})
   const [rates, setRates] = useState<Record<number, string>>({})
   const [narration, setNarration] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [supplier, setSupplier] = useState<CatalogSupplier | null>(null)
+  const [direct, setDirect] = useState<DirectLine[]>(() => [blankLine('service')])
 
   const order = useApi(
     (signal) => api.one<PurchaseOrder>(`v1/purchase-orders/${poId}`, undefined, signal),
@@ -280,41 +390,59 @@ export function BillEditor() {
 
   const po = order.data?.data
 
-  // Default to what is received but not yet billed — the quantity a correct
-  // bill would show, so the common case needs no typing.
+  // Default to what arrived and is not yet billed — the quantity a correct bill shows.
   const [seeded, setSeeded] = useState(false)
   if (po && !seeded) {
     setSeeded(true)
     const nextQty: Record<number, string> = {}
     const nextRates: Record<number, string> = {}
+    const progress = new Map((po.progress?.lines ?? []).map((l) => [l.line_id, l]))
     for (const line of po.lines) {
-      const billable = Number(line.received_qty) - Number(line.billed_qty)
-      nextQty[line.line_id] = String(billable > 0 ? billable : 0)
+      const toBill = progress.get(line.line_id)?.to_bill_qty ?? Math.max(0, Number(line.received_qty) - Number(line.billed_qty))
+      nextQty[line.line_id] = String(toBill > 0 ? toBill : 0)
       nextRates[line.line_id] = line.agreed_rate
     }
     setQuantities(nextQty)
     setRates(nextRates)
   }
 
+  const dates = {
+    supplier_invoice_date: invoiceDate,
+    due_date: dueDate || undefined,
+    posting_date: postingDate || undefined,
+  }
+
   async function save() {
-    if (!po) return
     setSaving(true)
     setError(null)
     try {
-      const response = await api.post<BillRequest>('v1/bills', {
-        supplier_account_id: po.supplier_account_id,
-        po_id: po.po_id,
-        supplier_invoice_no: invoiceNo.trim(),
-        supplier_invoice_date: invoiceDate,
-        narration: narration || undefined,
-        lines: po.lines
-          .filter((line) => Number(quantities[line.line_id] ?? 0) > 0)
-          .map((line) => ({
-            po_line_id: line.line_id,
-            qty: Number(quantities[line.line_id] ?? 0),
-            rate: Number(rates[line.line_id] ?? line.agreed_rate),
-          })),
-      })
+      const body = po
+        ? {
+            supplier_account_id: po.supplier_account_id,
+            po_id: po.po_id,
+            bill_kind: 'po',
+            supplier_invoice_no: invoiceNo.trim(),
+            ...dates,
+            narration: narration || undefined,
+            lines: po.lines
+              .filter((line) => Number(quantities[line.line_id] ?? 0) > 0)
+              .map((line) => ({ po_line_id: line.line_id, qty: Number(quantities[line.line_id] ?? 0), rate: Number(rates[line.line_id] ?? line.agreed_rate) })),
+          }
+        : {
+            supplier_account_id: supplier?.acc_id,
+            bill_kind: direct.every((l) => l.kind === 'service') ? 'service' : 'direct',
+            supplier_invoice_no: invoiceNo.trim(),
+            ...dates,
+            narration: narration || undefined,
+            lines: direct
+              .filter((l) => Number(l.qty || 0) > 0 && Number(l.rate || 0) > 0)
+              .map((l) =>
+                l.kind === 'service'
+                  ? { is_service: true, description: l.description.trim() || 'Service', purchase_acc_id: l.purchase_acc_id ?? undefined, qty: Number(l.qty), rate: Number(l.rate) }
+                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, qty: Number(l.qty), rate: Number(l.rate) },
+              ),
+          }
+      const response = await api.post<BillRequest>('v1/bills', body)
       navigate(`/bills/${response.data.request_id}`)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err))
@@ -323,91 +451,130 @@ export function BillEditor() {
     }
   }
 
-  if (!poId) return <Notice tone="warning">Open a purchase order and choose "Enter the bill".</Notice>
-  if (order.loading) return <p style={{ color: 'var(--muted)' }}>Loading the purchase order…</p>
-  if (!po) return <Notice tone="warning">That purchase order does not exist.</Notice>
+  if (poId && order.loading) return <p style={{ color: 'var(--muted)' }}>Loading the purchase order…</p>
+  if (poId && !po) return <Notice tone="warning">That purchase order does not exist.</Notice>
 
-  const total = po.lines.reduce(
-    (sum, line) => sum + Number(quantities[line.line_id] ?? 0) * Number(rates[line.line_id] ?? line.agreed_rate),
-    0,
-  )
+  const total = po
+    ? po.lines.reduce((sum, line) => sum + Number(quantities[line.line_id] ?? 0) * Number(rates[line.line_id] ?? line.agreed_rate), 0)
+    : direct.reduce((sum, l) => sum + Number(l.qty || 0) * Number(l.rate || 0), 0)
+  const currency = po?.currency_code ?? 'INR'
+  const setLine = (key: string, patch: Partial<DirectLine>) => setDirect((current) => current.map((l) => (l.key === key ? { ...l, ...patch } : l)))
+  const missingLedger = !po && direct.some((l) => l.kind === 'service' && Number(l.rate || 0) > 0 && l.purchase_acc_id === null)
 
   return (
-    <div style={{ display: 'grid', gap: '1rem', maxWidth: '60rem' }}>
+    <div style={{ display: 'grid', gap: '1rem', maxWidth: '64rem' }}>
       <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Enter supplier bill</h1>
-      <p style={{ margin: 0, color: 'var(--muted)' }}>
-        Against <Link to={`/purchase-orders/${po.po_id}`}>{po.po_no}</Link> ·{' '}
-        {po.supplier_name_snapshot ?? `Account ${po.supplier_account_id}`}
-      </p>
+      {po ? (
+        <p style={{ margin: 0, color: 'var(--muted)' }}>
+          Against <Link to={`/purchase-orders/${po.po_id}`}>{po.po_no}</Link> · {po.supplier_name_snapshot ?? `Account ${po.supplier_account_id}`}
+        </p>
+      ) : (
+        <Notice tone="info">
+          A bill with no purchase order — a service, an expense, a direct purchase. It is reviewed before it posts to Smart Books,
+          and each service line is booked to the ledger you choose.
+        </Notice>
+      )}
 
-      {error && <Notice tone="danger" title="Could not save">{error}</Notice>}
+      {error && <Notice tone="danger" title="Could not save" onDismiss={() => setError(null)}>{error}</Notice>}
 
       <Card title="Invoice">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.85rem' }}>
-          <Field label="Supplier invoice number" hint="A number already entered for this supplier is refused.">
+          {!po && <SupplierPicker onPick={setSupplier} selectedLabel={supplier?.acc_name ?? null} />}
+          <Field label="Supplier invoice number" hint="The same invoice cannot be booked twice — here, in Billing or in Smart Books.">
             <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} />
           </Field>
-          <Field label="Invoice date"><Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} /></Field>
+          <Field label="Invoice date" hint="As printed on the supplier's invoice."><Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} /></Field>
+          <Field label="Due date (optional)"><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
+          <Field label="Posting date (optional)" hint="Leave blank to book it on the invoice date. Needed when the invoice is dated in last year.">
+            <Input type="date" value={postingDate} onChange={(e) => setPostingDate(e.target.value)} />
+          </Field>
         </div>
       </Card>
 
-      <Card title="Lines">
-        <DataTable
-          rows={po.lines}
-          rowKey={(line) => line.line_id}
-          columns={[
-            { key: 'no', header: '#', width: '3rem', render: (line) => line.line_no },
-            { key: 'item', header: 'Item', render: (line) => line.description ?? `Inventory item ${line.item_id}` },
-            { key: 'ordered', header: 'Ordered', numeric: true, render: (line) => qty(line.ordered_qty) },
-            { key: 'received', header: 'Received', numeric: true, render: (line) => qty(line.received_qty) },
-            { key: 'billed', header: 'Already billed', numeric: true, render: (line) => qty(line.billed_qty) },
-            {
-              key: 'qty',
-              header: 'Billing now',
-              numeric: true,
-              render: (line) => (
-                <Input
-                  value={quantities[line.line_id] ?? ''}
-                  inputMode="decimal"
-                  onChange={(e) => setQuantities({ ...quantities, [line.line_id]: e.target.value })}
-                  style={{ width: '6rem', textAlign: 'right' }}
-                />
-              ),
-            },
-            {
-              key: 'rate',
-              header: 'Rate',
-              numeric: true,
-              render: (line) => (
-                <Input
-                  value={rates[line.line_id] ?? ''}
-                  inputMode="decimal"
-                  onChange={(e) => setRates({ ...rates, [line.line_id]: e.target.value })}
-                  style={{ width: '7rem', textAlign: 'right' }}
-                />
-              ),
-            },
-            { key: 'agreed', header: 'Agreed', numeric: true, render: (line) => money(line.agreed_rate, po.currency_code) },
-          ]}
-        />
+      {po ? (
+        <Card title="Lines">
+          <DataTable
+            rows={po.lines}
+            rowKey={(line) => line.line_id}
+            columns={[
+              { key: 'no', header: '#', width: '3rem', render: (line) => line.line_no },
+              { key: 'item', header: 'Item', render: (line) => line.description ?? `Inventory item ${line.item_id}` },
+              { key: 'ordered', header: 'Ordered', numeric: true, render: (line) => qty(line.ordered_qty) },
+              { key: 'received', header: 'Received', numeric: true, render: (line) => qty(line.received_qty) },
+              { key: 'billed', header: 'Already billed', numeric: true, render: (line) => qty(line.billed_qty) },
+              {
+                key: 'qty',
+                header: 'Billing now',
+                numeric: true,
+                render: (line) => (
+                  <Input value={quantities[line.line_id] ?? ''} inputMode="decimal" onChange={(e) => setQuantities({ ...quantities, [line.line_id]: e.target.value })} style={{ width: '6rem', textAlign: 'right' }} />
+                ),
+              },
+              {
+                key: 'rate',
+                header: 'Rate',
+                numeric: true,
+                render: (line) => (
+                  <Input value={rates[line.line_id] ?? ''} inputMode="decimal" onChange={(e) => setRates({ ...rates, [line.line_id]: e.target.value })} style={{ width: '7rem', textAlign: 'right' }} />
+                ),
+              },
+              { key: 'agreed', header: 'Agreed', numeric: true, render: (line) => money(line.agreed_rate, currency) },
+            ]}
+          />
+          <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.75rem', marginBottom: 0 }}>
+            Goods on this order are already in stock on their GRNs; the bill settles those and trues their cost up to the rate charged.
+            Goods not yet received cannot be billed here — record their GRN first.
+          </p>
+        </Card>
+      ) : (
+        <Card
+          title="Lines"
+          action={
+            <div style={{ display: 'flex', gap: '0.4rem' }}>
+              <Button onClick={() => setDirect([...direct, blankLine('service')])}>Add a service line</Button>
+              <Button onClick={() => setDirect([...direct, blankLine('item')])}>Add an item line</Button>
+            </div>
+          }
+        >
+          <div style={{ display: 'grid', gap: '0.75rem' }}>
+            {direct.map((l, index) => (
+              <div key={l.key} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(11rem, 1fr))', gap: '0.55rem', alignItems: 'end', borderBottom: '1px solid var(--border)', paddingBottom: '0.65rem' }}>
+                {l.kind === 'service' ? (
+                  <>
+                    <Field label={`${index + 1}. Service`}><Input value={l.description} onChange={(e) => setLine(l.key, { description: e.target.value })} placeholder="Freight, repairs, AMC…" /></Field>
+                    <LedgerPicker onPick={(ledger) => setLine(l.key, { purchase_acc_id: ledger.acc_id, ledger_label: ledger.acc_name })} selectedLabel={l.ledger_label} />
+                  </>
+                ) : (
+                  <>
+                    <ItemPicker onPick={(item) => setLine(l.key, { item_id: item.item_id, item_label: item.item_name })} selectedLabel={l.item_label} />
+                    <Field label="Description (optional)"><Input value={l.description} onChange={(e) => setLine(l.key, { description: e.target.value })} /></Field>
+                  </>
+                )}
+                <Field label="Qty"><Input value={l.qty} inputMode="decimal" onChange={(e) => setLine(l.key, { qty: e.target.value })} /></Field>
+                <Field label="Rate"><Input value={l.rate} inputMode="decimal" onChange={(e) => setLine(l.key, { rate: e.target.value })} /></Field>
+                <Button tone="ghost" onClick={() => setDirect(direct.filter((x) => x.key !== l.key))} disabled={direct.length === 1}>Remove</Button>
+              </div>
+            ))}
+          </div>
+          <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.75rem', marginBottom: 0 }}>
+            Services move no stock. Items bought without an order are received into stock by the bill itself.
+          </p>
+        </Card>
+      )}
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1.5rem', marginTop: '1rem' }}>
-          <span style={{ color: 'var(--muted)' }}>Bill total before tax</span>
-          <span className="num" style={{ fontWeight: 600 }}>{money(total, po.currency_code)}</span>
-        </div>
-        <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.5rem', marginBottom: 0 }}>
-          Quantities default to what has been received but not yet billed. Smart Books computes the input tax when the
-          bill is posted.
-        </p>
-      </Card>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1.5rem' }}>
+        <span style={{ color: 'var(--muted)' }}>Bill total before tax</span>
+        <span className="num" style={{ fontWeight: 600 }}>{money(total, currency)}</span>
+      </div>
 
       <Card title="Narration">
         <Textarea value={narration} onChange={(e) => setNarration(e.target.value)} />
       </Card>
 
+      {missingLedger && <Notice tone="warning">Choose the ledger each service line is booked to.</Notice>}
       <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
         <Button onClick={() => navigate(-1)}>Cancel</Button>
-        <Button tone="primary" disabled={saving || invoiceNo.trim() === ''} onClick={save}>
+        <Button tone="primary" disabled={saving || invoiceNo.trim() === '' || (!po && (supplier === null || missingLedger))} onClick={save}>
           {saving ? 'Matching…' : 'Save and match'}
         </Button>
       </div>

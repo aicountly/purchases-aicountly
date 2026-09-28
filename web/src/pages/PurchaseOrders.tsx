@@ -6,7 +6,9 @@ import type { CatalogSupplier, PurchaseOrder } from '../services/types'
 import { useApi } from '../hooks/useApi'
 import { useUrlFilter, useUrlFlag, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
-import { CommandStrip } from '../components/CommandStrip'
+import { CommandStrip, recoveryPath } from '../components/CommandStrip'
+import type { IntegrationCommand } from '../services/types'
+import { OrderCommunicationsPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 
@@ -125,7 +127,7 @@ export function PurchaseOrderDetail() {
   const [note, setNote] = useState('')
   const [cancelling, setCancelling] = useState(false)
   const [receiving, setReceiving] = useState(false)
-  const [dcNo, setDcNo] = useState('')
+  const [shortClosing, setShortClosing] = useState(false)
 
   const { data, loading, reload } = useApi(
     (signal) => api.one<PurchaseOrder>(`v1/purchase-orders/${id}`, undefined, signal),
@@ -141,19 +143,28 @@ export function PurchaseOrderDetail() {
     Boolean(scope && id && data),
   )
 
-  async function act(path: string, body: Record<string, unknown> = {}) {
+  async function post(fullPath: string, body: Record<string, unknown> = {}): Promise<boolean> {
     setBusy(true)
     setActionError(null)
     try {
-      await api.post(`v1/purchase-orders/${id}/${path}`, body)
+      await api.post(fullPath, body)
       setNote('')
-      reload()
-      live.reload()
+      return true
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : String(err))
+      return false
     } finally {
       setBusy(false)
+      reload()
+      live.reload()
     }
+  }
+
+  const act = (path: string, body: Record<string, unknown> = {}) => post(`v1/purchase-orders/${id}/${path}`, body)
+
+  function recover(command: IntegrationCommand, mode: 'retry' | 'reconcile') {
+    const path = recoveryPath(command, mode)
+    if (path) void post(path)
   }
 
   if (loading) return <p style={{ color: 'var(--muted)' }}>Loading…</p>
@@ -163,8 +174,9 @@ export function PurchaseOrderDetail() {
 
   const pendingApprovals = po.approvals.filter((a) => a.status === 'PENDING')
   const canReceive = ['ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED'].includes(po.status)
-  const receivable = po.lines.some((l) => Number(l.ordered_qty) > Number(l.received_qty))
-  const billable = po.lines.some((l) => Number(l.received_qty) > Number(l.billed_qty))
+  const progress = new Map((po.progress?.lines ?? []).map((l) => [l.line_id, l]))
+  const receivable = (po.progress?.lines ?? []).some((l) => l.to_receive_qty > 0)
+  const billable = (po.progress?.lines ?? []).some((l) => l.to_bill_qty > 0)
 
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
@@ -179,6 +191,10 @@ export function PurchaseOrderDetail() {
             {po.supplier_name_snapshot ?? `Account ${po.supplier_account_id}`} · {date(po.po_date)}
             {po.promised_date && ` · promised ${date(po.promised_date)}`}
           </p>
+          <p style={{ margin: '0.35rem 0 0', display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8rem', color: 'var(--muted)' }}>
+            Receipt <StatusBadge status={po.receipt_status ?? 'NOT_STARTED'} /> Billing <StatusBadge status={po.billing_status ?? 'NOT_BILLED'} />
+            {po.closure_kind === 'short_close' && <span>· short-closed: {po.closure_reason}</span>}
+          </p>
         </div>
 
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -188,14 +204,17 @@ export function PurchaseOrderDetail() {
           {po.status === 'APPROVED' && can('po.create') && (
             <Button tone="primary" disabled={busy} onClick={() => act('issue')}>Issue to supplier</Button>
           )}
-          {po.status === 'ISSUED' && can('po.create') && (
-            <Button disabled={busy} onClick={() => act('acknowledge')}>Supplier acknowledged</Button>
-          )}
           {canReceive && receivable && can('receipt.request') && (
             <Button tone="primary" disabled={busy} onClick={() => setReceiving(true)}>Receive goods</Button>
           )}
           {billable && can('bill.enter') && (
             <Button onClick={() => navigate(`/bills/new?po_id=${po.po_id}`)}>Enter the bill</Button>
+          )}
+          {po.lines.some((l) => Number(l.billed_qty) - Number(l.debited_qty ?? 0) > 0) && can('return.create') && (
+            <Button onClick={() => navigate(`/returns/new?po_id=${po.po_id}`)}>Return goods</Button>
+          )}
+          {canReceive && receivable && can('po.close') && (
+            <Button disabled={busy} onClick={() => setShortClosing(true)}>Short-close</Button>
           )}
           {!['CANCELLED', 'CLOSED'].includes(po.status) && can('po.cancel') && (
             <Button tone="danger" disabled={busy} onClick={() => setCancelling(true)}>Cancel</Button>
@@ -208,22 +227,8 @@ export function PurchaseOrderDetail() {
       <CommandStrip
         commands={po.commands}
         busy={busy}
-        onRetry={(command) => {
-          if (command.command_type === 'purchases.receipt.request') {
-            const failed = po.receipts.find((r) => r.status === 'FAILED')
-            if (failed) {
-              setBusy(true)
-              api
-                .post(`v1/receipt-requests/${failed.request_id}/retry`, {})
-                .then(() => {
-                  reload()
-                  live.reload()
-                })
-                .catch((err: Error) => setActionError(err.message))
-                .finally(() => setBusy(false))
-            }
-          }
-        }}
+        onRetry={(command) => recover(command, 'retry')}
+        onReconcile={(command) => recover(command, 'reconcile')}
       />
 
       {pendingApprovals.length > 0 && (
@@ -233,13 +238,13 @@ export function PurchaseOrderDetail() {
           </ul>
           {can('po.approve') && (
             <div style={{ display: 'grid', gap: '0.6rem' }}>
-              <Field label="Note" hint="Required when rejecting."><Input value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+              <Field label="Note" hint="Required when rejecting — and when approving an order you raised yourself, which only the company owner may do, with the reason recorded."><Input value={note} onChange={(e) => setNote(e.target.value)} /></Field>
               <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                 <Button tone="danger" disabled={busy || note.trim() === ''} onClick={() => act('reject', { note: note.trim() })}>Reject</Button>
                 <Button tone="primary" disabled={busy} onClick={() => act('approve', { note: note.trim() || undefined })}>Approve</Button>
               </div>
               <p style={{ color: 'var(--muted)', fontSize: '0.78rem', margin: 0 }}>
-                A purchase order cannot be approved by the buyer who raised it.
+                A purchase order is approved by someone other than the buyer who raised it, as the company's segregation-of-duties policy sets out.
               </p>
             </div>
           )}
@@ -247,30 +252,20 @@ export function PurchaseOrderDetail() {
       )}
 
       {receiving && (
-        <Card title="Receive goods">
-          <div style={{ display: 'grid', gap: '0.75rem' }}>
-            <Notice tone="info">
-              The goods receipt is recorded in Inventory, which owns the stock movement, the batch and the valuation.
-              Purchases keeps the reference so you can find it.
-            </Notice>
-            <Field label="Supplier delivery challan number"><Input value={dcNo} onChange={(e) => setDcNo(e.target.value)} /></Field>
-            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-              <Button onClick={() => setReceiving(false)}>Cancel</Button>
-              <Button
-                tone="primary"
-                disabled={busy}
-                onClick={async () => {
-                  await act('receive', { supplier_dc_no: dcNo.trim() || undefined })
-                  setReceiving(false)
-                  setDcNo('')
-                }}
-              >
-                Receive everything outstanding
-              </Button>
-            </div>
-          </div>
-        </Card>
+        <ReceiveGoodsPanel
+          po={po}
+          onCancel={() => setReceiving(false)}
+          onDone={() => {
+            setReceiving(false)
+            reload()
+            live.reload()
+          }}
+        />
       )}
+
+      {shortClosing && <ShortClosePanel po={po} run={act} busy={busy} onCancel={() => setShortClosing(false)} />}
+
+      <OrderCommunicationsPanel po={po} can={can} run={act} busy={busy} />
 
       {cancelling && (
         <Card title="Cancel this purchase order">
@@ -329,6 +324,20 @@ export function PurchaseOrderDetail() {
               ),
             },
             { key: 'billed', header: 'Billed', numeric: true, render: (line) => qty(line.billed_qty) },
+            {
+              key: 'due',
+              header: 'Still to come',
+              numeric: true,
+              render: (line) => {
+                const p = progress.get(line.line_id)
+                if (!p || !p.is_stock) return '—'
+                return (
+                  <span title={Number(line.short_closed_qty) > 0 ? `${qty(line.short_closed_qty)} short-closed` : undefined}>
+                    {qty(p.to_receive_qty)}
+                  </span>
+                )
+              },
+            },
             { key: 'rate', header: 'Agreed rate', numeric: true, render: (line) => money(line.agreed_rate, po.currency_code) },
             { key: 'amount', header: 'Amount', numeric: true, render: (line) => money(line.line_amount, po.currency_code) },
           ]}
@@ -360,10 +369,34 @@ export function PurchaseOrderDetail() {
             rowKey={(row) => row.request_id}
             empty="Nothing received yet."
             columns={[
+              { key: 'no', header: 'GRN', render: (row) => row.receipt_no ?? `#${row.request_id}` },
               { key: 'date', header: 'Received', render: (row) => date(row.received_at) },
               { key: 'dc', header: 'Supplier DC', render: (row) => row.supplier_dc_no ?? '—' },
               { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-              { key: 'grn', header: 'GRN in Inventory', render: (row) => row.inventory_document_no ?? row.inventory_document_uuid ?? '—' },
+              { key: 'grn', header: 'In Inventory', render: (row) => row.inventory_document_no ?? (row.inventory_document_id ? `#${row.inventory_document_id}` : '—') },
+              {
+                key: 'act',
+                header: '',
+                render: (row) =>
+                  row.applied_at === null && ['FAILED', 'UNCERTAIN'].includes(row.status) && can('receipt.request') ? (
+                    <span style={{ display: 'flex', gap: '0.3rem' }}>
+                      {row.status === 'UNCERTAIN' && <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/reconcile`)}>Reconcile</Button>}
+                      <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/retry`)}>Retry</Button>
+                      {row.status === 'FAILED' && (
+                        <Button
+                          tone="ghost"
+                          disabled={busy}
+                          onClick={() => {
+                            const reason = window.prompt('Why is this receipt being withdrawn?')
+                            if (reason && reason.trim() !== '') void post(`v1/receipt-requests/${row.request_id}/cancel`, { reason: reason.trim() })
+                          }}
+                        >
+                          Withdraw
+                        </Button>
+                      )}
+                    </span>
+                  ) : null,
+              },
             ]}
           />
           <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.6rem', marginBottom: 0 }}>

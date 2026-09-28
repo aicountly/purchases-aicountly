@@ -12,6 +12,8 @@ type ApprovalRow = ApprovalRequest & {
   po_no?: string | null
   supplier_name_snapshot?: string | null
   po_value?: string | null
+  /** Set when the value is withheld: the permission it needs. */
+  values_withheld?: string
 }
 
 type ExceptionRow = MatchException & {
@@ -84,7 +86,17 @@ export default function Approvals() {
             },
             { key: 'who', header: 'Supplier / raised by', render: (row) => row.supplier_name_snapshot ?? row.requested_by },
             { key: 'why', header: 'Why', render: (row) => row.reason_detail ?? row.reason_kind },
-            { key: 'value', header: 'Value', numeric: true, render: (row) => money(row.po_value ?? row.requisition_value) },
+            {
+              key: 'value',
+              header: 'Value',
+              numeric: true,
+              render: (row) =>
+                row.values_withheld ? (
+                  <span style={{ color: 'var(--muted)' }} title={`Needs ${row.values_withheld}`}>Withheld</span>
+                ) : (
+                  money(row.po_value ?? row.requisition_value)
+                ),
+            },
             { key: 'raised', header: 'Raised', render: (row) => date(row.created_at) },
             {
               key: 'actions',

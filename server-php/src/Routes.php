@@ -67,6 +67,7 @@ final class Routes
         $router->get('v1/catalog/uoms', [CatalogController::class, 'uoms']);
         $router->get('v1/catalog/suppliers', [CatalogController::class, 'suppliers']);
         $router->get('v1/catalog/tax-categories', [CatalogController::class, 'taxCategories']);
+        $router->get('v1/catalog/ledgers', [CatalogController::class, 'ledgers']);
         $router->get('v1/catalog/price-history', [CatalogController::class, 'priceHistory']);
 
         // Requisitions.

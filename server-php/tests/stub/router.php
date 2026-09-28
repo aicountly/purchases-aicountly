@@ -565,6 +565,30 @@ if (str_contains($path, '/v1/warehouses')) {
 }
 
 // --- Books ----------------------------------------------------------------
+/**
+ * The account list, filtered the way Books filters it: anchor_code is a comma list of group
+ * anchors, q a substring of the name. Creditors carry SUNDRY_CREDITORS.
+ */
+if (preg_match('#/masters/accounts$#', $path) === 1 && $method === 'GET') {
+    $accounts = [
+        ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'grp_name' => 'Sundry Creditors', 'grp_anchor_code' => 'SUNDRY_CREDITORS'],
+        ['acc_id' => 502, 'acc_name' => 'Eastern Metals', 'grp_name' => 'Sundry Creditors', 'grp_anchor_code' => 'SUNDRY_CREDITORS'],
+        ['acc_id' => 7101, 'acc_name' => 'Purchase - Raw Materials', 'grp_name' => 'Purchase Accounts', 'grp_anchor_code' => 'PURCHASE_ACCOUNTS'],
+        ['acc_id' => 7201, 'acc_name' => 'Freight Inward', 'grp_name' => 'Direct Expenses', 'grp_anchor_code' => 'DIRECT_EXPENSES'],
+        ['acc_id' => 7301, 'acc_name' => 'Repairs and Maintenance', 'grp_name' => 'Indirect Expenses', 'grp_anchor_code' => 'INDIRECT_EXPENSES'],
+        ['acc_id' => 7401, 'acc_name' => 'Domestic Sales', 'grp_name' => 'Sales Accounts', 'grp_anchor_code' => 'SALES_ACCOUNTS'],
+    ];
+    $anchors = array_filter(array_map('trim', explode(',', (string) ($_GET['anchor_code'] ?? ''))));
+    if (($_GET['nature'] ?? '') === 'sundry_creditors') {
+        $anchors[] = 'SUNDRY_CREDITORS';
+    }
+    $term = strtolower(trim((string) ($_GET['q'] ?? '')));
+    $rows = array_values(array_filter($accounts, static fn (array $a): bool =>
+        ($anchors === [] || in_array($a['grp_anchor_code'], $anchors, true))
+        && ($term === '' || str_contains(strtolower($a['acc_name']), $term))));
+    echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows)]]);
+    exit;
+}
 if (str_contains($path, '/masters/accounts/')) {
     echo json_encode(['data' => ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30]]);
     exit;

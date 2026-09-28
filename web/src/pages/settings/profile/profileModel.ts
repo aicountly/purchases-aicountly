@@ -27,6 +27,10 @@ export interface ProfileApprovals {
   purchaseOrderLimit: string
   approvedSuppliersOnly: boolean
   blockBillOnMatchException: boolean
+  /** strict: nobody decides on what they raised. owner_with_reason: the owner may, saying why. */
+  sodPolicy: 'strict' | 'owner_with_reason'
+  /** Percentage of an order line that may arrive beyond it without special authority. */
+  overReceiptTolerance: string
 }
 
 export interface ProfileForm {
@@ -68,6 +72,8 @@ export const DEFAULT_PROFILE: ProfileForm = {
     purchaseOrderLimit: '0',
     approvedSuppliersOnly: false,
     blockBillOnMatchException: true,
+    sodPolicy: 'owner_with_reason',
+    overReceiptTolerance: '0',
   },
   active: true,
 }
@@ -127,6 +133,8 @@ export function fromSettings(row: Partial<PurchaseSettings> | null | undefined):
       blockBillOnMatchException: row.block_bill_on_match_failure === undefined
         ? true
         : Boolean(row.block_bill_on_match_failure),
+      sodPolicy: row.sod_policy === 'strict' ? 'strict' : 'owner_with_reason',
+      overReceiptTolerance: amountForDisplay(row.over_receipt_tolerance_pc),
     },
     active: row.is_active === undefined ? true : Boolean(row.is_active),
   }
@@ -162,6 +170,8 @@ export function toPayload(form: ProfileForm): ProfileSavePayload {
     po_approval_above_amount: amountForPayload(form.approvals.purchaseOrderLimit),
     enforce_approved_vendors: form.approvals.approvedSuppliersOnly,
     block_bill_on_match_failure: form.approvals.blockBillOnMatchException,
+    sod_policy: form.approvals.sodPolicy,
+    over_receipt_tolerance_pc: amountForPayload(form.approvals.overReceiptTolerance),
   }
 }
 
@@ -186,7 +196,9 @@ export function sameProfile(a: ProfileForm, b: ProfileForm): boolean {
     sameAmount(a.approvals.requisitionLimit, b.approvals.requisitionLimit) &&
     sameAmount(a.approvals.purchaseOrderLimit, b.approvals.purchaseOrderLimit) &&
     a.approvals.approvedSuppliersOnly === b.approvals.approvedSuppliersOnly &&
-    a.approvals.blockBillOnMatchException === b.approvals.blockBillOnMatchException
+    a.approvals.blockBillOnMatchException === b.approvals.blockBillOnMatchException &&
+    a.approvals.sodPolicy === b.approvals.sodPolicy &&
+    sameAmount(a.approvals.overReceiptTolerance, b.approvals.overReceiptTolerance)
   )
 }
 
@@ -248,6 +260,11 @@ export function validateProfile(form: ProfileForm): ProfileErrors {
     }
   }
 
+  const tolerance = form.approvals.overReceiptTolerance.trim()
+  if (tolerance !== '' && (!DECIMAL_PATTERN.test(tolerance) || Number(tolerance) > 100)) {
+    errors.overReceiptTolerance = 'A percentage from 0 to 100.'
+  }
+
   return errors
 }
 
@@ -264,6 +281,8 @@ export const FIELD_SECTIONS: Record<string, string> = {
   claimPrefix: 'numbering',
   requisitionLimit: 'approvals',
   purchaseOrderLimit: 'approvals',
+  sodPolicy: 'approvals',
+  overReceiptTolerance: 'approvals',
 }
 
 /**
@@ -284,6 +303,8 @@ const COLUMN_TO_FIELD: Record<string, string> = {
   claim_prefix: 'claimPrefix',
   requisition_approval_above_amount: 'requisitionLimit',
   po_approval_above_amount: 'purchaseOrderLimit',
+  sod_policy: 'sodPolicy',
+  over_receipt_tolerance_pc: 'overReceiptTolerance',
 }
 
 export function fieldForColumn(column: unknown): string | null {

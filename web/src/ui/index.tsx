@@ -186,6 +186,22 @@ const STATUS_TONES: Record<string, 'neutral' | 'info' | 'warning' | 'success' | 
   BLOCKED: 'danger',
   POSTED: 'success',
   REQUESTED: 'warning',
+  UNCERTAIN: 'warning',
+  ISSUED: 'info',
+  ACKNOWLEDGED: 'info',
+  PARTIALLY_RECEIVED: 'warning',
+  DISPATCHED: 'info',
+  DEBITED: 'success',
+  RECALLED: 'neutral',
+  IN_PROGRESS: 'info',
+  PROPOSED: 'warning',
+  SETTLED: 'success',
+  PARTIALLY_SETTLED: 'warning',
+  MATCHING: 'info',
+  COMPLETE: 'success',
+  PARTIAL: 'warning',
+  NOT_STARTED: 'neutral',
+  NOT_BILLED: 'neutral',
 }
 
 export function StatusBadge({ status }: { status: string }) {

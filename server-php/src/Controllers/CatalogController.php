@@ -114,6 +114,23 @@ final class CatalogController extends Controller
         Http::json(200, $body);
     }
 
+    /**
+     * Ledgers a purchase or expense can be booked to — Books' own accounts under its Purchase
+     * Accounts, Direct Expenses and Indirect Expenses groups, read live for the bill's service
+     * lines. Nothing is kept here but the id the person chose.
+     */
+    public static function ledgers(): void
+    {
+        [$auth, $ctx] = self::enter();
+        Permissions::assert($ctx, $auth, 'bill.enter');
+        self::relay((new BooksClient())->withSession($auth->sesKey())->accounts($ctx, [
+            'q'           => Http::param('q'),
+            'anchor_code' => 'PURCHASE_ACCOUNTS,DIRECT_EXPENSES,INDIRECT_EXPENSES',
+            'active_only' => '1',
+            'per_page'    => 50,
+        ]), $ctx, $auth);
+    }
+
     public static function taxCategories(): void
     {
         [$auth, $ctx] = self::enter();

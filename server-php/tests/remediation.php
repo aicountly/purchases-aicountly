@@ -1252,6 +1252,20 @@ check('the repair tool reports historical damage, plans for review, and applies 
     @unlink($planFile);
 });
 
+check('a service bill books only to Books\' purchase and expense ledgers, and only for someone who enters bills', function () {
+    reset();
+    profile('user-viewer', 'Viewer', ['po.view']);
+    [$status] = endpoint([Controllers\CatalogController::class, 'ledgers'], person('user-viewer', 0));
+    same(403, $status, 'a viewer cannot browse ledgers to book to');
+
+    [$status, $payload] = endpoint([Controllers\CatalogController::class, 'ledgers'], person());
+    same(200, $status, 'someone who enters bills can');
+    same([7101, 7201, 7301], array_column($payload['data'], 'acc_id'), 'purchase, direct and indirect expense ledgers only — no creditor, no sales ledger');
+    $asked = stubRequests('/masters/accounts');
+    same('PURCHASE_ACCOUNTS,DIRECT_EXPENSES,INDIRECT_EXPENSES', end($asked)['query']['anchor_code'] ?? null, 'Books is asked for exactly those groups');
+    same('1', end($asked)['query']['active_only'] ?? null, 'and only live ledgers');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

@@ -169,6 +169,8 @@ export interface PurchaseOrderLine {
   rejected_qty: string
   billed_qty: string
   returned_qty: string
+  short_closed_qty: string
+  debited_qty: string
   agreed_rate: string
   discount_pc: string
   estimated_tax_pc: string
@@ -182,7 +184,15 @@ export interface IntegrationCommand {
   command_id: number
   target_service: string
   command_type: string
-  status: 'PENDING' | 'POSTING' | 'COMPLETED' | 'FAILED' | 'BLOCKED'
+  /**
+   * UNCERTAIN: the other product may have acted and the answer was lost — Retry sends the same
+   * request on the same key (it cannot act twice), Reconcile only asks. CANCELLED: withdrawn
+   * before it reached the other product (its document was cancelled or revised).
+   */
+  status: 'PENDING' | 'POSTING' | 'COMPLETED' | 'FAILED' | 'UNCERTAIN' | 'BLOCKED' | 'CANCELLED'
+  entity_type: string
+  entity_id: number
+  revision: number
   attempts: number
   last_error: string | null
   external_reference: Record<string, unknown> | string | null
@@ -190,8 +200,27 @@ export interface IntegrationCommand {
   completed_at: string | null
 }
 
+export interface ReceiptLine {
+  line_id: number
+  line_no: number
+  item_id: number
+  qty: number
+  rejected_qty: number
+  rejection_reason: string | null
+  warehouse_id: number | null
+  batch_no: string | null
+  serials: string[]
+  inspection_note: string | null
+}
+
 export interface ReceiptRequest {
   request_id: number
+  receipt_no: string | null
+  receipt_uuid: string
+  applied_at: string | null
+  inventory_document_id: number | null
+  requested_lines: ReceiptLine[] | string | null
+  over_receipt_reason: string | null
   status: string
   received_at: string | null
   supplier_dc_no: string | null
@@ -244,6 +273,48 @@ export interface PurchaseOrder {
   bills: BillRequestSummary[]
   commands: IntegrationCommand[]
   approvals: ApprovalRequest[]
+  receipt_status: 'NOT_STARTED' | 'PARTIAL' | 'COMPLETE'
+  billing_status: 'NOT_BILLED' | 'PARTIAL' | 'COMPLETE'
+  closure_kind: 'auto' | 'short_close' | null
+  closure_reason: string | null
+  sent_at: string | null
+  acknowledged_at: string | null
+  acknowledgement_source: string | null
+  progress: PoProgress
+  communications: PoCommunication[]
+}
+
+export interface PoProgress {
+  receipt_status: string
+  billing_status: string
+  bill_work_open: boolean
+  return_work_open: boolean
+  short_closed: boolean
+  lines: Array<{
+    line_id: number
+    line_no: number
+    is_stock: boolean
+    wanted_qty: number
+    net_received_qty: number
+    net_billed_qty: number
+    to_receive_qty: number
+    to_bill_qty: number
+  }>
+}
+
+/** Prepared, sent, acknowledged: three facts about the order and the supplier. */
+export interface PoCommunication {
+  communication_id: number
+  kind: 'prepared' | 'sent' | 'acknowledged'
+  channel: string | null
+  recipient: string | null
+  source: string | null
+  evidence: string | null
+  note: string | null
+  document_fingerprint: string | null
+  occurred_on: string | null
+  recorded_by: string
+  created_at: string
 }
 
 export interface MatchException {
@@ -279,6 +350,13 @@ export interface BillRequest extends BillRequestSummary {
   supplier_account_id: number
   requested_lines: unknown
   receipt_references: unknown
+  bill_kind: 'po' | 'direct' | 'service'
+  due_date: string | null
+  posting_date: string | null
+  revision: number
+  stock_effect: string | null
+  /** What Books actually recorded, read back after posting — not an HTTP 200. */
+  posting_check: { verified: boolean; checked_at: string; problems: string[] } | null
   matches: MatchResult[]
   commands: IntegrationCommand[]
   /** Present on the response to entering or re-matching a bill. */
@@ -299,14 +377,24 @@ export interface PurchaseReturn {
   po_id: number | null
   supplier_account_id: number
   status: string
+  return_kind: 'physical' | 'financial'
+  expect_replacement: boolean
+  adjustment_acc_id: number | null
+  adjustment_reason: string | null
+  claim_id: number | null
   reason_code: string | null
   reason_note: string | null
+  inventory_document_id: number | null
   inventory_document_uuid: string | null
+  books_debit_note_id: number | null
   books_debit_note_uuid: string | null
+  recall_reason: string | null
+  cancel_reason: string | null
   lines: Array<{
     line_id: number
     line_no: number
     item_id: number | null
+    po_line_id: number | null
     return_qty: string
     rate: string
     line_amount: string
@@ -324,7 +412,10 @@ export interface Claim {
   claim_kind: string
   status: string
   claimed_amount: string
+  approved_amount: string | null
   settled_amount: string
+  closed_reason: string | null
+  resolutions?: ClaimResolution[]
   description: string | null
   supplier_response: string | null
   settled_at: string | null
@@ -431,6 +522,8 @@ export interface PurchaseSettings {
   requisition_approval_above_amount: string
   enforce_approved_vendors: boolean
   block_bill_on_match_failure: boolean
+  sod_policy?: 'strict' | 'owner_with_reason'
+  over_receipt_tolerance_pc?: string
   default_warehouse_id: number | null
   updated_at?: string | null
 }
@@ -458,6 +551,8 @@ export interface ProfileSavePayload {
   po_approval_above_amount: number
   enforce_approved_vendors: boolean
   block_bill_on_match_failure: boolean
+  sod_policy: 'strict' | 'owner_with_reason'
+  over_receipt_tolerance_pc: number
 }
 
 export interface ProfileTypeOption {
@@ -494,4 +589,31 @@ export interface MatchPolicy {
   auto_match_below_amt: string
   is_default: boolean
   is_active: boolean
+}
+
+/** One way a claim is being settled, completed only when what it depends on has happened. */
+export interface ClaimResolution {
+  resolution_id: number
+  claim_id: number
+  kind: 'financial_adjustment' | 'physical_return' | 'replacement' | 'refund' | 'non_financial'
+  amount: string
+  status: 'PROPOSED' | 'APPROVED' | 'IN_PROGRESS' | 'UNCERTAIN' | 'FAILED' | 'BLOCKED' | 'COMPLETED' | 'CANCELLED'
+  proposed_effect: { summary: string } | null
+  adjustment_acc_id: number | null
+  note: string | null
+  reference: Record<string, unknown> | null
+  last_error: string | null
+  proposed_by: string
+  approved_by: string | null
+  completed_at: string | null
+}
+
+/** A company contact from Aicountly Contacts, read live — never stored here. */
+export interface SupplierContact {
+  id: string
+  display_name: string
+  organization_name: string | null
+  emails: string[]
+  phones: string[]
+  tax_ids: Array<{ type: string; value: string }>
 }

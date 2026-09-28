@@ -227,3 +227,36 @@ export function SupplierPicker({
     />
   )
 }
+
+export interface CatalogLedger {
+  acc_id: number
+  acc_name: string
+  group_name?: string | null
+}
+
+/** Books' purchase and expense ledgers, for a bill's service lines. Read live; only the id is kept. */
+export function LedgerPicker({ onPick, selectedLabel }: { onPick: (ledger: CatalogLedger) => void; selectedLabel?: string | null }) {
+  const search = useMemo(
+    () => async (term: string, signal: AbortSignal) => {
+      const response = await api.get<{ data?: Array<Record<string, unknown>> }>('v1/catalog/ledgers', { q: term }, signal)
+      return (response.data ?? []).map((row) => ({
+        acc_id: Number(row.acc_id ?? 0),
+        acc_name: String(row.acc_name ?? row.name ?? `Ledger ${row.acc_id}`),
+        group_name: (row.grp_name ?? row.group_name ?? null) as string | null,
+      }))
+    },
+    [],
+  )
+
+  return (
+    <Picker
+      label="Booked to"
+      placeholder="Search Books ledgers…"
+      selectedLabel={selectedLabel}
+      onPick={onPick}
+      search={search}
+      keyOf={(ledger) => ledger.acc_id}
+      renderOption={(ledger) => (ledger.group_name ? `${ledger.acc_name} · ${ledger.group_name}` : ledger.acc_name)}
+    />
+  )
+}

@@ -91,6 +91,44 @@ export function ApprovalControlsCard({
         </span>
       </label>
 
+      <div className="pp-grid pp-grid--2">
+        <PpField
+          id="sodPolicy"
+          label="Who may decide on a document they raised"
+          hint={form.approvals.sodPolicy === 'strict' ? 'Nobody — not even the owner' : 'Only the company owner, stating a reason that is recorded'}
+        >
+          {(props) => (
+            <select
+              {...props}
+              value={form.approvals.sodPolicy}
+              disabled={!editable}
+              onChange={(event) => set({ sodPolicy: event.target.value === 'strict' ? 'strict' : 'owner_with_reason' })}
+            >
+              <option value="owner_with_reason">Owner, with a reason</option>
+              <option value="strict">Nobody (strict)</option>
+            </select>
+          )}
+        </PpField>
+
+        <PpField
+          id="overReceiptTolerance"
+          label="Over-receipt tolerance (%)"
+          error={errors.overReceiptTolerance}
+          hint="0 means nothing beyond the order without special authority and a reason"
+        >
+          {(props) => (
+            <input
+              {...props}
+              value={form.approvals.overReceiptTolerance}
+              disabled={!editable}
+              inputMode="decimal"
+              autoComplete="off"
+              onChange={(event) => set({ overReceiptTolerance: event.target.value })}
+            />
+          )}
+        </PpField>
+      </div>
+
       <label className="pp-check">
         <input
           type="checkbox"
