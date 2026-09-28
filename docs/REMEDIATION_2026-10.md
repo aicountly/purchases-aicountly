@@ -61,14 +61,14 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] User-initiated writes use the user's session; no generic service key for company writes (bills and debit notes)
 - [~] Bill and debit-note payloads: party, bill (supplier invoice no/date, due date), lines, tax inputs, references — bill done; debit note with section 6
 - [x] Supplier invoice reference kept apart from Books' voucher number (`bill.bill_ref`)
-- [ ] Books refuses an empty or ambiguous financial posting (merge of Books `awesome-hypatia` + unknown stock effect from an integration refused)
+- [x] Books refuses an empty or ambiguous financial posting — empty commercial voucher refused (Books `awesome-hypatia`, merged); a stock effect an integration declares is posted as declared or refused 422 (books `InventorySettlementService::assertDeclaredEffectHonoured`)
 - [x] Acceptance on ledger effect, creditor, bill reference and totals — not HTTP 200 (`posting_check`)
 - [~] Standalone / direct / service-expense bill entry in Purchase, reviewed, no stock movement for services (API + tests done; UI open)
 
 ### 5. Physical GRN and cost true-up
-- [ ] Inventory: a purchase that settles a physical inward challan without moving stock, trueing up cost
-- [ ] Books: passes that effect through for purchase bills; never falls back to receiving stock
-- [~] Purchase: GRN posts goods on hand at provisional cost; bill settles it (Purchase side done; posting gated on producer capabilities until Inventory and Books ship theirs)
+- [x] Inventory: a purchase that settles a physical inward challan without moving stock, trueing up cost (`PURCHASE_RECEIPT` + `from_physical_challan`; unabsorbed remainder warned; reversal unwinds; wrong challan kind refused; per-type effect validation; `GET v1/capabilities`) — 10 PostgreSQL tests
+- [x] Books: passes that effect through for purchase bills; never falls back to receiving stock (`GET integration/capabilities`)
+- [x] Purchase: GRN posts goods on hand at provisional cost; bill settles it (capability-gated; deploy Inventory and Books first)
 
 ### 6. Returns and claims
 - [ ] Runtime answer: does Books trigger Inventory for a Purchase debit note?
@@ -79,9 +79,9 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ### 7. Supplier identity, duplicate bills, periods
 - [ ] Contacts client on Contacts' real routes; communication identity from Contacts, creditor from Books
-- [ ] Cross-app supplier-invoice duplicate protection at the Books boundary
+- [x] Cross-app supplier-invoice duplicate protection at the Books boundary — Books migration 174 register (company, supplier, type, normalised number, April–March year); PostgreSQL race test; Purchase journey test; Purchase now reads Books' `messages.error` refusals
 - [ ] Branch and FY validated through Manage
-- [ ] Books' closed/locked-period policy enforced for Purchase postings
+- [x] Books' closed/locked-period policy enforced for Purchase postings — Purchase posts through Books' own draft→post path, which applies `FinancialYearPostingGuardService` (archived year, date within year); a refusal blocks the bill for revision (tested). Books has no separate lock-date setting today
 
 ### 8. Permissions and supplier communication
 - [ ] `v1/approvals` permission-gated; legacy `v1/dashboard` retired or gated
@@ -97,21 +97,17 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 ### 10. Verification
 - [~] Journey tests on real PostgreSQL, concurrency included (`tests/remediation.php`, sections 1–4)
 - [ ] Producer-verified contracts (Books, Inventory, Contacts, Connect)
-- [ ] SmartBooks regression
+- [~] SmartBooks regression — Books `scripts/check-unit-suite.php` 4577/0 new, security 119 OK, integration 427 with 1 pre-existing error (fails identically on base)
 - [ ] Report: changes by repository, tests run, migrations/configuration, historical repair, remaining blockers
 
 ## Continuation checkpoint
 
-Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 29/0
+Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 30/0
 (remediation suite looped 6× for race stability).
 
 Next, in order:
 1. ~~`bin/receipt-repair.php`~~ done.
-2. Inventory (`inventory-aicountly`): `PURCHASE_RECEIPT` + `from_physical_challan` (no movement,
-   settles the challan, trues up cost); `stock_effect` validated per document type;
-   `GET v1/capabilities`.
-3. Books (`books-react-app`): pass `from_physical_challan` for purchase vouchers; refuse unknown
-   stock effects from integration sources; `GET integration/capabilities`; supplier-invoice
-   duplicate guard across Billing and Purchase; closed/locked period policy; SmartBooks regression.
+2. ~~Inventory producer change~~ done (Inventory-aicountly, same branch).
+3. ~~Books producer change + supplier invoice register~~ done (books-react-app, same branch).
 4. Section 6 returns/claims; section 7 Contacts routes + Manage FY/branch; section 8; section 9.
 5. Web UI for sections 1–4 (per-line receipt, CommandStrip controls, short-close, direct/service bill).

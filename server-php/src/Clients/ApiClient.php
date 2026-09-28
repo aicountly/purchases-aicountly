@@ -174,9 +174,7 @@ abstract class ApiClient
             'error'  => null,
         ];
         if (!$result['ok']) {
-            $result['error'] = is_array($decoded)
-                ? (string) ($decoded['error']['message'] ?? $decoded['message'] ?? 'HTTP ' . $status)
-                : 'HTTP ' . $status;
+            $result['error'] = is_array($decoded) ? self::errorMessage($decoded, $status) : 'HTTP ' . $status;
             $this->log('error', $path, $status, $ms, null);
         }
 
@@ -219,5 +217,32 @@ abstract class ApiClient
         }
 
         return $clean === [] ? '' : '?' . http_build_query($clean);
+    }
+
+    /**
+     * The reason another product gave for refusing, in whichever envelope it used.
+     *
+     * Inventory and this product answer {error: {code, message}}. Books answers with
+     * CodeIgniter's fail(): {status, error: <int>, messages: {error: "…"}}. Reading only the
+     * first shape turned every Books refusal into "HTTP 409" — a duplicate supplier invoice, a
+     * closed year, an unknown stock effect all reached the person as a status code.
+     *
+     * @param array<string, mixed> $decoded
+     */
+    private static function errorMessage(array $decoded, int $status): string
+    {
+        $candidates = [
+            is_array($decoded['error'] ?? null) ? ($decoded['error']['message'] ?? null) : null,
+            is_array($decoded['messages'] ?? null) ? ($decoded['messages']['error'] ?? (is_string(reset($decoded['messages'])) ? reset($decoded['messages']) : null)) : null,
+            $decoded['message'] ?? null,
+            is_string($decoded['error'] ?? null) ? $decoded['error'] : null,
+        ];
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && trim($candidate) !== '') {
+                return trim($candidate);
+            }
+        }
+
+        return 'HTTP ' . $status;
     }
 }

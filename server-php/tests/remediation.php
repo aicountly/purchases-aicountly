@@ -687,6 +687,27 @@ check('a revised bill\'s refused revision leaves the open work and cannot be sen
     same(0, count(array_filter(IntegrationCommand::outstanding($ctx), static fn ($c) => (int) $c['revision'] === 0)), 'and is not open work');
 });
 
+check('the same supplier invoice booked through Billing cannot be posted again from Purchase', function () use ($ctx, $owner) {
+    reset();
+    // Aicountly Billing has already booked the supplier's invoice DS/2026/118 in Books.
+    file_put_contents(sys_get_temp_dir() . '/stub-vouchers.json', json_encode(['4999' => [
+        'vch_txn_id' => 4999, 'vch_type_id' => 11, 'vch_number' => 'PUR/0099', 'vch_date' => '2026-09-19', 'source_app' => 'billing',
+        'party' => ['acc_id' => 601], 'bill' => ['bill_ref' => 'DS/2026/118', 'bill_date' => '2026-09-19', 'dr_cr' => 2],
+        'lines' => [], 'tax_summary' => ['grand_total' => 25000],
+    ]]));
+    $po = orderOf($ctx, $owner);
+    receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 100);
+    $bills = new BillService($ctx, $owner);
+    // Purchase has never seen it, so its own duplicate check passes; the spelling differs too.
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'ds/2026/ 118', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]]]);
+
+    $refusal = refused(fn () => $bills->post((int) $bill['request_id']), 'already booked', 'Books refuses the second booking');
+    same(409, $refusal['status'], 'as a refusal to fix, not a failure to retry');
+    same('BLOCKED', Db::scalar('SELECT status FROM purchase_bill_requests'), 'the bill stops for a person');
+    same(1, count(booksVouchers()), 'Books still holds only Billing\'s voucher');
+    same('0.0000', (string) Db::scalar('SELECT billed_qty FROM purchase_order_lines WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'and the order is not billed twice');
+});
+
 check('two submissions of the same supplier invoice together make one bill (real race)', function () use ($ctx, $owner) {
     reset();
     $input = ['supplier_account_id' => 601, 'supplier_invoice_no' => 'DUP-9', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['description' => 'Freight', 'is_service' => true, 'purchase_acc_id' => 7302, 'qty' => 1, 'rate' => 5000]]];

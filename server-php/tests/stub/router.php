@@ -569,7 +569,7 @@ if (str_contains($path, '/dashboard/purchase')) {
  */
 const BOOKS_STOCK_EFFECTS = [
     '11' => ['on_invoice', 'from_challan', 'defer_inward', 'from_physical_challan'],
-    '3'  => ['on_invoice', 'from_challan', 'from_physical_challan'],
+    '3'  => ['on_invoice', 'from_challan'],
     '18' => ['on_invoice', 'from_challan'],
     '2'  => ['on_invoice', 'from_challan'],
 ];
@@ -611,6 +611,30 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         http_response_code(422);
         echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Unknown stock_effect "' . $effect . '" for this voucher type; nothing was posted.']]);
         exit;
+    }
+    if ($effect === 'from_physical_challan' && empty($voucherPayload['challan_settlements'])) {
+        http_response_code(422);
+        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Name the goods receipts this invoice settles (challan_settlements).']]);
+        exit;
+    }
+    // Books' supplier invoice register (migration 174): one live purchase voucher per supplier,
+    // supplier invoice number (trimmed, case- and space-insensitive) and April-March year —
+    // whichever product posted the first one.
+    if ($type === 11 && trim((string) ($voucherPayload['bill']['bill_ref'] ?? '')) !== '' && empty($voucherPayload['supplier_invoice_duplicate_reason'])) {
+        $norm = static fn (string $r) => strtolower((string) preg_replace('/\s+/', '', trim($r)));
+        $period = static function (?string $d): int {
+            $d = (string) $d;
+            return (int) substr($d, 5, 2) >= 4 ? (int) substr($d, 0, 4) : (int) substr($d, 0, 4) - 1;
+        };
+        $want = [(int) ($voucherPayload['party']['acc_id'] ?? 0), $norm((string) $voucherPayload['bill']['bill_ref']), $period($voucherPayload['bill']['bill_date'] ?? $voucherPayload['vch_date'] ?? null)];
+        foreach ($vouchers as $held) {
+            if ((int) ($held['vch_type_id'] ?? 0) === 11 && empty($held['cancelled'])
+                && [(int) ($held['party']['acc_id'] ?? 0), $norm((string) ($held['bill']['bill_ref'] ?? '')), $period($held['bill']['bill_date'] ?? null)] === $want) {
+                http_response_code(409);
+                echo json_encode(['status' => 409, 'error' => 409, 'messages' => ['error' => sprintf('Supplier invoice %s from this supplier is already booked in voucher %s dated %s. The same invoice cannot be booked twice, whether it is entered here, in Aicountly Purchase or in Aicountly Billing.', $voucherPayload['bill']['bill_ref'], $held['vch_number'], $held['vch_date'])]]);
+                exit;
+            }
+        }
     }
     foreach ($voucherPayload['service_lines'] ?? [] as $svc) {
         if ((int) ($svc['purchase_acc_id'] ?? $svc['sales_acc_id'] ?? $svc['line_acc_id'] ?? 0) <= 0) {
