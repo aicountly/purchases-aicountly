@@ -695,6 +695,82 @@ check('two submissions of the same supplier invoice together make one bill (real
     same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_bill_requests WHERE supplier_invoice_no = 'DUP-9'"), 'one bill');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nHistorical repair\n";
+
+check('the repair tool reports historical damage, plans for review, and applies only local bookkeeping', function () use ($ctx, $owner) {
+    reset();
+    $tool = static function (string $args): array {
+        exec('php ' . escapeshellarg(__DIR__ . '/../bin/receipt-repair.php') . ' ' . $args . ' 2>&1', $out, $code);
+
+        return [$code, implode("\n", $out)];
+    };
+
+    // Damage as the old code left it: two receipts of one order under the ORDER's identity.
+    $legacy = orderOf($ctx, $owner);
+    $legacyLine = (int) $legacy['lines'][0]['line_id'];
+    foreach ([30, 20] as $n => $qty) {
+        Db::insert('purchase_receipt_requests', [
+            'cmp_id' => 88, 'fy_id' => 6, 'bo_id' => 0, 'po_id' => (int) $legacy['po_id'], 'receipt_no' => 'OLD/' . $n,
+            'source_document_type' => 'purchases.order', 'status' => 'ACCEPTED', 'applied_at' => '2026-09-01 10:00:00',
+            'requested_lines' => [['line_id' => $legacyLine, 'qty' => $qty]], 'requested_by' => 'user-owner',
+        ], 'request_id');
+    }
+    Db::run('UPDATE purchase_order_lines SET received_qty = 50 WHERE line_id = :id', ['id' => $legacyLine]);
+
+    // An order whose counter drifted from its own receipts.
+    $drift = orderOf($ctx, $owner);
+    receive($ctx, $owner, (int) $drift['po_id'], (int) $drift['lines'][0]['line_id'], 40);
+    Db::run('UPDATE purchase_order_lines SET received_qty = 70 WHERE line_id = :id', ['id' => (int) $drift['lines'][0]['line_id']]);
+
+    // A cancelled receipt whose failed command was never withdrawn.
+    $orphan = IntegrationCommand::ensure($ctx, 'inventory', ReceiptService::COMMAND_RECEIPT, 'receipt_request', 999, ['x' => 1]);
+    Db::insert('purchase_receipt_requests', ['request_id' => 999, 'cmp_id' => 88, 'fy_id' => 6, 'bo_id' => 0, 'po_id' => (int) $drift['po_id'], 'receipt_no' => 'X/1', 'status' => 'CANCELLED', 'requested_lines' => [], 'requested_by' => 'user-owner'], 'request_id');
+    Db::run("UPDATE purchase_integration_commands SET status = 'FAILED' WHERE command_id = :id", ['id' => (int) $orphan['command_id']]);
+
+    // Duplicate supplier invoices, entered before the index existed.
+    Db::run('DROP INDEX uq_purchase_bills_supplier_invoice');
+    foreach ([1, 2] as $n) {
+        Db::insert('purchase_bill_requests', ['cmp_id' => 88, 'fy_id' => 6, 'bo_id' => 0, 'supplier_account_id' => 601, 'supplier_invoice_no' => 'INV-7', 'supplier_invoice_date' => '2026-09-01', 'status' => 'MATCHING', 'requested_lines' => [], 'requested_by' => 'user-owner', 'bill_kind' => 'direct'], 'request_id');
+    }
+
+    $before = Db::all('SELECT line_id, received_qty FROM purchase_order_lines ORDER BY line_id');
+    [$code, $out] = $tool('--json');
+    same(3, $code, 'findings are reported with a non-zero exit');
+    $report = json_decode($out, true);
+    same(1, count($report['legacy_identity']), 'the legacy order is found');
+    same(1, count($report['counter_drift']), 'the drifted line is found (the legacy order adds up, so it is not)');
+    same(1, count($report['orphan_commands']), 'the orphan command is found');
+    same(1, count($report['duplicate_invoices']), 'the duplicate invoice is found');
+    same($before, Db::all('SELECT line_id, received_qty FROM purchase_order_lines ORDER BY line_id'), 'reporting changed nothing');
+
+    $planFile = sys_get_temp_dir() . '/repair-plan-test.json';
+    $tool('--plan=' . escapeshellarg($planFile));
+    $plan = json_decode((string) file_get_contents($planFile), true);
+    same(['recount_order_line', 'withdraw_command', 'create_invoice_index'], array_column($plan['actions'], 'action'), 'three local actions proposed, none for the legacy order');
+
+    [$code, $out] = $tool('--apply=' . escapeshellarg($planFile));
+    same(1, $code, 'applying needs a named person and a reason');
+
+    [, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=' . escapeshellarg('Reviewed with the stores lead.'));
+    truthy(str_contains($out, '2 applied, 1 skipped'), 'recount and withdraw applied, the index refused while duplicates remain: ' . $out);
+    same('40.0000', (string) Db::scalar('SELECT received_qty FROM purchase_order_lines WHERE line_id = :id', ['id' => (int) $drift['lines'][0]['line_id']]), 'the counter matches its receipts');
+    same('CANCELLED', Db::scalar('SELECT status FROM purchase_integration_commands WHERE command_id = :id', ['id' => (int) $orphan['command_id']]), 'the orphan is withdrawn');
+    same(2, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action LIKE 'repair.%' AND actor_uuid = 'operator:ops-ravi' AND reason = 'Reviewed with the stores lead.'"), 'each applied action audited against the person');
+    same('50.0000', (string) Db::scalar('SELECT received_qty FROM purchase_order_lines WHERE line_id = :id', ['id' => $legacyLine]), 'the legacy order is left for a person');
+    same(0, count(stubRequests('/v1/inventory-documents/post')) - 1, 'nothing was posted to Inventory by the tool (the one post is the drift order\'s own GRN)');
+
+    [, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=again');
+    truthy(str_contains($out, '0 applied, 3 skipped'), 'the same plan applied twice changes nothing: ' . $out);
+
+    Db::run("UPDATE purchase_bill_requests SET status = 'CANCELLED' WHERE request_id = (SELECT MAX(request_id) FROM purchase_bill_requests)");
+    $tool('--plan=' . escapeshellarg($planFile));
+    [, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=' . escapeshellarg('Duplicate cancelled.'));
+    truthy(str_contains($out, 'create_invoice_index') && str_contains($out, 'applied'), 'the index is created once the duplicate is resolved: ' . $out);
+    truthy(Db::scalar("SELECT 1 FROM pg_indexes WHERE indexname = 'uq_purchase_bills_supplier_invoice'") !== null, 'and exists');
+    @unlink($planFile);
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

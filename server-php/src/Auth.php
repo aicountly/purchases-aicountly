@@ -110,6 +110,25 @@ final class Auth
         );
     }
 
+    /**
+     * A named person running a maintenance script on the server, for the audit trail.
+     *
+     * CLI ONLY, and it grants nothing: it is not a service and owns no company, so any
+     * permission check it meets fails. It exists so a repair applied from the command
+     * line is recorded against the person who reviewed and applied it.
+     */
+    public static function operator(string $uuid): self
+    {
+        if (PHP_SAPI !== 'cli') {
+            throw new \LogicException('An operator identity exists only on the command line.');
+        }
+        if (trim($uuid) === '') {
+            throw new \InvalidArgumentException('Name the person applying this.');
+        }
+
+        return new self('operator:' . trim($uuid), 'operator', Env::get('APP_PRODUCT_KEY', 'purchases'), '', null);
+    }
+
     public function isService(): bool
     {
         return $this->kind === 'service';

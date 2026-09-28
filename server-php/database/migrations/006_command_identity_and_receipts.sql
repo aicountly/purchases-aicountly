@@ -42,7 +42,7 @@ ALTER TABLE purchase_integration_commands
 -- Rows raced into existence before this constraint existed keep their history:
 -- each extra row of the same operation becomes a later revision of it, so the
 -- unique index below can be created without deleting anything. The repair
--- report lists them (tests/../bin/receipt-repair.php).
+-- report lists them (bin/receipt-repair.php).
 WITH ranked AS (
     SELECT command_id,
            ROW_NUMBER() OVER (PARTITION BY cmp_id, command_type, entity_type, entity_id

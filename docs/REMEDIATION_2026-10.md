@@ -45,7 +45,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Receipt status and three-way match aggregate every linked receipt, reversals included (`ReceiptLedger`)
 - [x] Cumulative limit enforced atomically, in-flight receipts counted; duplicate submission (client token) ≠ second delivery — 5-process race test; lock order order → lines → receipt (fixed a deadlock the race test found)
 - [ ] Per-line receipt entry in the UI: quantity, rejected, warehouse, batch/serial, inspection note
-- [ ] Read-only discrepancy report and reviewable repair procedure for receipts posted under the PO-keyed identity
+- [x] Read-only discrepancy report and reviewable repair procedure for receipts posted under the PO-keyed identity — `bin/receipt-repair.php` (report / `--plan` / `--apply` with re-validation and audit; never posts to Inventory or Books)
 
 ### 3. Purchase order lifecycle and procurement decisions
 - [x] Receipt completion, billing completion and closure tracked separately; payment stays Books' (`PoProgress`, migration 007)
@@ -102,13 +102,11 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ## Continuation checkpoint
 
-Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 28/0
+Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 29/0
 (remediation suite looped 6× for race stability).
 
 Next, in order:
-1. `server-php/bin/receipt-repair.php` — read-only report (legacy PO-keyed receipts, duplicate
-   supplier invoices blocking `uq_purchase_bills_supplier_invoice`, open commands) and a
-   reviewable `--plan` output; applies nothing without `--apply` on a reviewed plan.
+1. ~~`bin/receipt-repair.php`~~ done.
 2. Inventory (`inventory-aicountly`): `PURCHASE_RECEIPT` + `from_physical_challan` (no movement,
    settles the challan, trues up cost); `stock_effect` validated per document type;
    `GET v1/capabilities`.
