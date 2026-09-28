@@ -99,7 +99,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ### 10. Verification
 - [x] Journey tests on real PostgreSQL, concurrency included (`tests/remediation.php`, 54 tests, sections 1–9) and browser checks of every changed screen (`web/tests/remediation.mjs`)
-- [~] Producer-verified contracts — Books and Inventory by their own PostgreSQL suites on this branch; Connect by a live cross-app run (real Connect API + real Purchase API). Contacts: Purchase's stub mirrors the `fervent-volta` company routes, not yet run against a live Contacts
+- [x] Producer-verified contracts — Books and Inventory by their own PostgreSQL suites on this branch; Connect by a live cross-app run (real Connect API + real Purchase API); Contacts by Purchase's API against a live Contacts on its `fervent-volta` release (candidates, link, idempotent re-link — one `books/ledger_account` reference — conflict 409, outsider 403, foreign contact 404)
 - [x] SmartBooks regression — Books `scripts/check-unit-suite.php` 4577/0, security 119 OK, integration 427 with 1 pre-existing error (`VendorReconciliationImportIntegrationTest`, fails identically on base)
 - [ ] Report: changes by repository, tests run, migrations/configuration, historical repair, remaining blockers
 
@@ -112,7 +112,6 @@ target markup (`.purchase-switcher`, `.purchase-monitor__pill`, `.purchase-metri
 not in `web/src` on this branch or its base (8be4231): test drift from the dashboard rebuild, not
 a regression.
 
-Done: sections 1–9. Open:
-1. Contacts contract against a live Contacts on its `fervent-volta` release.
-2. Deferred by design: unbilled-goods returns (needs an Inventory GRN-return); PO sending through
+Done: sections 1–9 and the producer checks. Open:
+1. Deferred by design: unbilled-goods returns (needs an Inventory GRN-return); PO sending through
    a connected channel (no real supplier communication in this phase).
