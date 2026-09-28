@@ -101,7 +101,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Journey tests on real PostgreSQL, concurrency included (`tests/remediation.php`, 54 tests, sections 1–9) and browser checks of every changed screen (`web/tests/remediation.mjs`)
 - [x] Producer-verified contracts — Books and Inventory by their own PostgreSQL suites on this branch; Connect by a live cross-app run (real Connect API + real Purchase API); Contacts by Purchase's API against a live Contacts on its `fervent-volta` release (candidates, link, idempotent re-link — one `books/ledger_account` reference — conflict 409, outsider 403, foreign contact 404)
 - [x] SmartBooks regression — Books `scripts/check-unit-suite.php` 4577/0, security 119 OK, integration 427 with 1 pre-existing error (`VendorReconciliationImportIntegrationTest`, fails identically on base)
-- [ ] Report: changes by repository, tests run, migrations/configuration, historical repair, remaining blockers
+- [x] Report: changes by repository, tests run, migrations/configuration, historical repair, remaining blockers — [`REMEDIATION_2026-10_REPORT.md`](REMEDIATION_2026-10_REPORT.md)
 
 ## Continuation checkpoint
 

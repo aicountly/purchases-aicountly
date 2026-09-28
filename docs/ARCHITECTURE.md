@@ -54,36 +54,35 @@ behaviours worth knowing:
 - **An unreachable Inventory is `REVIEW_REQUIRED`, never `MATCHED`.** "We could
   not check" and "we checked and it was fine" are different facts.
 
-## Stock moves once: GRN on challan, received by the bill
+## Stock moves once: physical GRN, settled by the bill
 
 ```
-PO ──▶ GRN                    ──▶ bill
-       INWARD_CHALLAN               Books purchase (party.acc_id, bill.bill_ref = supplier invoice)
-       challan_only:                stock_effect from_challan + challan_settlements
-       goods in, pending the bill   → Books sends PURCHASE_RECEIPT to Inventory, which
-                                      settles the challans and receives the goods ONCE,
-                                      valued at the billed cost
+PO ──▶ GRN (one per delivery)          ──▶ bill
+       INWARD_CHALLAN, physical:             Books purchase (party.acc_id, bill.bill_ref = supplier invoice)
+       goods ON HAND now, at the             stock_effect from_physical_challan + challan_settlements
+       order's rate (provisional cost)       → Books sends PURCHASE_RECEIPT to Inventory, which settles
+                                               the GRNs WITHOUT moving stock again and trues their cost
+                                               up to the billed rate (landed-cost semantics)
 ```
 
-The GRN used to be a `PURCHASE_RECEIPT` of its own, and the bill's item lines made
-Books post another one: every billed purchase received its goods twice. Now the
-bill is the single owner of the stock receipt. The settlements are allocated first
-in, first out per order line, after what earlier bills settled (`billed_qty`). A
-bill for more than was received and not yet billed is refused (one Books voucher
-has one stock effect), and so is a bill whose goods were received before this
-change (they are already in stock; post that bill in Books). A bill with nothing
-received behind it (goods billed ahead) receives the goods itself (`on_invoice`).
+Every delivery is its own receipt with its own identity (`receipt_uuid`, GRN number) and its own
+Inventory document; a retry of that delivery reaches the same document, a second delivery a new
+one. The bill is the single owner of the *financial* receipt, the GRN of the *physical* one — so
+goods are sellable the day they arrive and are never received twice. Settlements are allocated
+first in, first out per order line after what earlier bills settled (`billed_qty`); a bill for
+more than was received and not yet billed is refused; goods billed ahead of any GRN are received
+by the bill itself (`on_invoice`). Cost the bill cannot absorb (the goods already left stock) is
+reported by Inventory (`grn_cost_true_up_not_absorbed`), not silently dropped.
 
-**The trade-off, to be decided on:** received goods sit on Inventory's pending-in
-register — not on hand, not sellable — until their bill is posted. Receiving them
-into stock at the GRN needs a valued inward challan that the bill settles without
-receiving again (a "physical GRN"); neither Inventory nor Books has that path yet.
-Freight captured on the GRN is no longer sent (a challan values nothing): charges
-are capitalised from the bill, where Books allocates bill sundries onto the goods.
+Purchase checks Inventory's `GET v1/capabilities` and Books' `GET integration/capabilities` and
+refuses to post a bill whose stock effect either would not honour. `PURCHASE_GRN_STOCK_EFFECT=
+challan_only` keeps the older model (goods pending until the bill) for a deployment whose
+Inventory and Books predate the physical-GRN release.
 
-Purchase returns follow the same rule: the dispatch is a `DELIVERY_CHALLAN`
-(challan_only) and the debit note settles it (`from_challan`), so the goods leave
-stock once, with the debit note.
+Purchase returns follow the same one-movement rule: the dispatch is a `DELIVERY_CHALLAN`
+(challan_only, nothing moves) and the debit note settles it (`from_challan`), so the goods leave
+stock once, with the debit note. A financial-only return (no goods going back) is a separately
+permitted debit note on a ledger, with a reason, and moves no stock.
 
 ## What is stored here, and what is not
 
@@ -105,9 +104,11 @@ stock balance, no GRN table, no payable balance, no input-GST or TDS figure.
 ## Segregation of duties
 
 Procurement is where this actually matters, so three separate permissions:
-`requisition.approve`, `po.approve`, `match.resolve`. And the person who raised
-a requisition or a purchase order **cannot approve it**, whatever permissions
-they hold — enforced in the service, not in the UI.
+`requisition.approve`, `po.approve`, `match.resolve`. Whether the person who raised
+a requisition or a purchase order may also decide it is the company's stated policy
+(`sod_policy`, Settings → Approval controls): `strict` — nobody; `owner_with_reason`
+(default) — only the company owner, with a reason that is recorded. Enforced in
+`SegregationOfDuties`, not in the UI, and changes to the policy are audited.
 
 Accepting a match variance costs the company money, so it requires a written
 reason and is recorded against the bill.
@@ -117,13 +118,19 @@ reason and is recorded against the bill.
 ```
 User presses Save
    │
-   ├─ 1. IntegrationCommand::open()   mint the idempotency key and STORE it
+   ├─ 1. IntegrationCommand::ensure()  the key is the operation itself —
+   │                                     purchases:{cmp}:{type}:{entity}:{id}:r{revision} —
+   │                                     unique in the database; the body is stored once
    ├─ 2. our own row is written and committed
-   └─ 3. call Books / Inventory with that key
-            ok    → COMPLETED, store the id they returned
-            5xx   → FAILED, retryable on the SAME key
-            4xx   → BLOCKED, retrying will not help
+   └─ 3. claim a lease, call Books / Inventory with that key and the STORED body
+            ok, ids validated   → COMPLETED, store the ids they returned
+            response lost       → UNCERTAIN, Reconcile or Retry on the SAME key
+            5xx / unreachable   → FAILED, retryable on the SAME key
+            4xx                 → BLOCKED, retrying will not help
+            cancelled meanwhile → CANCELLED (withdraw() is atomic with the cancel)
 ```
+
+No lock is held across a network call; the lease stops two attempts running at once.
 
 A **retry drives the original request row**, not a new one — `ReceiptService`
 splits `request()` from `dispatch()` for exactly this reason. A fresh row would
