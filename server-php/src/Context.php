@@ -31,6 +31,14 @@ final class Context
      */
     private static array $verified = [];
 
+    /**
+     * The financial year's dates as Manage reported them, by "cmp:fy", for checks that
+     * need them (a bill's posting date). Only for a year Manage confirmed.
+     *
+     * @var array<string, array{from: string, to: string}>
+     */
+    private static array $fyRanges = [];
+
     private function __construct(
         public readonly int $cmpId,
         public readonly int $fyId,
@@ -96,6 +104,40 @@ final class Context
             Http::forbidden('You do not have access to this company.');
         }
 
+        // The year and branch are claims too, and the same answer settles them. A year that
+        // is not this company's would scope every query to rows that belong to nobody, and
+        // a posting to a year Manage does not know. Manage says nothing about a year being
+        // closed — carrying balances forward does not close one — so only membership is
+        // checked here; Books refuses what it will not post.
+        $fyList = is_array($company['fy_list'] ?? null) ? $company['fy_list'] : null;
+        if ($fyList === null) {
+            Http::error(503, 'context_unavailable', 'Manage did not list this company\'s financial years, so the year cannot be confirmed. Please retry.');
+        }
+        $fy = null;
+        foreach ($fyList as $candidate) {
+            if (is_array($candidate) && (int) ($candidate['fy_id'] ?? $candidate['comp_fy_id'] ?? $candidate['id'] ?? 0) === $this->fyId) {
+                $fy = $candidate;
+                break;
+            }
+        }
+        if ($fy === null) {
+            Http::error(403, 'fy_not_in_company', 'That financial year is not one of this company\'s. Pick a year from the company header.');
+        }
+        if ($this->boId > 0) {
+            $branchIds = array_map(
+                static fn ($b) => is_array($b) ? (int) ($b['id'] ?? $b['bo_id'] ?? $b['branch_id'] ?? 0) : 0,
+                is_array($company['branch_list'] ?? null) ? $company['branch_list'] : [],
+            );
+            if (!in_array($this->boId, $branchIds, true)) {
+                Http::error(403, 'branch_not_in_company', 'That branch is not one of this company\'s.');
+            }
+        }
+        $from = substr((string) ($fy['fy_start'] ?? ''), 0, 10);
+        $to = substr((string) ($fy['fy_end'] ?? ''), 0, 10);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) === 1 && preg_match('/^\d{4}-\d{2}-\d{2}$/', $to) === 1) {
+            self::$fyRanges[$this->cmpId . ':' . $this->fyId] = ['from' => $from, 'to' => $to];
+        }
+
         // The same answer, read twice. Manage was already asked whether this
         // session may open this company; it also says in what capacity, and
         // discarding that was why a company owner arrived here with no
@@ -134,6 +176,18 @@ final class Context
     public static function forgetVerified(): void
     {
         self::$verified = [];
+        self::$fyRanges = [];
+    }
+
+    /**
+     * This year's dates, as Manage reported them when it confirmed the year; null when this
+     * request has not asked (a service caller, or a replayed command's scope).
+     *
+     * @return array{from: string, to: string}|null
+     */
+    public function fyRange(): ?array
+    {
+        return self::$fyRanges[$this->cmpId . ':' . $this->fyId] ?? null;
     }
 
     /** @return array{cmp_id:int, fy_id:int, bo_id:int} */

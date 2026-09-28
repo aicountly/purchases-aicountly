@@ -81,7 +81,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 ### 7. Supplier identity, duplicate bills, periods
 - [ ] Contacts client on Contacts' real routes; communication identity from Contacts, creditor from Books
 - [x] Cross-app supplier-invoice duplicate protection at the Books boundary — Books migration 174 register (company, supplier, type, normalised number, April–March year); PostgreSQL race test; Purchase journey test; Purchase now reads Books' `messages.error` refusals
-- [ ] Branch and FY validated through Manage
+- [x] Branch and FY validated through Manage — the same `companyinfo` answer that confirms the company must list the year (`fy_list`) and branch (`branch_list`), else 403; its dates bound a bill's new posting date (migration 010), kept apart from the supplier's invoice date. Manage has no closed-year flag, so a carried-forward year is not treated as closed
 - [x] Books' closed/locked-period policy enforced for Purchase postings — Purchase posts through Books' own draft→post path, which applies `FinancialYearPostingGuardService` (archived year, date within year); a refusal blocks the bill for revision (tested). Books has no separate lock-date setting today
 
 ### 8. Permissions and supplier communication
@@ -103,7 +103,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ## Continuation checkpoint
 
-Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 40/0
+Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 42/0
 (remediation suite looped 6× for race stability).
 
 Next, in order:

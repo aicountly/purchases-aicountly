@@ -94,6 +94,7 @@ final class BillService
         if ($dueDate !== null && $dueDate < $invoiceDate) {
             Http::validationFailed('The due date cannot be before the invoice date.', ['field' => 'due_date']);
         }
+        $postingDate = $this->postingDate($input['posting_date'] ?? null, $invoiceDate);
 
         $poId = self::id($input['po_id'] ?? null);
         $lines = $this->normaliseLines($input['lines'] ?? [], $poId);
@@ -102,7 +103,7 @@ final class BillService
         }
         $kind = $poId !== null ? 'po' : (array_filter($lines, static fn (array $l) => !$l['is_service'] && $l['item_id'] !== null) === [] ? 'service' : 'direct');
 
-        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $poId, $lines, $kind, $input): int {
+        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input): int {
             if ($poId !== null) {
                 $po = PoProgress::lock($poId, $this->ctx->cmpId);
                 if ($po === null) {
@@ -139,6 +140,7 @@ final class BillService
                     'supplier_account_id'   => $supplierId,
                     'supplier_invoice_no'   => $invoiceNo,
                     'supplier_invoice_date' => $invoiceDate,
+                    'posting_date'          => $postingDate === $invoiceDate ? null : $postingDate,
                     'due_date'              => $dueDate,
                     'status'                => 'MATCHING',
                     'requested_lines'       => $lines,
@@ -357,8 +359,9 @@ final class BillService
         if ($dueDate !== null && $dueDate < $invoiceDate) {
             Http::validationFailed('The due date cannot be before the supplier invoice date.', ['field' => 'due_date']);
         }
+        $postingDate = $this->postingDate($input['posting_date'] ?? ($bill['posting_date'] ?? null), $invoiceDate);
 
-        $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate): int {
+        $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate, $postingDate): int {
             $locked = Db::first(
                 'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
                 ['id' => $requestId, 'cmp' => $this->ctx->cmpId],
@@ -377,6 +380,7 @@ final class BillService
                 'revision'              => $from + 1,
                 'requested_lines'       => $lines,
                 'supplier_invoice_date' => $invoiceDate,
+                'posting_date'          => $postingDate === $invoiceDate ? null : $postingDate,
                 'due_date'              => $dueDate,
                 'stock_effect'          => null,
                 'stock_settlements'     => null,
@@ -1116,7 +1120,8 @@ final class BillService
         $po = $bill['po_id'] === null ? null : Db::first('SELECT po_no, po_date FROM purchase_orders WHERE po_id = :id', ['id' => (int) $bill['po_id']]);
 
         $payload = [
-            'vch_date'        => (string) $bill['supplier_invoice_date'],
+            // Booked on its posting date; the supplier's own date travels as the bill's date.
+            'vch_date'        => (string) ($bill['posting_date'] ?? $bill['supplier_invoice_date']),
             // Books composes a bill from party.acc_id and its lines; a flat party_acc_id is
             // never read, and a bill sent that way posted with nothing on it.
             'party'           => ['acc_id' => (int) $bill['supplier_account_id']],
@@ -1376,6 +1381,35 @@ final class BillService
     private static function num(float $value): string
     {
         return rtrim(rtrim(number_format($value, 4, '.', ''), '0'), '.');
+    }
+
+    /**
+     * The date the bill is booked on: the supplier's invoice date unless another is given, and
+     * inside the financial year Manage confirmed for this request. An invoice dated in last year
+     * and booked in this one needs a posting date here, and is refused before it reaches Books
+     * rather than by Books.
+     */
+    private function postingDate(mixed $given, string $invoiceDate): string
+    {
+        $date = self::validDate($given) ?? $invoiceDate;
+        if ($date < $invoiceDate) {
+            Http::validationFailed('A bill cannot be booked before the supplier\'s invoice date.', ['field' => 'posting_date']);
+        }
+        $range = $this->ctx->fyRange();
+        if ($range !== null && ($date < $range['from'] || $date > $range['to'])) {
+            Http::validationFailed(
+                sprintf(
+                    'This bill would be booked on %s, outside the financial year selected (%s to %s). %s',
+                    $date,
+                    $range['from'],
+                    $range['to'],
+                    $date < $range['from'] ? 'Book it in the year it belongs to, or give a posting date in this year; the supplier\'s invoice date stays as it is.' : 'Switch to the year it belongs to.',
+                ),
+                ['field' => 'posting_date', 'fy_from' => $range['from'], 'fy_to' => $range['to']],
+            );
+        }
+
+        return $date;
     }
 
     private static function validDate(mixed $value): ?string

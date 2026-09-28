@@ -951,6 +951,39 @@ check('a claim settled by sending goods back completes when that return\'s debit
 });
 
 // ---------------------------------------------------------------------------
+echo "\nCompany, year and branch are Manage's answer, not the request's claim\n";
+
+check('a year or branch that is not the company\'s is refused, from the same Manage answer', function () {
+    $owner = person();
+    $bad = refused(fn () => Context::of(88, 99, 0)->assertAllowed($owner), 'fy_not_in_company', 'a year Manage does not list');
+    same(403, $bad['status'], 'refused, not served empty');
+    Context::forgetVerified();
+    refused(fn () => Context::of(88, 6, 77)->assertAllowed($owner), 'branch_not_in_company', 'a branch Manage does not list');
+    Context::forgetVerified();
+    $ok = Context::of(88, 6, 30);
+    $ok->assertAllowed($owner);
+    same(['from' => '2026-04-01', 'to' => '2027-03-31'], $ok->fyRange(), 'and the year\'s dates are known for the checks that need them');
+});
+
+check('an invoice dated last year is booked in this one with its own posting date, keeping the supplier\'s date', function () {
+    reset();
+    $owner = person();
+    $ctx = Context::of(88, 6, 0);
+    $ctx->assertAllowed($owner);
+    $bills = new BillService($ctx, $owner);
+    $input = ['supplier_account_id' => 601, 'supplier_invoice_no' => 'MAR-31', 'supplier_invoice_date' => '2026-03-31', 'lines' => [['description' => 'Annual maintenance', 'is_service' => true, 'purchase_acc_id' => 7302, 'qty' => 1, 'rate' => 12000]]];
+
+    refused(fn () => $bills->enter($input), 'outside the financial year', 'booked on last year\'s date');
+    $bill = $bills->enter($input + ['posting_date' => '2026-04-03']);
+    $bills->resolveException((int) $bill['matches'][0]['exceptions'][0]['exception_id'], 'accept', ['note' => 'AMC, reviewed.']);
+    $bills->post((int) $bill['request_id']);
+
+    $voucher = array_values(booksVouchers())[0];
+    same('2026-04-03', $voucher['vch_date'], 'booked on the posting date');
+    same('2026-03-31', $voucher['bill']['bill_date'], 'the supplier\'s invoice date travels as the bill\'s date');
+});
+
+// ---------------------------------------------------------------------------
 echo "\nHistorical repair\n";
 
 check('the repair tool reports historical damage, plans for review, and applies only local bookkeeping', function () use ($ctx, $owner) {
