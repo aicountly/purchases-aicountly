@@ -12,6 +12,12 @@ interface ImportMetaEnv {
   readonly VITE_GA4_SAAS_PURCHASE_MEASUREMENT_ID?: string
   /** Generic GA4 measurement ID fallback, checked when the product-specific one is unset. */
   readonly VITE_GA4_MEASUREMENT_ID?: string
+  /**
+   * Aicountly Connect's origin for the embedded widget. Derived from the host when unset
+   * (connect.gh for sandbox, connect for production); `off` disables it. Unset on localhost
+   * means no widget.
+   */
+  readonly VITE_CONNECT_ORIGIN?: string
 }
 
 interface ImportMeta {

@@ -1266,6 +1266,65 @@ check('a service bill books only to Books\' purchase and expense ledgers, and on
     same('1', end($asked)['query']['active_only'] ?? null, 'and only live ledgers');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nConnect: sharing a document never opens it to anyone\n";
+
+check('Connect may attach an order only for someone who can open it, and learns who else could', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    profile('user-viewer', 'Viewer', ['po.view']);
+    profile('user-clerk', 'Clerk', ['requisition.view']);
+    $share = static fn (Auth $who, array $body) => (new Domain\ConnectShareService($ctx, $who))->shareCheck($body);
+
+    $answer = $share(person('user-clerk', 0), ['entity_type' => 'purchase_order', 'entity_id' => $po['po_id'], 'recipient_uuids' => ['user-viewer']]);
+    same(false, $answer['allowed'], 'someone who cannot open the order cannot share it');
+    same(null, $answer['label'], 'and is told nothing about it');
+
+    $answer = $share(person('user-viewer', 0), ['entity_type' => 'purchase_order', 'entity_id' => (string) $po['po_id'], 'recipient_uuids' => ['USER-CLERK', 'user-viewer', 'user-nobody']]);
+    same(true, $answer['allowed'], 'a viewer may share it');
+    same('Purchase order ' . $po['po_no'], $answer['label'], 'the label is its kind and number');
+    truthy(!str_contains($answer['label'], 'Deccan') && !preg_match('/\\d{3,}\\.\\d/', $answer['label']), 'no supplier and no amount in the label');
+    same([['uuid' => 'user-clerk', 'can_view' => false], ['uuid' => 'user-viewer', 'can_view' => true], ['uuid' => 'user-nobody', 'can_view' => false]], $answer['recipients'], 'each person answered from their own Purchases profile');
+    same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'connect.share_checked'"), 'the share is audited');
+
+    [$status] = endpoint(static fn () => (new Domain\ConnectShareService($ctx, person()))->shareCheck(['entity_type' => 'purchase_order', 'entity_id' => 999999, 'recipient_uuids' => []]), $owner);
+    same(404, $status, 'an order of no company of ours is not found');
+    [$status, $payload] = endpoint(static fn () => (new Domain\ConnectShareService($ctx, person()))->shareCheck(['entity_type' => 'invoice', 'entity_id' => 1, 'recipient_uuids' => []]), $owner);
+    same(422, $status, 'a kind Purchases does not share is refused');
+    same('unsupported_entity', $payload['error']['code'] ?? null, 'saying so');
+    [$status] = endpoint(static fn () => (new Domain\ConnectShareService($ctx, person()))->shareCheck(['entity_type' => 'purchase_order', 'entity_id' => $po['po_id'], 'recipient_uuids' => 'user-viewer']), $owner);
+    same(422, $status, 'recipients must be a list');
+});
+
+check('what a viewer sees of a shared document is asked with their own session, every time', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    profile('user-viewer', 'Viewer', ['po.view']);
+    profile('user-clerk', 'Clerk', ['requisition.view']);
+    $read = static fn (Auth $who, array $query = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0']) => endpoint(static fn () => Controllers\ConnectController::context('purchase_order', (string) $po['po_id']), $who, $query);
+
+    [$status, $payload] = $read(person('user-viewer', 0));
+    same(200, $status, 'a viewer who may open the order reads it');
+    same('Purchase order ' . $po['po_no'], $payload['data']['label'], 'its label');
+    same('/purchase-orders/' . $po['po_id'], $payload['data']['open_path'], 'and where it opens in Purchases');
+    same('Deccan Steel Traders', $payload['data']['party_name'], 'the supplier, to someone who may see it');
+    truthy(is_string($payload['data']['amount']), 'and the amount');
+
+    [$status] = $read(person('user-clerk', 0));
+    same(403, $status, 'somebody in the same conversation without the permission sees nothing');
+
+    [$status, $payload] = $read(person('user-viewer', 0), ['cmp_id' => '88']);
+    same(200, $status, 'without the viewer\'s year, the order\'s own year is used');
+
+    [$status] = $read(person('user-viewer', 0), ['cmp_id' => '99']);
+    same(404, $status, 'another company\'s id is simply not found');
+
+    [$status] = endpoint(static fn () => Controllers\ConnectController::context('purchase_order', '999999'), person('user-viewer', 0));
+    same(404, $status, 'nor is one that does not exist');
+    [$status] = endpoint(static fn () => Controllers\ConnectController::context('invoice', (string) $po['po_id']), person('user-viewer', 0));
+    same(404, $status, 'nor a kind Purchases does not have');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

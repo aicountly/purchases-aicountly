@@ -14,6 +14,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 |---|---|---|
 | purchases-aicountly | `claude/awesome-hypatia-wba25w` | nested `party`/`bill` bill payload; GRN as challan; `block_bill_on_match_failure` read fix |
 | purchases-aicountly | `claude/hopeful-meitner-2ctk5i` | all Purchase AI through the AI Pulse gateway |
+| connect-aicountly | `claude/fervent-volta-k2w05d` | Embed SDK v1 (loader, Pulse relay, product context); this branch adds Purchase's registration |
 
 ## Dependency order
 
@@ -35,7 +36,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Database uniqueness on the operation; atomic acquisition (`INSERT … ON CONFLICT`), lease for in-flight attempts, no lock held across a network call — migration 006; race-tested with 6 processes
 - [x] `UNCERTAIN` state for a lost response; upstream ids persisted; recovery reuses the same key and the stored body
 - [x] Cancel withdraws the command atomically (`withdraw()`), so a cancel and a Retry cannot both win; a revised bill's refused revision is withdrawn as superseded
-- [~] PO CommandStrip finds the order's receipt, bill and return commands (API done: `find()` returns them); retry and reconcile controls and Purchase labels in the UI still open
+- [x] PO CommandStrip finds the order's receipt, bill and return commands; Retry / Reconcile (for `UNCERTAIN`) / Withdraw in the UI with Purchase wording (`CommandStrip.recoveryPath`)
 
 ### 2. Receipts
 - [x] Each receipt has its own stable identity (`receipt_uuid`, `receipt_no` GRN series); Inventory source identity is the receipt, the PO is a separate reference in metadata
@@ -44,13 +45,13 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Returned document identity and lines validated before quantities change (mismatch → BLOCKED, nothing counted)
 - [x] Receipt status and three-way match aggregate every linked receipt, reversals included (`ReceiptLedger`)
 - [x] Cumulative limit enforced atomically, in-flight receipts counted; duplicate submission (client token) ≠ second delivery — 5-process race test; lock order order → lines → receipt (fixed a deadlock the race test found)
-- [ ] Per-line receipt entry in the UI: quantity, rejected, warehouse, batch/serial, inspection note
+- [x] Per-line receipt entry in the UI: quantity, rejected (with reason), warehouse, batch, serials, inspection note, client token, over-receipt reason (`purchase-order/OrderPanels.tsx`; browser-tested: a partial delivery becomes its own GRN)
 - [x] Read-only discrepancy report and reviewable repair procedure for receipts posted under the PO-keyed identity — `bin/receipt-repair.php` (report / `--plan` / `--apply` with re-validation and audit; never posts to Inventory or Books)
 
 ### 3. Purchase order lifecycle and procurement decisions
 - [x] Receipt completion, billing completion and closure tracked separately; payment stays Books' (`PoProgress`, migration 007)
 - [x] A PO never closes because what arrived so far was billed (PO 100 → receipt 40 → bill 40 stays open for 60)
-- [~] Authorised short-close with reason, audit and remaining quantities (API + tests done; UI open)
+- [x] Authorised short-close with reason, audit and remaining quantities (API, tests and UI)
 - [x] Bill entry and posting refuse invalid PO states, under a row lock; `CANCELLED` is never overwritten — cancel-vs-bill race tested
 - [x] Over-receipt: zero tolerance by default, company tolerance on the order total (not per delivery), authorised exception with a reason
 - [x] Award carries supplier, lines, prices and terms into a PO draft; one award converts once (`convertAward`, row-locked, race-tested; a cancelled order frees it; `award()` now locks the RFQ and refuses a row with no quotation)
@@ -63,7 +64,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Supplier invoice reference kept apart from Books' voucher number (`bill.bill_ref`)
 - [x] Books refuses an empty or ambiguous financial posting — empty commercial voucher refused (Books `awesome-hypatia`, merged); a stock effect an integration declares is posted as declared or refused 422 (books `InventorySettlementService::assertDeclaredEffectHonoured`)
 - [x] Acceptance on ledger effect, creditor, bill reference and totals — not HTTP 200 (`posting_check`)
-- [~] Standalone / direct / service-expense bill entry in Purchase, reviewed, no stock movement for services (API + tests done; UI open)
+- [x] Standalone / direct / service-expense bill entry in Purchase, reviewed, no stock movement for services (API, tests and UI; service lines book to Books' Purchase / Direct / Indirect expense ledgers via `v1/catalog/ledgers`)
 
 ### 5. Physical GRN and cost true-up
 - [x] Inventory: a purchase that settles a physical inward challan without moving stock, trueing up cost (`PURCHASE_RECEIPT` + `from_physical_challan`; unabsorbed remainder warned; reversal unwinds; wrong challan kind refused; per-type effect validation; `GET v1/capabilities`) — 10 PostgreSQL tests
@@ -86,30 +87,32 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ### 8. Permissions and supplier communication
 - [x] `v1/approvals` permission-gated (approve permission per kind, stage permission, this year; values with the document's view permission); legacy `v1/dashboard` retired (410 → `v1/dashboards/overview`; no caller — Insights uses `v1/dashboards/*`)
-- [~] Amount/cost permissions consistent across APIs, exports and UI — rule: a document's own amounts go with its view permission; spend, historical prices and aggregates need `cost.view`/`reports.view`; exports and PDFs render the same withheld payload as the screen. API side done for approvals and dashboards; UI pass with item 5
+- [x] Amount/cost permissions consistent across APIs, exports and UI — rule: a document's own amounts go with its view permission; spend, historical prices and aggregates need `cost.view`/`reports.view`. The PO PDF needs `po.view` like the screen; Approvals shows "withheld" where the API withholds; the Connect label never carries an amount or supplier
 - [x] PO PDF; prepared / sent / supplier-acknowledged distinguished; manual acknowledgement with source and evidence (migration 011); names read live from Manage and Inventory; fingerprint ties "sent" to the version
 - [d] Sending the PO through a connected service (Email / Connect) — not built: no real supplier communication is allowed in this phase; the channel is recorded by the buyer. The Connect widget (section 9) is the intended channel
 
 ### 9. Connect, Pulse, Advisor
-- [ ] Embedded Connect widget (Connect APIs, calling, live Contacts); user-facing "Connect"
-- [ ] Pulse as a pinned conversation through Pulse's live API; Advisor as a deep link
-- [ ] Document-share permission and recipient visibility validated
-- [ ] Every AI feature through AI Pulse; "Using AI Pulse" shown
+- [x] Embedded Connect widget — Connect's own Embed SDK v1 loader (connect `fervent-volta`, extended on this branch), not a fork: conversations, calling, company contacts from Contacts, launcher labelled "Connect"; the person's own ses_key, scope kept in step, destroyed on sign-out; "Discuss in Connect" on orders, bills, returns, requisitions and RFQs; a shared record opens in Purchase's router. Connect down → no widget, Purchase unaffected (browser-tested both ways)
+- [x] Pulse pinned first in Connect, served by Pulse's live session API through Connect's relay (sandbox default now `pulse.gh.aicountly.com`). Advisor is a link out through the portal's SSO jump with no token in the URL — Advisor accepts no deep path or context today (its SSO callback returns to `/`), so it lands on Advisor's home
+- [x] Document-share permission and recipient visibility — Connect verifies each record with Purchase's own read endpoint using the sharer's, then each viewer's, session (registered in Connect `ProductContexts`); Purchase also answers the per-recipient contract (`POST v1/connect/share-check`, `GET v1/connect/context/{type}/{id}`). Cross-app run: a delegate without `po.view` cannot attach an order and sees it redacted in a conversation she belongs to
+- [x] Every AI feature through AI Pulse (gateway `/api/ai/v1/*`, `X-Pulse-Product: purchases`, the user's own session; no provider key or host anywhere — `tests/ai_gateway.php` enforces it); "Using AI Pulse" shown on the Ask drawer and on each Payables answer AI took part in, "Rules only" otherwise
 
 ### 10. Verification
-- [~] Journey tests on real PostgreSQL, concurrency included (`tests/remediation.php`, sections 1–4)
-- [ ] Producer-verified contracts (Books, Inventory, Contacts, Connect)
-- [~] SmartBooks regression — Books `scripts/check-unit-suite.php` 4577/0 new, security 119 OK, integration 427 with 1 pre-existing error (fails identically on base)
+- [x] Journey tests on real PostgreSQL, concurrency included (`tests/remediation.php`, 54 tests, sections 1–9) and browser checks of every changed screen (`web/tests/remediation.mjs`)
+- [~] Producer-verified contracts — Books and Inventory by their own PostgreSQL suites on this branch; Connect by a live cross-app run (real Connect API + real Purchase API). Contacts: Purchase's stub mirrors the `fervent-volta` company routes, not yet run against a live Contacts
+- [x] SmartBooks regression — Books `scripts/check-unit-suite.php` 4577/0, security 119 OK, integration 427 with 1 pre-existing error (`VendorReconciliationImportIntegrationTest`, fails identically on base)
 - [ ] Report: changes by repository, tests run, migrations/configuration, historical repair, remaining blockers
 
 ## Continuation checkpoint
 
-Last verified: `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0, remediation 51/0
-(remediation suite looped 6× for race stability).
+Last verified (2026-09-28): `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0,
+remediation 54/0; `npm run build`; `web/tests/remediation.mjs` 14/14 (and 14/14 with Connect
+unreachable); cross-app Connect run 12/12; `web/tests/dashboards.mjs` 25/35 — the 10 failures
+target markup (`.purchase-switcher`, `.purchase-monitor__pill`, `.purchase-metric__footer`) that is
+not in `web/src` on this branch or its base (8be4231): test drift from the dashboard rebuild, not
+a regression.
 
-Next, in order:
-1. ~~`bin/receipt-repair.php`~~ done.
-2. ~~Inventory producer change~~ done (Inventory-aicountly, same branch).
-3. ~~Books producer change + supplier invoice register~~ done (books-react-app, same branch).
-4. ~~Section 6~~ done (API; screens with item 5). Next: section 7 Contacts routes + Manage FY/branch; section 8; section 9.
-5. Web UI for sections 1–4 (per-line receipt, CommandStrip controls, short-close, direct/service bill).
+Done: sections 1–9. Open:
+1. Contacts contract against a live Contacts on its `fervent-volta` release.
+2. Deferred by design: unbilled-goods returns (needs an Inventory GRN-return); PO sending through
+   a connected channel (no real supplier communication in this phase).

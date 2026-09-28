@@ -642,7 +642,7 @@ await check('Ask Aicountly AI is a drawer, and its state is in the URL', async (
   ok(text.includes('never writes a query'), 'the security position is on the screen')
   // Whether AI Pulse is answering is stated, either way — never a model this
   // product configured for itself.
-  ok(/Powered by AI Pulse|Rules only/.test(text), 'the drawer says whether AI Pulse is answering')
+  ok(/Using AI Pulse|Rules only/.test(text), 'the drawer says whether AI Pulse is answering')
   ok(!text.includes('Model configured'), 'and no longer claims a model of its own')
 
   await page.keyboard.press('Escape')

@@ -28,7 +28,7 @@ export function AiAssistantCard() {
         className="access-btn access-btn--ai"
         onClick={() => navigate('/dashboard/ai-insights')}
       >
-        Chat with AI <ArrowRight size={14} aria-hidden />
+        Ask AI Pulse <ArrowRight size={14} aria-hidden />
       </button>
 
       <Bot size={58} aria-hidden className="access-ai__visual" />

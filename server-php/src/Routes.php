@@ -8,6 +8,7 @@ use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\BillsController;
 use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
+use Aicountly\Api\Controllers\ConnectController;
 use Aicountly\Api\Controllers\DashboardController;
 use Aicountly\Api\Controllers\DashboardsController;
 use Aicountly\Api\Controllers\ImportController;
@@ -131,6 +132,10 @@ final class Routes
         $router->post('v1/returns/{id}/debit-note', [ReturnsController::class, 'debitNote']);
         $router->post('v1/returns/{id}/cancel', [ReturnsController::class, 'cancel']);
         $router->post('v1/returns/{id}/recall', [ReturnsController::class, 'recall']);
+
+        // Aicountly Connect: may a document be shared, and what may each viewer see of it.
+        $router->post('v1/connect/share-check', [ConnectController::class, 'shareCheck']);
+        $router->get('v1/connect/context/{type}/{id}', [ConnectController::class, 'context']);
 
         $router->get('v1/claims', [ClaimsController::class, 'index']);
         $router->post('v1/claims', [ClaimsController::class, 'create']);

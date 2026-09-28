@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
+import { ConnectEmbed } from '../components/ConnectEmbed'
 import { usePurchases } from '../context/PurchasesContext'
 import { AccessNotice } from './AccessNotice'
 import { useScopeLabels } from './useScopeLabels'
@@ -314,6 +315,9 @@ export function AppShell() {
           <AccessNotice />
           <Outlet />
         </main>
+        {/* Aicountly Connect draws its own launcher, in its own shadow root; nothing of it
+            touches this shell's styles. */}
+        <ConnectEmbed />
       </div>
     </div>
   )

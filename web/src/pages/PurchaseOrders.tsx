@@ -11,6 +11,7 @@ import type { IntegrationCommand } from '../services/types'
 import { OrderCommunicationsPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
+import { DiscussInConnect } from '../components/ConnectEmbed'
 
 const STATUSES = ['', 'DRAFT', 'APPROVAL_PENDING', 'APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED']
 
@@ -198,6 +199,7 @@ export function PurchaseOrderDetail() {
         </div>
 
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <DiscussInConnect entityType="purchase_order" entityId={po.po_id} />
           {po.status === 'DRAFT' && can('po.create') && (
             <Button tone="primary" disabled={busy} onClick={() => act('submit')}>Submit</Button>
           )}

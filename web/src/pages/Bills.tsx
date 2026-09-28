@@ -8,6 +8,7 @@ import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
 import { ItemPicker, LedgerPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
+import { DiscussInConnect } from '../components/ConnectEmbed'
 
 const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'POSTING', 'UNCERTAIN', 'POSTED', 'FAILED', 'BLOCKED', 'CANCELLED']
 
@@ -160,6 +161,7 @@ export function BillDetail() {
         </div>
 
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <DiscussInConnect entityType="purchase_bill" entityId={Number(id)} />
           {bill.status !== 'POSTED' && can('match.view') && (
             <Button disabled={busy} onClick={() => act(`v1/bills/${id}/rematch`)}>Re-run the match</Button>
           )}

@@ -7,6 +7,7 @@ import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
+import { DiscussInConnect } from '../components/ConnectEmbed'
 
 const STATUSES = ['', 'DRAFT', 'ISSUED', 'RESPONSES_OPEN', 'EVALUATING', 'AWARDED', 'CANCELLED', 'CLOSED']
 
@@ -122,6 +123,7 @@ export function RfqDetail() {
         </div>
 
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <DiscussInConnect entityType="rfq" entityId={Number(id)} />
           {rfq.status === 'DRAFT' && can('rfq.create') && (
             <Button tone="primary" disabled={busy} onClick={() => act('issue')}>Issue to suppliers</Button>
           )}

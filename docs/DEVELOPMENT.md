@@ -94,7 +94,22 @@ npm --prefix web run build
 
 # Browser checks — needs the stack above running.
 PURCHASE_APP_URL=http://127.0.0.1:5173 npm --prefix web run test:ui
+PURCHASE_APP_URL=http://127.0.0.1:5173 npm --prefix web run test:remediation   # the 2026-10 screens
 ```
+
+### Aicountly Connect
+
+The shell loads Connect's own widget (`{connect}/embed/v1/loader.js`, Embed SDK v1). On
+`purchase.gh` it comes from `connect.gh`, on `purchase` from `connect`; on localhost there is
+none unless you point at one:
+
+```bash
+printf 'VITE_CONNECT_ORIGIN=http://127.0.0.1:8895\n' >> web/.env.local   # `off` disables it
+```
+
+Connect must admit the page's origin (`CORS_ALLOWED_ORIGINS` in Connect's API) and know where
+Purchase's API is (`PURCHASES_API_BASE`) to verify a shared document. With Connect unreachable
+the product works exactly as before, without the widget or the "Discuss in Connect" buttons.
 
 `test:ui` uses Playwright's Chromium. Where one is already installed, point at
 it with `PURCHASE_CHROMIUM_PATH`; otherwise `npx playwright install chromium`.

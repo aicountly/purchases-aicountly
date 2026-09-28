@@ -152,6 +152,46 @@ final class Permissions
     }
 
     /**
+     * What each of these people holds in this company through Purchases profiles — for a
+     * question asked about somebody other than the caller (who may view a shared document).
+     * A company owner's rights come from Manage and can only be read from their own session,
+     * so an owner who holds no profile is reported here without any; their own read decides.
+     *
+     * @param list<string> $uuids
+     * @return array<string, list<string>> keyed by the lower-cased uuid
+     */
+    public static function grantedTo(int $cmpId, array $uuids): array
+    {
+        $uuids = array_values(array_unique(array_map('strtolower', $uuids)));
+        $out = array_fill_keys($uuids, []);
+        if ($uuids === []) {
+            return $out;
+        }
+        $placeholders = [];
+        $params = ['cmp' => $cmpId];
+        foreach (array_values($uuids) as $i => $uuid) {
+            $placeholders[] = ':u' . $i;
+            $params['u' . $i] = $uuid;
+        }
+        $rows = Db::all(
+            'SELECT LOWER(a.user_uuid) AS user_uuid, p.permissions
+             FROM ' . self::TABLE_ASSIGNMENTS . ' a
+             JOIN ' . self::TABLE_PROFILES . ' p ON p.profile_id = a.profile_id
+             WHERE a.cmp_id = :cmp AND p.is_active = TRUE AND LOWER(a.user_uuid) IN (' . implode(', ', $placeholders) . ')',
+            $params,
+        );
+        foreach ($rows as $row) {
+            foreach (Db::jsonColumn($row['permissions'] ?? null) as $permission) {
+                if (is_string($permission) && !in_array($permission, $out[$row['user_uuid']] ?? [], true)) {
+                    $out[$row['user_uuid']][] = $permission;
+                }
+            }
+        }
+
+        return $out;
+    }
+
+    /**
      * The permissions this caller may hand to somebody else.
      *
      * A company owner may grant anything. Anybody else may grant only what they

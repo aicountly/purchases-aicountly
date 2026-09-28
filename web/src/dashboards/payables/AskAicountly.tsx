@@ -166,6 +166,10 @@ export function AskAicountlyPanel({ open, onClose }: { open: boolean; onClose: (
 function Answer({ answer, onOpen }: { answer: AskAnswer; onOpen: (route: string) => void }) {
   return (
     <div className="aic-ask-answer">
+      {/* Said as it happened: a badge only when AI Pulse actually took part in this answer. */}
+      <p style={{ margin: 0, fontSize: 11.5, fontWeight: 600, color: answer.method.startsWith('ai_') ? '#6d28d9' : 'var(--aic-text-muted)' }}>
+        {answer.method.startsWith('ai_') ? 'Using AI Pulse' : 'Rules only'}
+      </p>
       <h3>{answer.question}</h3>
       <p>{answer.answer}</p>
 

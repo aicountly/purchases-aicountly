@@ -8,6 +8,7 @@ import { useUrlFilter } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { ItemPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
+import { DiscussInConnect } from '../components/ConnectEmbed'
 
 const STATUSES = ['', 'DRAFT', 'APPROVAL_PENDING', 'APPROVED', 'REJECTED', 'SOURCING', 'ORDERED', 'CLOSED', 'CANCELLED']
 
@@ -130,6 +131,7 @@ export function RequisitionDetail() {
         </div>
 
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <DiscussInConnect entityType="requisition" entityId={Number(id)} />
           {requisition.status === 'DRAFT' && can('requisition.create') && (
             <Button tone="primary" disabled={busy} onClick={() => act('submit')}>Submit for approval</Button>
           )}

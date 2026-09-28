@@ -7,6 +7,7 @@ import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip, recoveryPath } from '../components/CommandStrip'
 import { LedgerPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, StatusBadge } from '../ui'
+import { DiscussInConnect } from '../components/ConnectEmbed'
 
 export function ReturnsList() {
   const navigate = useNavigate()
@@ -101,6 +102,7 @@ export function ReturnDetail() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <DiscussInConnect entityType="purchase_return" entityId={Number(id)} />
           {item.status === 'DRAFT' && can('return.approve') && (
             <Button tone="primary" disabled={busy} onClick={() => act('approve')}>Approve</Button>
           )}

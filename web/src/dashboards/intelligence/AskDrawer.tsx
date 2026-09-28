@@ -78,7 +78,7 @@ export function AskDrawer({ open, panel, onClose }: { open: boolean; panel: AskP
         <div className="purchase-ask-drawer">
           <div className="purchase-ask-drawer__state">
             <Badge tone={panel.ai.available ? 'success' : 'neutral'}>
-              {panel.ai.available ? 'Powered by AI Pulse' : 'Rules only'}
+              {panel.ai.available ? 'Using AI Pulse' : 'Rules only'}
             </Badge>
             <p className="purchase-muted">{panel.notice}</p>
           </div>
