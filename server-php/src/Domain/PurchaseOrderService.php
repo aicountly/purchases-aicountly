@@ -237,37 +237,160 @@ final class PurchaseOrderService
         return $this->find($poId);
     }
 
-    /** @param array<string, mixed> $input */
+    /**
+     * Cancel an order nothing has happened against yet.
+     *
+     * Decided with the order row locked, and receipts and bills are counted INCLUDING the
+     * ones still on their way to Inventory or Books — a cancel that raced a receipt would
+     * otherwise pass its check and leave a cancelled order with goods on it.
+     *
+     * @param array<string, mixed> $input
+     */
     public function cancel(int $poId, array $input): array
     {
         Permissions::assert($this->ctx, $this->auth, 'po.cancel');
-
-        $po = $this->find($poId);
-        if ($po === []) {
-            Http::notFound('That purchase order does not exist.');
-        }
-        if (in_array($po['status'], ['CANCELLED', 'CLOSED'], true)) {
-            Http::conflict('This purchase order is already ' . strtolower((string) $po['status']) . '.');
-        }
-        // Received or billed first, because those are the reasons that tell the
-        // user what to do instead.
-        if ((float) array_sum(array_column($po['lines'], 'received_qty')) > 0) {
-            Http::conflict('Goods have been received against this order. Raise a purchase return instead of cancelling it.');
-        }
-        if ((float) array_sum(array_column($po['lines'], 'billed_qty')) > 0) {
-            Http::conflict('This order has been billed. Raise a debit note in Smart Books instead of cancelling it.');
-        }
 
         $reason = self::text($input['reason'] ?? null);
         if ($reason === null) {
             Http::validationFailed('Say why this purchase order is being cancelled.', ['field' => 'reason']);
         }
 
-        Db::update('purchase_orders', [
-            'status' => 'CANCELLED', 'cancelled_at' => self::now(), 'cancel_reason' => $reason, 'updated_at' => self::now(),
-        ], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+        $before = Db::transaction(function () use ($poId, $reason): string {
+            $po = PoProgress::lock($poId, $this->ctx->cmpId);
+            if ($po === null) {
+                Http::notFound('That purchase order does not exist.');
+            }
+            if (in_array($po['status'], ['CANCELLED', 'CLOSED'], true)) {
+                Http::conflict('This purchase order is already ' . strtolower((string) $po['status']) . '.');
+            }
 
-        Audit::record($this->ctx, $this->auth, 'po.cancelled', 'purchase_order', $poId, ['status' => $po['status']], ['status' => 'CANCELLED'], $reason);
+            $activity = Db::first(
+                "SELECT
+                    (SELECT COALESCE(SUM(received_qty), 0) FROM purchase_order_lines WHERE po_id = :po) AS received,
+                    (SELECT COALESCE(SUM(billed_qty), 0) FROM purchase_order_lines WHERE po_id = :po) AS billed,
+                    (SELECT COUNT(*) FROM purchase_receipt_requests
+                      WHERE po_id = :po AND applied_at IS NULL AND status IN ('REQUESTED', 'POSTING', 'FAILED', 'UNCERTAIN')) AS receipts_in_flight,
+                    (SELECT COUNT(*) FROM purchase_bill_requests
+                      WHERE po_id = :po AND status NOT IN ('CANCELLED')) AS bills",
+                ['po' => $poId],
+            ) ?? [];
+
+            // Received or billed first, because those are the reasons that tell the user
+            // what to do instead.
+            if ((float) $activity['received'] > 0) {
+                Http::conflict('Goods have been received against this order. Short-close it to stop waiting for the rest, or raise a purchase return.');
+            }
+            if ((int) $activity['receipts_in_flight'] > 0) {
+                Http::conflict('A receipt against this order is still on its way to Inventory. Retry, reconcile or cancel it before cancelling the order.');
+            }
+            if ((float) $activity['billed'] > 0 || (int) $activity['bills'] > 0) {
+                Http::conflict('A bill has been entered against this order. Short-close the order, or settle the bill in Smart Books, instead of cancelling it.');
+            }
+
+            Db::update('purchase_orders', [
+                'status' => 'CANCELLED', 'cancelled_at' => self::now(), 'cancel_reason' => $reason, 'updated_at' => self::now(),
+            ], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+
+            return (string) $po['status'];
+        });
+
+        Audit::record($this->ctx, $this->auth, 'po.cancelled', 'purchase_order', $poId, ['status' => $before], ['status' => 'CANCELLED'], $reason);
+
+        return $this->find($poId);
+    }
+
+    /**
+     * Stop waiting for what has not arrived.
+     *
+     * Records, per line, the quantity that will never be delivered — explicitly, with a
+     * reason, in the audit trail. Nothing already received, billed or owed is touched:
+     * receipts stay in Inventory and liabilities stay in Books. The order then closes by
+     * the same rule as any other, once whatever did arrive is billed.
+     *
+     * @param array<string, mixed> $input {reason, lines?: [{line_id, qty}]} — no lines means
+     *                                    every line's whole remainder
+     */
+    public function shortClose(int $poId, array $input): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'po.close');
+
+        $reason = self::text($input['reason'] ?? null);
+        if ($reason === null) {
+            Http::validationFailed('Say why the rest of this order will not be delivered.', ['field' => 'reason']);
+        }
+
+        $closed = Db::transaction(function () use ($poId, $input): array {
+            $po = PoProgress::lock($poId, $this->ctx->cmpId);
+            if ($po === null) {
+                Http::notFound('That purchase order does not exist.');
+            }
+            if (!in_array($po['status'], ['APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED'], true)) {
+                Http::conflict('Only an approved order that is still open can be short-closed; this one is ' . strtolower((string) $po['status']) . '.');
+            }
+
+            $lines = [];
+            foreach (Db::all('SELECT * FROM purchase_order_lines WHERE po_id = :po AND cmp_id = :cmp FOR UPDATE', ['po' => $poId, 'cmp' => $this->ctx->cmpId]) as $line) {
+                $lines[(int) $line['line_id']] = $line;
+            }
+            $inFlight = [];
+            foreach (Db::all(
+                "SELECT requested_lines FROM purchase_receipt_requests
+                  WHERE po_id = :po AND applied_at IS NULL AND status IN ('REQUESTED', 'POSTING', 'FAILED', 'UNCERTAIN')",
+                ['po' => $poId],
+            ) as $row) {
+                foreach (Db::jsonColumn($row['requested_lines']) as $l) {
+                    $inFlight[(int) $l['line_id']] = ($inFlight[(int) $l['line_id']] ?? 0.0) + (float) ($l['qty'] ?? 0);
+                }
+            }
+
+            $requested = is_array($input['lines'] ?? null) && $input['lines'] !== [] ? $input['lines'] : null;
+            $closed = [];
+            foreach ($lines as $lineId => $line) {
+                $isService = self::truthy($line['is_service']) || $line['item_id'] === null;
+                $done = $isService
+                    ? (float) $line['billed_qty'] - (float) $line['debited_qty']
+                    : (float) $line['received_qty'] - (float) $line['returned_qty'] + ($inFlight[$lineId] ?? 0.0);
+                $remaining = round((float) $line['ordered_qty'] - (float) $line['short_closed_qty'] - $done, 4);
+                if ($remaining <= 0) {
+                    continue;
+                }
+                $qty = $remaining;
+                if ($requested !== null) {
+                    $match = null;
+                    foreach ($requested as $want) {
+                        if (is_array($want) && (int) ($want['line_id'] ?? 0) === $lineId) {
+                            $match = $want;
+                        }
+                    }
+                    if ($match === null) {
+                        continue;
+                    }
+                    $qty = round((float) ($match['qty'] ?? $remaining), 4);
+                    if ($qty <= 0 || $qty > $remaining + 0.00005) {
+                        Http::validationFailed(
+                            sprintf('Line %d has %s still to come; a short-close can cover at most that.', (int) $line['line_no'], rtrim(rtrim(number_format($remaining, 4, '.', ''), '0'), '.')),
+                            ['field' => 'lines', 'line_id' => $lineId, 'remaining' => $remaining],
+                        );
+                    }
+                }
+                Db::run(
+                    'UPDATE purchase_order_lines SET short_closed_qty = short_closed_qty + :qty, updated_at = NOW()
+                      WHERE line_id = :id AND cmp_id = :cmp',
+                    ['qty' => $qty, 'id' => $lineId, 'cmp' => $this->ctx->cmpId],
+                );
+                $closed[] = ['line_id' => $lineId, 'line_no' => (int) $line['line_no'], 'short_closed_qty' => $qty, 'remaining_before' => $remaining];
+            }
+            if ($closed === []) {
+                Http::conflict('Nothing on this order is still waiting to be delivered.');
+            }
+
+            Db::update('purchase_orders', ['closure_reason' => self::text($input['reason'] ?? null)], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+            PoProgress::recompute($poId, $this->ctx->cmpId, $this->auth->uuid);
+
+            return $closed;
+        });
+
+        Audit::record($this->ctx, $this->auth, 'po.short_closed', 'purchase_order', $poId, null, ['lines' => $closed], $reason);
 
         return $this->find($poId);
     }
@@ -284,7 +407,33 @@ final class PurchaseOrderService
         $row['schedules'] = Db::all('SELECT * FROM purchase_delivery_schedules WHERE po_id = :id ORDER BY scheduled_date, schedule_id', ['id' => $poId]);
         $row['receipts'] = Db::all('SELECT * FROM purchase_receipt_requests WHERE po_id = :id ORDER BY request_id DESC', ['id' => $poId]);
         $row['bills'] = Db::all('SELECT * FROM purchase_bill_requests WHERE po_id = :id ORDER BY request_id DESC', ['id' => $poId]);
-        $row['commands'] = IntegrationCommand::forEntity($this->ctx, 'purchase_order', $poId);
+        $row['returns'] = Db::all(
+            'SELECT return_id, return_no, return_date, status, inventory_document_uuid, books_debit_note_id
+               FROM purchase_returns WHERE po_id = :id AND cmp_id = :cmp ORDER BY return_id DESC',
+            ['id' => $poId, 'cmp' => $this->ctx->cmpId],
+        );
+        $progress = PoProgress::figures($poId, $this->ctx->cmpId);
+        $row['progress'] = [
+            'receipt_status' => $progress['receipt_status'],
+            'billing_status' => $progress['billing_status'],
+            'bill_work_open' => $progress['bill_work_open'],
+            'lines'          => $progress['lines'],
+        ];
+
+        // The order's own commands, and the ones filed under the documents raised against
+        // it — a receipt's GRN, a bill's voucher, a return's dispatch and debit note. They
+        // are what can be stuck, so they are what the order's strip has to show.
+        $entities = [['purchase_order', $poId]];
+        foreach ($row['receipts'] as $receipt) {
+            $entities[] = ['receipt_request', (int) $receipt['request_id']];
+        }
+        foreach ($row['bills'] as $bill) {
+            $entities[] = ['bill_request', (int) $bill['request_id']];
+        }
+        foreach ($row['returns'] as $return) {
+            $entities[] = ['purchase_return', (int) $return['return_id']];
+        }
+        $row['commands'] = IntegrationCommand::forEntities($this->ctx, $entities);
         $row['approvals'] = Db::all(
             "SELECT * FROM purchase_approval_requests
              WHERE cmp_id = :cmp AND entity_type = 'purchase_order' AND entity_id = :id ORDER BY approval_id",
@@ -496,6 +645,18 @@ final class PurchaseOrderService
     private static function money(float $value): string
     {
         return '₹' . number_format($value, 2);
+    }
+
+    private static function truthy(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_string($value)) {
+            return in_array(strtolower($value), ['t', 'true', '1', 'yes'], true);
+        }
+
+        return (bool) $value;
     }
 
     private static function id(mixed $value): ?int

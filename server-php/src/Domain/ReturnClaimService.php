@@ -145,13 +145,6 @@ final class ReturnClaimService
             Http::validationFailed('There is nothing on this return to send back.');
         }
 
-        $command = IntegrationCommand::open($this->ctx, 'inventory', self::COMMAND_RETURN_DISPATCH, 'purchase_return', $returnId, ['lines' => count($stockLines)]);
-        $commandId = (int) $command['command_id'];
-        if (($command['status'] ?? '') === IntegrationCommand::COMPLETED) {
-            return $this->findReturn($returnId);
-        }
-        IntegrationCommand::markPosting($commandId);
-
         $payload = [
             'document_type'        => 'DELIVERY_CHALLAN',
             'stock_effect'         => 'challan_only',
@@ -176,24 +169,45 @@ final class ReturnClaimService
             ], $stockLines),
         ];
 
-        $response = (new InventoryClient())->withService($this->auth->uuid)->postDocument($this->ctx, $payload, (string) $command['idempotency_key']);
+        $command = IntegrationCommand::ensure($this->ctx, 'inventory', self::COMMAND_RETURN_DISPATCH, 'purchase_return', $returnId, $payload, ['lines' => count($stockLines)]);
+        $scope = Context::of((int) $command['cmp_id'], (int) $command['fy_id'], (int) $command['bo_id']);
+        $inventory = (new InventoryClient())->withService($this->auth->uuid);
+        $attempt = IntegrationCommand::attempt(
+            $command,
+            static fn (array $body, string $key) => $inventory->postDocument($scope, $body, $key),
+        );
 
-        if (!$response['ok']) {
-            $message = $response['error'] ?? 'Inventory did not accept the return.';
-            in_array($response['status'], [409, 422], true)
-                ? IntegrationCommand::block($commandId, $message)
-                : IntegrationCommand::fail($commandId, $message);
-            Http::error(502, 'inventory_unavailable', 'Could not reach Inventory to send these goods back. Nothing has moved — press Retry.', ['retryable' => true, 'detail' => $message]);
+        if ($attempt['outcome'] === 'already_completed') {
+            return $this->findReturn($returnId);
+        }
+        if ($attempt['outcome'] !== 'completed') {
+            $message = (string) ($attempt['message'] ?? 'Inventory did not accept the return.');
+            Http::error(
+                in_array($attempt['outcome'], ['blocked', 'already_blocked', 'withdrawn'], true) ? 409 : 502,
+                match ($attempt['outcome']) {
+                    'blocked', 'already_blocked', 'withdrawn' => 'inventory_refused',
+                    'in_progress' => 'return_in_progress',
+                    'uncertain' => 'inventory_uncertain',
+                    default => 'inventory_unavailable',
+                },
+                match ($attempt['outcome']) {
+                    'blocked', 'already_blocked', 'withdrawn' => $message,
+                    'in_progress' => 'This return is being sent to Inventory right now. Wait a moment and refresh.',
+                    'uncertain' => 'Inventory did not confirm the dispatch. It may have been recorded — Retry cannot record it twice.',
+                    default => 'Could not reach Inventory to send these goods back. Nothing has moved — press Retry.',
+                },
+                ['retryable' => !in_array($attempt['outcome'], ['blocked', 'already_blocked', 'withdrawn'], true), 'detail' => $message],
+            );
         }
 
-        $document = $response['body']['data'] ?? [];
-        IntegrationCommand::complete($commandId, [
+        $document = $attempt['response']['body']['data'] ?? [];
+        IntegrationCommand::complete((int) $command['command_id'], (string) $attempt['lease'], [
             'inventory_document_id'   => $document['document_id'] ?? null,
             'inventory_document_uuid' => $document['document_uuid'] ?? null,
             // What the dispatch is in Inventory: the debit note settles a DELIVERY_CHALLAN. One
             // recorded before this was a PURCHASE_RETURN — the goods already left stock.
             'document_type'           => 'DELIVERY_CHALLAN',
-        ]);
+        ], !empty($document['duplicate']) ? 'replay' : 'response', (int) $attempt['response']['status']);
 
         Db::transaction(function () use ($returnId, $document, $stockLines) {
             Db::update('purchase_returns', [
@@ -275,10 +289,6 @@ final class ReturnClaimService
         $stockLines = array_values(array_filter($return['lines'], static fn (array $l) => $l['item_id'] !== null));
         $stock = $this->debitNoteStockEffect($returnId, $stockLines);
 
-        $command = IntegrationCommand::open($this->ctx, 'books', self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, ['return_no' => $return['return_no']]);
-        $commandId = (int) $command['command_id'];
-        IntegrationCommand::markPosting($commandId);
-
         $payload = [
             'vch_date'     => (string) $return['return_date'],
             // party.acc_id is what Books composes a debit note from; the flat party_acc_id was
@@ -312,23 +322,40 @@ final class ReturnClaimService
             ], $stockLines)),
         ];
 
-        $response = (new BooksClient())
-            ->withService($this->auth->uuid)
-            ->createAndPostVoucher($this->ctx, BooksClient::VCH_DEBIT_NOTE, $payload, (string) $command['idempotency_key']);
+        $command = IntegrationCommand::ensure($this->ctx, 'books', self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $payload, ['return_no' => $return['return_no']]);
+        $scope = Context::of((int) $command['cmp_id'], (int) $command['fy_id'], (int) $command['bo_id']);
+        // Books is written as the person raising the debit note, on their session.
+        $books = (new BooksClient())->withSession($this->auth->sesKey());
+        $attempt = IntegrationCommand::attempt(
+            $command,
+            static fn (array $body, string $key) => $books->createAndPostVoucher($scope, BooksClient::VCH_DEBIT_NOTE, $body, $key),
+        );
 
-        if (!$response['ok']) {
-            $message = $response['error'] ?? 'Books did not accept the debit note.';
-            in_array($response['status'], [409, 422], true)
-                ? IntegrationCommand::block($commandId, $message)
-                : IntegrationCommand::fail($commandId, $message);
-            Http::error(502, 'books_unavailable', 'Could not reach Books to raise the debit note. Nothing has been posted — press Retry.', ['retryable' => true, 'detail' => $message]);
+        if ($attempt['outcome'] === 'already_completed') {
+            $voucher = [
+                'vch_txn_id' => $attempt['command']['external_reference']['books_debit_note_id'] ?? null,
+                'vch_uuid'   => $attempt['command']['external_reference']['books_debit_note_uuid'] ?? null,
+            ];
+        } elseif ($attempt['outcome'] !== 'completed') {
+            $message = (string) ($attempt['message'] ?? 'Books did not accept the debit note.');
+            Http::error(
+                in_array($attempt['outcome'], ['blocked', 'already_blocked', 'withdrawn'], true) ? 409 : 502,
+                in_array($attempt['outcome'], ['blocked', 'already_blocked', 'withdrawn'], true) ? 'books_refused' : ($attempt['outcome'] === 'uncertain' ? 'books_uncertain' : 'books_unavailable'),
+                match ($attempt['outcome']) {
+                    'blocked', 'already_blocked', 'withdrawn' => $message,
+                    'in_progress' => 'This debit note is being posted right now. Wait a moment and refresh.',
+                    'uncertain' => 'Smart Books did not confirm the debit note. It may have been posted — Retry cannot post it twice.',
+                    default => 'Could not reach Books to raise the debit note. Nothing has been posted — press Retry.',
+                },
+                ['retryable' => !in_array($attempt['outcome'], ['blocked', 'already_blocked', 'withdrawn'], true), 'detail' => $message],
+            );
+        } else {
+            $voucher = $attempt['response']['body']['data'] ?? [];
+            IntegrationCommand::complete((int) $command['command_id'], (string) $attempt['lease'], [
+                'books_debit_note_id'   => $voucher['vch_txn_id'] ?? null,
+                'books_debit_note_uuid' => $voucher['vch_uuid'] ?? null,
+            ], 'response', (int) $attempt['response']['status']);
         }
-
-        $voucher = $response['body']['data'] ?? [];
-        IntegrationCommand::complete($commandId, [
-            'books_debit_note_id'   => $voucher['vch_txn_id'] ?? null,
-            'books_debit_note_uuid' => $voucher['vch_uuid'] ?? null,
-        ]);
 
         Db::update('purchase_returns', [
             'status'                => 'DEBITED',

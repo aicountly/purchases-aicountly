@@ -117,6 +117,19 @@ final class Context
         self::$verified[$key] = $accessType;
     }
 
+    /**
+     * The scope a stored command was first sent under.
+     *
+     * A retry must send the same body its first attempt sent — Inventory and Books refuse
+     * a reused idempotency key whose body differs — and the company context is part of
+     * that body. Only for replaying a command of a company this request has already been
+     * authorised for; never built from request input.
+     */
+    public static function of(int $cmpId, int $fyId, int $boId): self
+    {
+        return new self($cmpId, $fyId, max(0, $boId));
+    }
+
     /** Drop the memoised company checks. Tests only — a request never needs it. */
     public static function forgetVerified(): void
     {

@@ -40,33 +40,81 @@ header('Content-Type: application/json');
  */
 $controlFile = sys_get_temp_dir() . '/stub-control.json';
 $control = is_file($controlFile) ? (json_decode((string) file_get_contents($controlFile), true) ?: []) : [];
-if (!empty($control['path']) && str_contains($path, (string) $control['path'])) {
+// `after: true` does the work and THEN fails the response — the lost-response case: the
+// other product recorded the document, the caller never heard. Handled at the end.
+$failAfter = !empty($control['path']) && str_contains($path, (string) $control['path']) && !empty($control['after']);
+if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter) {
     http_response_code((int) ($control['status'] ?? 500));
     echo json_encode([
-        'error'   => ['code' => 'stub_forced', 'message' => 'Forced failure for test'],
+        'error'   => ['code' => (string) ($control['code'] ?? 'stub_forced'), 'message' => 'Forced failure for test'],
         'message' => 'Forced failure for test',
     ]);
     exit;
 }
+if ($failAfter) {
+    ob_start();
+    register_shutdown_function(static function () use ($control): void {
+        ob_end_clean();
+        http_response_code((int) ($control['status'] ?? 504));
+        header('Content-Type: application/json');
+        echo json_encode(['error' => ['code' => 'stub_lost_response', 'message' => 'Response lost after the work was done'], 'message' => 'Response lost']);
+    });
+}
+
+/**
+ * Behaviour switches for contract tests, in a file both processes can see:
+ *   inventory_wrong_source  a post answers with a document filed under another source
+ *   books_mangle            a posted voucher is recorded without the supplier's bill
+ *                           reference and without crediting the supplier — the shape an
+ *                           ill-composed voucher had — so the read-back check must see it
+ */
+$modes = is_file(sys_get_temp_dir() . '/stub-mode.json') ? (json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-mode.json'), true) ?: []) : [];
 
 /**
  * Replay by idempotency key, exactly as Books and Inventory do. Two calls with
  * the same key must produce ONE document — that is what the tests check.
  */
 $store = sys_get_temp_dir() . '/stub-idempotency.json';
+// One writer at a time, like the real services' per-key serialisation: concurrency tests
+// fire several requests at once, and a stub that lost updates would "prove" nothing.
+$lockHandle = fopen(sys_get_temp_dir() . '/stub.lock', 'c');
+flock($lockHandle, LOCK_EX);
 $seen = is_file($store) ? (json_decode((string) file_get_contents($store), true) ?: []) : [];
 $key = $headers['idempotency-key'] ?? '';
+// The request body the key was first used with. Inventory and Books both refuse a reused
+// key whose body differs (409 idempotency_conflict) — the stub has to, or a retry that
+// rebuilt its body differently would pass here and fail in production.
+$bodyHash = hash('sha256', json_encode(stubNormalise($body)));
+
+function stubNormalise(mixed $v): mixed {
+    if (is_array($v)) {
+        if (array_is_list($v)) {
+            return array_map('stubNormalise', $v);
+        }
+        ksort($v);
+        return array_map('stubNormalise', $v);
+    }
+    return $v;
+}
 
 function remember(string $store, array $seen, string $key, array $payload): array {
     if ($key !== '') {
-        $seen[$key] = $payload;
+        global $bodyHash;
+        $seen[$key] = $payload + ['__hash' => $bodyHash];
         file_put_contents($store, json_encode($seen));
     }
     return $payload;
 }
 
 if ($key !== '' && isset($seen[$key])) {
-    echo json_encode(['data' => $seen[$key] + ['duplicate' => true]]);
+    $stored = $seen[$key];
+    if (isset($stored['__hash']) && $stored['__hash'] !== $bodyHash) {
+        http_response_code(409);
+        echo json_encode(['error' => ['code' => 'idempotency_conflict', 'message' => 'Idempotency-Key was already used with a different request body'], 'message' => 'Idempotency-Key reused with different payload']);
+        exit;
+    }
+    unset($stored['__hash']);
+    echo json_encode(['data' => $stored + ['duplicate' => true], 'duplicate' => true]);
     exit;
 }
 
@@ -235,6 +283,23 @@ if (str_contains($path, '/companyinfo')) {
 }
 
 // --- Inventory ------------------------------------------------------------
+if (str_contains($path, '/v1/capabilities') && $method === 'GET') {
+    $caps = is_file(sys_get_temp_dir() . '/stub-inventory-caps.json')
+        ? json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-inventory-caps.json'), true)
+        : ['validates_stock_effect' => true, 'stock_effects' => [
+            'PURCHASE_RECEIPT' => ['on_invoice', 'defer_inward', 'from_challan', 'from_physical_challan'],
+            'PURCHASE_RETURN'  => ['on_invoice', 'from_challan', 'from_physical_challan'],
+            'INWARD_CHALLAN'   => ['challan_only', 'physical', 'settle_deferred'],
+            'DELIVERY_CHALLAN' => ['challan_only', 'physical'],
+        ]];
+    if ($caps === null) {
+        http_response_code(404);
+        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'no route'], 'message' => 'no route']);
+        exit;
+    }
+    echo json_encode(['data' => $caps]);
+    exit;
+}
 if (str_contains($path, '/v1/valuation/unit-costs')) {
     $ids = array_filter(explode(',', (string) ($_GET['item_ids'] ?? '')));
     echo json_encode(['data' => array_map(static fn ($id) => ['item_id' => (int) $id, 'unit_cost' => 80.0], $ids)]);
@@ -260,15 +325,63 @@ if (str_contains($path, '/v1/reservations') && $method === 'POST') {
     exit;
 }
 /**
- * Posted documents are remembered by their source so `by-source` can answer,
- * which is what the three-way match reads to learn what actually arrived.
+ * Posted documents, as Inventory keeps them: by id, and indexed by source.
+ *
+ * Inventory keeps ONE live document per (source_app, source_document_type,
+ * source_document_id) — DocumentsController::createInternal's duplicate guard, backed by
+ * uq_inv_documents_source. A second post under the same source identity answers 200 with
+ * the FIRST document and duplicate:true, whatever its idempotency key. The stub used to
+ * accept a second document per source, which is exactly how receipts keyed by their
+ * order passed here and failed against the real service.
  */
 $documentStore = sys_get_temp_dir() . '/stub-documents.json';
 $documents = is_file($documentStore) ? (json_decode((string) file_get_contents($documentStore), true) ?: []) : [];
+$documents += ['by_id' => [], 'by_source' => []];
+
+function stubSourceKey(array $b): ?string {
+    if (empty($b['source_document_type']) || empty($b['source_document_id'])) {
+        return null;
+    }
+    return ($b['source_app'] ?? '') . '|' . $b['source_document_type'] . '|' . (int) $b['source_document_id'];
+}
 
 if (str_contains($path, '/v1/inventory-documents/by-source')) {
-    $sourceKey = ($_GET['source_app'] ?? '') . '|' . ($_GET['source_document_type'] ?? '') . '|' . ($_GET['source_document_id'] ?? '');
-    echo json_encode(['data' => $documents[$sourceKey] ?? []]);
+    $sourceKey = ($_GET['source_app'] ?? '') . '|' . ($_GET['source_document_type'] ?? '') . '|' . (int) ($_GET['source_document_id'] ?? 0);
+    // Real findBySource: the newest live document, a single row.
+    $id = $documents['by_source'][$sourceKey] ?? null;
+    if ($id === null) {
+        http_response_code(404);
+        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'No document for that source'], 'message' => 'not found']);
+        exit;
+    }
+    echo json_encode(['data' => $documents['by_id'][(string) $id]]);
+    exit;
+}
+if (preg_match('#/v1/inventory-documents/(\d+)/reverse$#', $path, $rm) === 1 && $method === 'POST') {
+    $doc = $documents['by_id'][$rm[1]] ?? null;
+    if ($doc === null) {
+        http_response_code(404);
+        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'No such document'], 'message' => 'not found']);
+        exit;
+    }
+    $doc['status'] = 'REVERSED';
+    $documents['by_id'][$rm[1]] = $doc;
+    $sk = stubSourceKey($doc);
+    if ($sk !== null && ($documents['by_source'][$sk] ?? null) === (int) $rm[1]) {
+        unset($documents['by_source'][$sk]);
+    }
+    file_put_contents($documentStore, json_encode($documents));
+    echo json_encode(['data' => remember($store, $seen, $key, $doc)]);
+    exit;
+}
+if (preg_match('#/v1/inventory-documents/(\d+)$#', $path, $gm) === 1 && $method === 'GET') {
+    $doc = $documents['by_id'][$gm[1]] ?? null;
+    if ($doc === null) {
+        http_response_code(404);
+        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'No such document'], 'message' => 'not found']);
+        exit;
+    }
+    echo json_encode(['data' => $doc]);
     exit;
 }
 
@@ -295,29 +408,56 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
         ]);
         exit;
     }
-    $payload = [
-        'document_id'   => 7000 + $n,
-        'document_uuid' => 'invdoc-' . $n,
-        'document_no'   => 'SI/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT),
-        'status'        => 'POSTED',
-        'lines' => array_map(static fn ($l) => [
-            'source_line_ref' => $l['source_line_ref'] ?? null,
-            'item_id'         => $l['item_id'] ?? null,
-            'qty'             => $l['qty'] ?? 0,
-            'valuation_rate'  => 80.0,
-        ], $body['lines'] ?? []),
-    ];
-
-    // Only an inward document counts as a receipt for by-source purposes; a
-    // return going out must not read back as more goods arriving. The GRN is an
-    // INWARD_CHALLAN now; PURCHASE_RECEIPT stays for older receipts.
-    if (in_array($body['document_type'] ?? '', ['INWARD_CHALLAN', 'PURCHASE_RECEIPT'], true)) {
-        $sourceKey = ($body['source_app'] ?? '') . '|' . ($body['source_document_type'] ?? '') . '|' . ($body['source_document_id'] ?? '');
-        $documents[$sourceKey][] = $payload;
-        file_put_contents($documentStore, json_encode($documents));
+    // The duplicate-posting guard on the source document, AFTER the key replay above —
+    // the real order: a new key under an existing source identity still gets the first
+    // document back.
+    $sourceKey = stubSourceKey($body);
+    if ($sourceKey !== null && isset($documents['by_source'][$sourceKey])) {
+        $existing = $documents['by_id'][(string) $documents['by_source'][$sourceKey]];
+        $existing['duplicate'] = true;
+        remember($store, $seen, $key, $existing);
+        echo json_encode(['data' => $existing, 'duplicate' => true]);
+        exit;
     }
 
-    echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
+    $type = strtoupper((string) $body['document_type']);
+    $direction = in_array($type, ['INWARD_CHALLAN', 'PURCHASE_RECEIPT', 'SALES_RETURN', 'OPENING_STOCK', 'WRITE_IN', 'MATERIAL_RECEIPT'], true) ? 'in' : 'out';
+    $id = 7000 + $n;
+    $payload = [
+        'document_id'          => $id,
+        'document_uuid'        => 'invdoc-' . $n,
+        'document_no'          => ($type === 'INWARD_CHALLAN' ? 'GRN/' : 'SI/') . str_pad((string) $n, 4, '0', STR_PAD_LEFT),
+        'document_type'        => $type,
+        'stock_effect'         => $body['stock_effect'] ?? null,
+        'status'               => 'POSTED',
+        'source_app'           => $body['source_app'] ?? null,
+        'source_document_type' => $body['source_document_type'] ?? null,
+        'source_document_id'   => isset($body['source_document_id']) ? (int) $body['source_document_id'] : null,
+        'source_document_uuid' => $body['source_document_uuid'] ?? null,
+        'source_document_no'   => $body['source_document_no'] ?? null,
+        'metadata'             => $body['metadata'] ?? null,
+        'lines' => array_map(static fn ($l) => [
+            'source_line_ref' => isset($l['source_line_ref']) ? (int) $l['source_line_ref'] : null,
+            'item_id'         => $l['item_id'] ?? null,
+            'qty'             => $l['qty'] ?? 0,
+            'direction'       => $direction,
+            'warehouse_id'    => $l['warehouse_id'] ?? null,
+            'batch_id'        => $l['batch_id'] ?? null,
+            'valuation_rate'  => isset($l['rate']) ? (float) $l['rate'] : 80.0,
+        ], $body['lines'] ?? []),
+        'duplicate' => false,
+    ];
+
+    $documents['by_id'][(string) $id] = $payload;
+    if ($sourceKey !== null) {
+        $documents['by_source'][$sourceKey] = $id;
+    }
+    file_put_contents($documentStore, json_encode($documents));
+
+    if (!empty($modes['inventory_wrong_source'])) {
+        $payload['source_document_id'] = (int) ($payload['source_document_id'] ?? 0) + 100000;
+    }
+    echo json_encode(['data' => remember($store, $seen, $key, $payload), 'duplicate' => false]);
     exit;
 }
 
@@ -414,14 +554,49 @@ if (str_contains($path, '/dashboard/purchase')) {
     exit;
 }
 /*
- * Books drafts, as Books' VoucherPostingService treats them: an invoice, bill or
- * note (18, 11, 2, 3) with no party.acc_id and no journal lines is refused 422 —
- * Books composes those from party.acc_id and the lines, and the flat party_acc_id
- * this app used to send was never read. Item lines are the stock half, which
- * Books sends to Inventory itself; the answer says so in `stock`.
+ * Books drafts, as Books' VoucherPostingService treats them.
+ *
+ * AUTHENTICATION FIRST, as Books' BaseController::auth() does: vouchers are written only on
+ * `Authorization: Bearer <ses_key>`. Books has no X-Service-Key path on these routes — the
+ * one place it reads a service key is its Inventory integration controller — so a caller
+ * that sends only a service key gets 401 here, as it would from Books. Purchases used to.
+ *
+ * An invoice, bill or note (18, 11, 2, 3) with no party.acc_id and no journal lines is
+ * refused 422; a stock effect Books does not know is refused 422 (the hardened Books,
+ * rather than the old silent fallback to receiving on the invoice). A posted voucher is
+ * kept so GET vouchers/{id} can answer with what Books composed: ledger lines, party, the
+ * named bill and the tax summary — what Purchases reads back to verify a post.
  */
+const BOOKS_STOCK_EFFECTS = [
+    '11' => ['on_invoice', 'from_challan', 'defer_inward', 'from_physical_challan'],
+    '3'  => ['on_invoice', 'from_challan', 'from_physical_challan'],
+    '18' => ['on_invoice', 'from_challan'],
+    '2'  => ['on_invoice', 'from_challan'],
+];
+$booksWrite = str_contains($path, '/vouchers/drafts') && $method === 'POST';
+if ($booksWrite && !preg_match('/^Bearer\s+\S+/', (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''))) {
+    http_response_code(401);
+    echo json_encode(['status' => 401, 'error' => 401, 'messages' => ['error' => 'Invalid or expired session'], 'message' => 'Invalid or expired session']);
+    exit;
+}
+if (str_contains($path, '/integration/capabilities') && $method === 'GET') {
+    $caps = is_file(sys_get_temp_dir() . '/stub-books-caps.json')
+        ? json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-books-caps.json'), true)
+        : ['stock_effects' => BOOKS_STOCK_EFFECTS, 'refuses_unknown_stock_effect' => true];
+    if ($caps === null) {
+        http_response_code(404);
+        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'no route'], 'message' => 'no route']);
+        exit;
+    }
+    echo json_encode(['data' => $caps]);
+    exit;
+}
+
 $draftStore = sys_get_temp_dir() . '/stub-drafts.json';
 $drafts = is_file($draftStore) ? (json_decode((string) file_get_contents($draftStore), true) ?: []) : [];
+$voucherStore = sys_get_temp_dir() . '/stub-vouchers.json';
+$vouchers = is_file($voucherStore) ? (json_decode((string) file_get_contents($voucherStore), true) ?: []) : [];
+
 if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
     $draft = $drafts[$dm[1]] ?? null;
     $type = (int) ($draft['vch_type_id'] ?? 0);
@@ -431,10 +606,65 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'This voucher has no party account and no journal lines, so it would post with no sale, tax or balance on it. Send the party as party.acc_id with the item lines (inventory_lines) or service lines; nothing was posted.']]);
         exit;
     }
+    $effect = (string) ($voucherPayload['stock_effect'] ?? 'on_invoice');
+    if (!empty($voucherPayload['inventory_lines']) && isset(BOOKS_STOCK_EFFECTS[(string) $type]) && !in_array($effect, BOOKS_STOCK_EFFECTS[(string) $type], true)) {
+        http_response_code(422);
+        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Unknown stock_effect "' . $effect . '" for this voucher type; nothing was posted.']]);
+        exit;
+    }
+    foreach ($voucherPayload['service_lines'] ?? [] as $svc) {
+        if ((int) ($svc['purchase_acc_id'] ?? $svc['sales_acc_id'] ?? $svc['line_acc_id'] ?? 0) <= 0) {
+            http_response_code(422);
+            echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'A service line needs the ledger it is booked to (purchase_acc_id).']]);
+            exit;
+        }
+    }
+
     $stockLines = array_filter($voucherPayload['inventory_lines'] ?? [], static fn ($l) => !empty($l['item_id']) && (float) ($l['qty'] ?? 0) > 0);
-    $stock = $stockLines === [] ? null : ['owner' => 'books', 'state' => 'COMPLETED', 'inventory_document_id' => 7500 + $n, 'inventory_document_uuid' => 'books-invdoc-' . $n];
-    $number = 'INV/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
-    $payload = ['vch_txn_id' => 4000 + $n, 'vch_uuid' => 'vch-' . $n, 'vch_number' => $number, 'vch_no' => $number, 'status' => 'posted', 'stock' => $stock];
+    $id = 4000 + $n;
+    $number = ($type === 3 ? 'DN/' : 'PUR/') . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+    $stock = $stockLines === [] ? null : [
+        'owner' => 'books', 'state' => 'COMPLETED', 'inventory_document_id' => 7500 + $n, 'inventory_document_uuid' => 'books-invdoc-' . $n,
+        'stock_effect' => $effect, 'moved_stock' => !in_array($effect, ['from_physical_challan', 'defer_inward'], true),
+    ];
+
+    // What Books composes: the supplier credited with the total, the goods and services
+    // debited. No tax in the stub (no rates bound), so the total is the taxable value.
+    $taxable = 0.0;
+    foreach (array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []) as $l) {
+        $taxable += (float) ($l['amount'] ?? 0);
+    }
+    $partyAcc = (int) ($voucherPayload['party']['acc_id'] ?? 0);
+    $partySide = in_array($type, [11, 2], true) ? 2 : 1;
+    $lines = [['acc_id' => $partyAcc, 'dr_cr' => $partySide, 'amount' => round($taxable, 4)]];
+    $lines[] = ['acc_id' => $type === 11 ? 9001 : 9002, 'dr_cr' => $partySide === 2 ? 1 : 2, 'amount' => round($taxable, 4)];
+    $bill = is_array($voucherPayload['bill'] ?? null) ? $voucherPayload['bill'] : [];
+    if (!empty($modes['books_mangle'])) {
+        $bill['bill_ref'] = '';
+        $lines = [['acc_id' => 9001, 'dr_cr' => 1, 'amount' => round($taxable, 4)], ['acc_id' => 9999, 'dr_cr' => 2, 'amount' => round($taxable, 4)]];
+    }
+    $vouchers[(string) $id] = [
+        'vch_txn_id'  => $id,
+        'vch_type_id' => $type,
+        'vch_number'  => $number,
+        'vch_date'    => $voucherPayload['vch_date'] ?? null,
+        'party'       => ['acc_id' => $partyAcc],
+        'bill'        => [
+            'bill_ref'  => trim((string) ($bill['bill_ref'] ?? '')) !== '' ? $bill['bill_ref'] : $number,
+            'bill_date' => $bill['bill_date'] ?? ($voucherPayload['vch_date'] ?? null),
+            'due_date'  => $bill['due_date'] ?? null,
+            'dr_cr'     => (int) ($bill['dr_cr'] ?? 1),
+        ],
+        'lines'       => $lines,
+        'inventory_lines' => array_values($stockLines),
+        'tax_summary' => ['taxable_value' => round($taxable, 4), 'cgst' => 0, 'sgst' => 0, 'igst' => 0, 'grand_total' => round($taxable, 4)],
+        'stock'       => $stock,
+        'challan_settlements' => $voucherPayload['challan_settlements'] ?? [],
+        'source_document_id'  => $voucherPayload['source_document_id'] ?? null,
+    ];
+    file_put_contents($voucherStore, json_encode($vouchers));
+
+    $payload = ['vch_txn_id' => $id, 'vch_uuid' => 'vch-' . $n, 'vch_number' => $number, 'vch_no' => $number, 'status' => 'posted', 'stock' => $stock];
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
     exit;
 }
@@ -443,6 +673,16 @@ if (str_contains($path, '/vouchers/drafts') && $method === 'POST') {
     $drafts[(string) (3000 + $n)] = ['vch_type_id' => (int) ($body['vch_type_id'] ?? 0), 'payload' => $body['payload'] ?? []];
     file_put_contents($draftStore, json_encode($drafts));
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
+    exit;
+}
+if (preg_match('#/vouchers/(\d+)$#', $path, $vm) === 1 && $method === 'GET') {
+    $voucher = $vouchers[$vm[1]] ?? null;
+    if ($voucher === null) {
+        http_response_code(404);
+        echo json_encode(['status' => 404, 'error' => 404, 'messages' => ['error' => 'Voucher not found'], 'message' => 'Voucher not found']);
+        exit;
+    }
+    echo json_encode(['data' => $voucher]);
     exit;
 }
 if (str_contains($path, '/dashboard/sales')) {

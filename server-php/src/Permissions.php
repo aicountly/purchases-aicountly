@@ -40,10 +40,12 @@ final class Permissions
             'po.approve' => 'Approve a purchase order',
             'po.amend'   => 'Amend an issued purchase order',
             'po.cancel'  => 'Cancel a purchase order',
+            'po.close'   => 'Short-close a purchase order that will not be delivered in full',
             'price.override' => 'Order above the agreed contract rate',
         ],
         'Receiving and billing' => [
             'receipt.request'  => 'Record goods received (creates the GRN in Inventory)',
+            'receipt.over_tolerance' => 'Accept goods beyond the ordered quantity and its tolerance',
             'bill.enter'       => 'Enter a supplier bill',
             'bill.post'        => 'Post the bill to Smart Books',
             'match.view'       => 'View three-way match results',

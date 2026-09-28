@@ -186,6 +186,15 @@ final class BooksClient extends ApiClient
         return $posted;
     }
 
+    /**
+     * What this Books can do for an integration — the stock effects it accepts per voucher
+     * type, and whether it refuses one it does not know. An older Books answers 404.
+     */
+    public function capabilities(Context $ctx): array
+    {
+        return $this->call('GET', 'integration/capabilities' . self::query($ctx->asQuery()));
+    }
+
     public function voucher(Context $ctx, int $voucherId): array
     {
         return $this->call('GET', 'vouchers/' . $voucherId . self::query($ctx->asQuery()));

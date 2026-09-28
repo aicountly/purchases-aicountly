@@ -521,7 +521,7 @@ check('refuses to receive more than was ordered', function () use ($ctx, $auth) 
         static fn () => (new ReceiptService($ctx, $auth))->request((int) $po['po_id'], [
             'lines' => [['line_id' => $lineId, 'qty' => 5000]],
         ]),
-        'Amend the purchase order',
+        'would exceed the order',
         'over-receipt',
     );
 });
@@ -589,7 +589,7 @@ check('billing more than was received is BLOCKED', function () use ($ctx, $auth)
     $bill = (new BillService($ctx, $auth))->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0913',
+        'supplier_invoice_no' => 'DST/2026/0913', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 150, 'rate' => 250]],
     ]);
 
@@ -605,7 +605,7 @@ check('billing above the agreed rate is BLOCKED', function () use ($ctx, $auth) 
     $bill = (new BillService($ctx, $auth))->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0914',
+        'supplier_invoice_no' => 'DST/2026/0914', 'supplier_invoice_date' => '2026-09-19',
         // 250 agreed, 275 billed — a 10% increase.
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 275]],
     ]);
@@ -621,7 +621,7 @@ check('billing BELOW the agreed rate is noted, not blocked', function () use ($c
     $bill = (new BillService($ctx, $auth))->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0915',
+        'supplier_invoice_no' => 'DST/2026/0915', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 230]],
     ]);
 
@@ -641,7 +641,7 @@ check('a rate tolerance lets a small increase through', function () use ($ctx, $
     $bill = (new BillService($ctx, $auth))->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0916',
+        'supplier_invoice_no' => 'DST/2026/0916', 'supplier_invoice_date' => '2026-09-19',
         // 250 → 255 is 2%, inside the 5% tolerance.
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 255]],
     ]);
@@ -660,7 +660,7 @@ check('billing against nothing received is BLOCKED', function () use ($ctx, $aut
     $bill = (new BillService($ctx, $auth))->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0917',
+        'supplier_invoice_no' => 'DST/2026/0917', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
     ]);
 
@@ -675,7 +675,7 @@ check('a line not on the purchase order is flagged', function () use ($ctx, $aut
     $bill = (new BillService($ctx, $auth))->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0918',
+        'supplier_invoice_no' => 'DST/2026/0918', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [
             ['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250],
             // A line naming no PO line at all — the classic padded invoice.
@@ -691,11 +691,11 @@ check('an unreachable Inventory means REVIEW_REQUIRED, never MATCHED', function 
     resetDatabase();
     $po = receivedOrder($ctx, $auth);
 
-    stubFail('by-source', 500);
+    stubFail('inventory-documents', 500);
     $bill = (new BillService($ctx, $auth))->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0919',
+        'supplier_invoice_no' => 'DST/2026/0919', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
     ]);
     stubRecover();
@@ -712,7 +712,7 @@ check('posting is refused while an exception is open, and allowed once resolved'
     $bill = $bills->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0920',
+        'supplier_invoice_no' => 'DST/2026/0920', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 275]],
     ]);
     $requestId = (int) $bill['request_id'];
@@ -745,7 +745,7 @@ check('a duplicate supplier invoice number is refused', function () use ($ctx, $
     $payload = [
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0921',
+        'supplier_invoice_no' => 'DST/2026/0921', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
     ];
     $bills->enter($payload);
@@ -757,23 +757,26 @@ check('a duplicate supplier invoice number is refused', function () use ($ctx, $
     );
 });
 
-check('the PO -> GRN -> bill journey receives the goods once, at the bill, settling the GRN challan', function () use ($ctx, $auth) {
+check('the PO -> GRN -> bill journey receives the goods once, at the GRN, and the bill settles it', function () use ($ctx, $auth) {
     resetDatabase();
     $po = receivedOrder($ctx, $auth);
 
     $grn = inventoryPosts();
     assertSame(1, count($grn), 'one document for the goods receipt');
-    assertSame('INWARD_CHALLAN', $grn[0]['document_type'], 'the GRN is goods in on challan, pending the bill');
-    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'which values nothing and does not put the goods on hand yet');
+    assertSame('INWARD_CHALLAN', $grn[0]['document_type'], 'the GRN is an inward challan');
+    assertSame('physical', $grn[0]['stock_effect'] ?? null, 'that puts the goods on hand now, at a provisional cost');
+    assertSame('purchases.receipt', $grn[0]['source_document_type'] ?? null, 'filed under the receipt, not the order');
+    assertSame((int) $po['receipts'][0]['request_id'], (int) $grn[0]['source_document_id'], 'the receipt is the source');
+    assertSame((int) $po['po_id'], (int) ($grn[0]['metadata']['purchase_order_id'] ?? 0), 'the order travels beside it as a reference');
     foreach ($grn[0]['lines'] as $line) {
-        assertTrue(!array_key_exists('landed_cost_amount', $line), 'no charge on a challan that values nothing: Inventory would refuse it');
+        assertTrue(!array_key_exists('landed_cost_amount', $line), 'no charge on the GRN: charges are capitalised from the bill');
     }
     $grnDocumentId = (int) $po['receipts'][0]['inventory_document_id'];
 
     $bills = new BillService($ctx, $auth);
     $bill = $bills->enter([
         'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/1001', 'supplier_invoice_date' => '2026-09-19',
+        'supplier_invoice_no' => 'DST/2026/1001', 'supplier_invoice_date' => '2026-09-19', 'due_date' => '2026-10-19',
         'lines' => [
             ['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250],
             ['po_line_id' => (int) $po['lines'][1]['line_id'], 'qty' => 40, 'rate' => 900],
@@ -786,13 +789,17 @@ check('the PO -> GRN -> bill journey receives the goods once, at the bill, settl
     $payload = lastDraftPayload(11);
     assertSame(601, (int) ($payload['party']['acc_id'] ?? 0), 'the supplier is party.acc_id, where Books reads it');
     assertSame('DST/2026/1001', $payload['bill']['bill_ref'] ?? null, 'the supplier invoice is the bill Books tracks the payable against');
-    assertSame('from_challan', $payload['stock_effect'] ?? null, 'the bill settles the GRN instead of receiving the goods again');
+    assertSame('2026-10-19', $payload['bill']['due_date'] ?? null, 'with its due date');
+    assertSame(2, (int) ($payload['bill']['dr_cr'] ?? 0), 'on the credit side: a payable, not a receivable');
+    assertSame('from_physical_challan', $payload['stock_effect'] ?? null, 'the bill settles the GRN without receiving the goods again');
     assertSame(2, count($payload['challan_settlements']), 'one settlement per billed line');
     foreach ($payload['challan_settlements'] as $settlement) {
-        assertSame($grnDocumentId, (int) $settlement['source_document_id'], 'against the GRN challan');
+        assertSame($grnDocumentId, (int) $settlement['source_document_id'], 'against the GRN');
+        assertTrue(!array_key_exists('po_line_id', $settlement), 'Books gets its own settlement shape, nothing extra');
     }
     assertSame(1, (int) $payload['inventory_lines'][0]['dr_cr'], 'a purchase line on the debit side');
     assertTrue(!array_key_exists('receipt_references', $payload) && !array_key_exists('party_acc_id', $payload), 'nothing Books would drop unread');
+    assertSame(true, $posted['posting_check']['verified'] ?? null, 'and what Books recorded was read back and checked');
 });
 
 check('a second bill on the same order settles only what the first did not', function () use ($ctx, $auth) {
@@ -813,30 +820,66 @@ check('a second bill on the same order settles only what the first did not', fun
     }
 
     $bills = new BillService($ctx, $auth);
-    $a = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'A-1', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
+    $a = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'A-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
     $bills->post((int) $a['request_id']);
     assertSame([[$first, 50.0]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty']], lastDraftPayload(11)['challan_settlements']), 'the first bill takes from the first GRN');
 
-    $b = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'A-2', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
+    $b = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'A-2', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
     $bills->post((int) $b['request_id']);
     assertSame([[$first, 10.0], [$second, 40.0]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty']], lastDraftPayload(11)['challan_settlements']), 'the second takes the rest of the first GRN, then the second');
 });
 
-check('a bill with nothing received behind it receives the goods itself', function () use ($ctx, $auth) {
+check('an order line billed before its goods arrive is refused, even with the exception accepted', function () use ($ctx, $auth) {
     resetDatabase();
     $orders = new PurchaseOrderService($ctx, $auth);
     $po = $orders->create(poInput());
     $orders->submit((int) $po['po_id']);
     $orders->issue((int) $po['po_id']);
     $bills = new BillService($ctx, $auth);
-    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'DIRECT-1', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 10, 'rate' => 250]]]);
-    // Nothing received is a match exception; the buyer accepts it knowingly (goods billed ahead).
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'AHEAD-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 10, 'rate' => 250]]]);
     $bills->resolveException((int) $bill['matches'][0]['exceptions'][0]['exception_id'], 'accept', ['note' => 'Supplier billed ahead of delivery.']);
-    $bills->post((int) $bill['request_id']);
 
+    // Receiving them on this bill would receive them AGAIN when their GRN is recorded.
+    assertThrows(static fn () => $bills->post((int) $bill['request_id']), 'Record the GRN for those goods first', 'billing goods that have not arrived');
+    assertSame(0, count(stubRequestsTo('/vouchers/drafts')), 'nothing was sent to Books');
+});
+
+check('a direct purchase with no order receives its goods with the bill', function () use ($ctx, $auth) {
+    resetDatabase();
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'DIRECT-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['item_id' => 201, 'qty' => 10, 'rate' => 250]]]);
+    assertSame('direct', $bill['bill_kind'], 'a direct bill');
+    assertSame(ThreeWayMatchService::REVIEW_REQUIRED, $bill['match']['verdict'], 'with no order it cannot be matched, so it is reviewed');
+    assertThrows(static fn () => $bills->post((int) $bill['request_id']), 'unresolved match exception', 'posting before review');
+
+    $bills->resolveException((int) $bill['matches'][0]['exceptions'][0]['exception_id'], 'accept', ['note' => 'Counter purchase, checked against the invoice.']);
+    $posted = $bills->post((int) $bill['request_id']);
+    assertSame('POSTED', $posted['status'], 'posted after review');
     $payload = lastDraftPayload(11);
-    assertSame('on_invoice', $payload['stock_effect'] ?? null, 'Books receives the goods with the bill');
-    assertSame([], $payload['challan_settlements'], 'nothing to settle');
+    assertSame('on_invoice', $payload['stock_effect'] ?? null, 'Books receives the goods with the bill: there is no GRN to settle');
+    assertTrue(!isset($payload['challan_settlements']), 'nothing to settle');
+});
+
+check('a service bill books to the chosen ledger and moves no stock', function () use ($ctx, $auth) {
+    resetDatabase();
+    $bills = new BillService($ctx, $auth);
+    assertThrows(
+        static fn () => $bills->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'SVC-0', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['description' => 'Annual maintenance', 'is_service' => true, 'qty' => 1, 'rate' => 18000]]]),
+        'Choose the ledger',
+        'a service line without its ledger',
+    );
+    $bill = $bills->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'SVC-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['description' => 'Annual maintenance', 'is_service' => true, 'purchase_acc_id' => 7301, 'tax_cat_id' => 4, 'qty' => 1, 'rate' => 18000]]]);
+    assertSame('service', $bill['bill_kind'], 'a service bill');
+    $bills->resolveException((int) $bill['matches'][0]['exceptions'][0]['exception_id'], 'accept', ['note' => 'AMC, reviewed against the contract.']);
+    $posted = $bills->post((int) $bill['request_id']);
+
+    assertSame('POSTED', $posted['status'], 'posted');
+    $payload = lastDraftPayload(11);
+    assertSame([], $payload['inventory_lines'], 'no goods');
+    assertTrue(!isset($payload['stock_effect']), 'and no stock effect at all');
+    assertSame(7301, (int) $payload['service_lines'][0]['purchase_acc_id'], 'booked to the ledger chosen');
+    assertSame(0, count(inventoryPosts()), 'nothing went to Inventory');
+    assertSame(true, $posted['posting_check']['verified'] ?? null, 'and Books recorded a payable to the supplier');
 });
 
 check('a purchase return leaves stock once: dispatched on challan, issued by the debit note', function () use ($ctx, $auth) {
@@ -878,10 +921,7 @@ check('every document Purchases sends to Inventory is a type Inventory has', fun
 
 check('a company that does not block bills on a failed match can post one with an exception open', function () use ($ctx, $auth) {
     resetDatabase();
-    $orders = new PurchaseOrderService($ctx, $auth);
-    $po = $orders->create(poInput());
-    $orders->submit((int) $po['po_id']);
-    $orders->issue((int) $po['po_id']);
+    $po = receivedOrder($ctx, $auth);
     Db::run(
         'INSERT INTO purchase_settings (cmp_id, block_bill_on_match_failure) VALUES (:cmp, FALSE)
          ON CONFLICT (cmp_id) DO UPDATE SET block_bill_on_match_failure = FALSE',
@@ -889,8 +929,9 @@ check('a company that does not block bills on a failed match can post one with a
     );
 
     $bills = new BillService($ctx, $auth);
-    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'OPEN-1', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 10, 'rate' => 250]]]);
-    assertTrue(count($bill['matches'][0]['exceptions']) > 0, 'nothing received: an exception is open');
+    // Billed above the agreed rate: a rate exception is open.
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'OPEN-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 10, 'rate' => 275]]]);
+    assertTrue(count($bill['matches'][0]['exceptions']) > 0, 'an exception is open');
 
     $posted = $bills->post((int) $bill['request_id']);
     assertSame('POSTED', $posted['status'], 'the setting is honoured: FALSE is not read as "not set"');
@@ -904,7 +945,7 @@ check('posting a bill twice is refused, so Books gets one voucher', function () 
     $bill = $bills->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0922',
+        'supplier_invoice_no' => 'DST/2026/0922', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
     ]);
     $requestId = (int) $bill['request_id'];
@@ -1030,7 +1071,7 @@ check('the three-way match stores its verdict, not the documents it compared', f
     (new BillService($ctx, $auth))->enter([
         'supplier_account_id' => 601,
         'po_id'               => (int) $po['po_id'],
-        'supplier_invoice_no' => 'DST/2026/0930',
+        'supplier_invoice_no' => 'DST/2026/0930', 'supplier_invoice_date' => '2026-09-19',
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
     ]);
 

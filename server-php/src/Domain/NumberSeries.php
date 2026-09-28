@@ -29,8 +29,22 @@ final class NumberSeries
             'po'          => ['purchase_orders', 'po_no', 'po_prefix', 'PO'],
             'return'      => ['purchase_returns', 'return_no', 'return_prefix', 'PRET'],
             'claim'       => ['purchase_claims', 'claim_no', 'claim_prefix', 'CLM'],
+            'receipt'     => ['purchase_receipt_requests', 'receipt_no', 'receipt_prefix', 'GRN'],
             default       => throw new \InvalidArgumentException('Unknown document kind ' . $kind),
         };
+
+        // One allocator at a time per company, series and year, for the rest of the
+        // caller's transaction. An advisory lock rather than FOR UPDATE on the highest
+        // existing number: that row lock missed the FIRST number of a year (no row to
+        // lock, so two callers both took 0001), and it locked a document row the caller
+        // had no other business with — a GRN being applied by another request holds its
+        // own row and then waits for its order, which the caller here already holds.
+        // That was a deadlock under concurrent receipts. The advisory lock is released
+        // at commit, so the next allocator reads the number this one inserted.
+        Db::run(
+            'SELECT pg_advisory_xact_lock(hashtextextended(:name, 0))',
+            ['name' => sprintf('purchases:number:%d:%s:%d', $ctx->cmpId, $kind, $ctx->fyId)],
+        );
 
         // The prefix and the profile's status, in one read: this is the point
         // every new requisition, RFQ, purchase order, return and claim passes
@@ -64,8 +78,7 @@ final class NumberSeries
              FROM ' . Db::quoteIdentifier($table) . '
              WHERE cmp_id = :cmp AND fy_id = :fy AND ' . Db::quoteIdentifier($column) . ' LIKE :stem
              ORDER BY length(' . Db::quoteIdentifier($column) . ') DESC, ' . Db::quoteIdentifier($column) . ' DESC
-             LIMIT 1
-             FOR UPDATE',
+             LIMIT 1',
             ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId, 'stem' => $stem . '%'],
         );
 

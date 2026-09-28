@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Controllers;
 
-use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Domain\PurchaseOrderService;
+use Aicountly\Api\Domain\ReceiptLedger;
 use Aicountly\Api\Domain\ReceiptService;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
@@ -92,18 +92,40 @@ final class PurchaseOrdersController extends Controller
         Http::data((new ReceiptService($ctx, $auth))->retry((int) $id));
     }
 
+    /** Ask Inventory whether it holds a receipt whose outcome is unknown, and settle ours from its answer. */
+    public static function reconcileReceipt(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ReceiptService($ctx, $auth))->reconcile((int) $id));
+    }
+
+    /** Withdraw a receipt Inventory never recorded. */
+    public static function cancelReceipt(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ReceiptService($ctx, $auth))->cancel((int) $id, Http::body()));
+    }
+
     public static function cancel(string $id): void
     {
         [$auth, $ctx] = self::enter();
         Http::data((new PurchaseOrderService($ctx, $auth))->cancel((int) $id, Http::body()));
     }
 
+    /** Stop waiting for what will not be delivered, with a reason. */
+    public static function shortClose(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new PurchaseOrderService($ctx, $auth))->shortClose((int) $id, Http::body()));
+    }
+
     /**
      * The order beside what Inventory actually received against it.
      *
-     * Composed at read time, every time. This endpoint is why this product needs
-     * no GRN table: the receipt detail is Inventory's answer, fetched now, shown
-     * next to our own progress figures rather than replacing them.
+     * Composed at read time, every time, from every GRN of the order (ReceiptLedger).
+     * This endpoint is why this product needs no GRN table: the receipt detail is
+     * Inventory's answer, fetched now, shown next to our own progress figures — and
+     * where the two disagree, the disagreement is shown rather than resolved.
      */
     public static function receiptStatus(string $id): void
     {
@@ -115,32 +137,43 @@ final class PurchaseOrdersController extends Controller
             Http::notFound('That purchase order does not exist.');
         }
 
-        $response = (new InventoryClient())
-            ->withSession($auth->sesKey())
-            ->documentBySource($ctx, 'purchases', 'purchases.order', (int) $id);
-
-        $documents = [];
-        $reachable = $response['ok'];
-        if ($reachable) {
-            $body = $response['body']['data'] ?? [];
-            $documents = isset($body['document_id']) ? [$body] : (array) $body;
+        $ledger = (new ReceiptLedger($ctx, $auth))->forOrder((int) $id);
+        $progress = [];
+        foreach ($po['progress']['lines'] as $line) {
+            $progress[$line['line_id']] = $line;
         }
 
         Http::data([
             'po_id'               => (int) $po['po_id'],
             'status'              => $po['status'],
-            'inventory_reachable' => $reachable,
+            'receipt_status'      => $po['progress']['receipt_status'],
+            'billing_status'      => $po['progress']['billing_status'],
+            'inventory_reachable' => $ledger['reachable'],
             // Straight from Inventory, unmodified and unstored.
-            'inventory_documents' => $documents,
+            'inventory_documents' => $ledger['documents'],
+            'discrepancies'       => $ledger['discrepancies'],
+            'receipts'            => array_map(static fn (array $r) => [
+                'request_id'    => (int) $r['request_id'],
+                'receipt_no'    => $r['receipt_no'],
+                'status'        => $r['status'],
+                'received_at'   => $r['received_at'],
+                'applied'       => $r['applied_at'] !== null,
+                'document_no'   => $r['inventory_document_no'],
+                'last_error'    => $r['last_error'],
+            ], $po['receipts']),
             'lines'               => array_map(static fn (array $line) => [
-                'line_id'         => (int) $line['line_id'],
-                'line_no'         => (int) $line['line_no'],
-                'item_id'         => $line['item_id'] === null ? null : (int) $line['item_id'],
-                'ordered_qty'     => (float) $line['ordered_qty'],
-                'received_qty'    => (float) $line['received_qty'],
-                'rejected_qty'    => (float) $line['rejected_qty'],
-                'billed_qty'      => (float) $line['billed_qty'],
-                'outstanding_qty' => round((float) $line['ordered_qty'] - (float) $line['received_qty'], 4),
+                'line_id'            => (int) $line['line_id'],
+                'line_no'            => (int) $line['line_no'],
+                'item_id'            => $line['item_id'] === null ? null : (int) $line['item_id'],
+                'ordered_qty'        => (float) $line['ordered_qty'],
+                'short_closed_qty'   => (float) $line['short_closed_qty'],
+                'received_qty'       => (float) $line['received_qty'],
+                'inventory_received' => $ledger['reachable'] ? ($ledger['received_by_line'][(int) $line['line_id']] ?? 0.0) : null,
+                'rejected_qty'       => (float) $line['rejected_qty'],
+                'returned_qty'       => (float) $line['returned_qty'],
+                'billed_qty'         => (float) $line['billed_qty'],
+                'outstanding_qty'    => $progress[(int) $line['line_id']]['to_receive_qty'] ?? 0.0,
+                'to_bill_qty'        => $progress[(int) $line['line_id']]['to_bill_qty'] ?? 0.0,
             ], $po['lines']),
         ]);
     }

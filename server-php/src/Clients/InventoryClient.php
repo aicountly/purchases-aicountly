@@ -263,6 +263,15 @@ final class InventoryClient extends ApiClient
         return $this->call('GET', 'v1/pending-quantities' . self::query($filters + $ctx->asQuery()));
     }
 
+    /**
+     * What this Inventory can do for an integration — the stock effects it accepts per
+     * document type, and whether it validates them. An older Inventory answers 404.
+     */
+    public function capabilities(Context $ctx): array
+    {
+        return $this->call('GET', 'v1/capabilities' . self::query($ctx->asQuery()));
+    }
+
     public function settings(Context $ctx): array
     {
         return $this->call('GET', 'v1/settings' . self::query($ctx->asQuery()));

@@ -91,6 +91,33 @@ final class BillsController extends Controller
         Http::data((new BillService($ctx, $auth))->post((int) $id, Http::body()));
     }
 
+    /** Correct a bill Smart Books refused, as a new revision with a new key. */
+    public static function revise(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new BillService($ctx, $auth))->revise((int) $id, Http::body()));
+    }
+
+    /** Withdraw a bill that has not reached Smart Books. */
+    public static function cancel(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new BillService($ctx, $auth))->cancel((int) $id, Http::body()));
+    }
+
+    /** Read the posted voucher back from Smart Books and check it against the bill. */
+    public static function verify(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        \Aicountly\Api\Permissions::assert($ctx, $auth, 'bill.enter');
+        $service = new BillService($ctx, $auth);
+        if ($service->find((int) $id) === []) {
+            Http::notFound('That bill does not exist.');
+        }
+        $service->verifyWithBooks((int) $id);
+        Http::data($service->find((int) $id));
+    }
+
     public static function acceptException(string $id): void
     {
         [$auth, $ctx] = self::enter();

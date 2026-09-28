@@ -301,56 +301,20 @@ final class ThreeWayMatchService
     /**
      * What Inventory says has been received against this purchase order, per PO line.
      *
-     * LIVE, every time. Inventory is asked for the documents whose source is this
-     * purchase order, and the quantities come from its answer.
+     * LIVE, every time, and ALL of it: every GRN of the order, each read from Inventory
+     * by its own document, reversed ones excluded (ReceiptLedger). An order received in
+     * three deliveries is matched against three GRNs, not against whichever one a lookup
+     * by the order's identity happened to find.
      *
      * @return array{0: array<int, float>, 1: bool} received-by-line, and whether Inventory answered
      */
     private function receivedQuantities(int $poId): array
     {
-        $po = Db::first('SELECT po_uuid FROM purchase_orders WHERE po_id = :id AND cmp_id = :cmp', ['id' => $poId, 'cmp' => $this->ctx->cmpId]);
-        if ($po === null) {
-            return [[], true];
-        }
+        $ledger = (new ReceiptLedger($this->ctx, $this->auth))->forOrder($poId);
 
-        $client = (new InventoryClient());
-        $client = $this->auth->isService()
-            ? $client->withService($this->auth->uuid)
-            : $client->withSession($this->auth->sesKey());
-
-        $response = $client->documentBySource($this->ctx, 'purchases', 'purchases.order', $poId);
-
-        if (!$response['ok']) {
-            // Unreachable is not "nothing was received". Report it and let the
-            // verdict be REVIEW_REQUIRED, never MATCHED.
-            return [[], false];
-        }
-
-        $received = [];
-        $documents = $response['body']['data'] ?? [];
-        // by-source may answer with one document or a list, depending on how
-        // many receipts a purchase order has had. Both shapes are handled.
-        if (isset($documents['document_id'])) {
-            $documents = [$documents];
-        }
-
-        foreach ((array) $documents as $document) {
-            if (!is_array($document)) {
-                continue;
-            }
-            if (in_array((string) ($document['status'] ?? ''), ['CANCELLED', 'REVERSED', 'DRAFT'], true)) {
-                continue;
-            }
-            foreach ((array) ($document['lines'] ?? []) as $line) {
-                $ref = (int) ($line['source_line_ref'] ?? 0);
-                if ($ref <= 0) {
-                    continue;
-                }
-                $received[$ref] = ($received[$ref] ?? 0.0) + (float) ($line['qty'] ?? 0);
-            }
-        }
-
-        return [$received, true];
+        // Unreachable is not "nothing was received": the verdict becomes
+        // REVIEW_REQUIRED, never MATCHED.
+        return [$ledger['received_by_line'], $ledger['reachable']];
     }
 
     /** @return array<string, mixed> */

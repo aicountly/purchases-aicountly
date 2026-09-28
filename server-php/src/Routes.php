@@ -100,7 +100,10 @@ final class Routes
         $router->post('v1/purchase-orders/{id}/acknowledge', [PurchaseOrdersController::class, 'acknowledge']);
         $router->post('v1/purchase-orders/{id}/receive', [PurchaseOrdersController::class, 'receive']);
         $router->post('v1/purchase-orders/{id}/cancel', [PurchaseOrdersController::class, 'cancel']);
+        $router->post('v1/purchase-orders/{id}/short-close', [PurchaseOrdersController::class, 'shortClose']);
         $router->post('v1/receipt-requests/{id}/retry', [PurchaseOrdersController::class, 'retryReceipt']);
+        $router->post('v1/receipt-requests/{id}/reconcile', [PurchaseOrdersController::class, 'reconcileReceipt']);
+        $router->post('v1/receipt-requests/{id}/cancel', [PurchaseOrdersController::class, 'cancelReceipt']);
 
         // Vendor bills and the three-way match.
         $router->get('v1/bills', [BillsController::class, 'index']);
@@ -109,6 +112,9 @@ final class Routes
         $router->get('v1/bills/{id}', [BillsController::class, 'show']);
         $router->post('v1/bills/{id}/rematch', [BillsController::class, 'rematch']);
         $router->post('v1/bills/{id}/post', [BillsController::class, 'post']);
+        $router->post('v1/bills/{id}/revise', [BillsController::class, 'revise']);
+        $router->post('v1/bills/{id}/cancel', [BillsController::class, 'cancel']);
+        $router->post('v1/bills/{id}/verify', [BillsController::class, 'verify']);
         $router->post('v1/match-exceptions/{id}/accept', [BillsController::class, 'acceptException']);
         $router->post('v1/match-exceptions/{id}/reject', [BillsController::class, 'rejectException']);
 

@@ -35,7 +35,9 @@ ENVEOF
 
 php "$ROOT/bin/migrate.php" > /dev/null
 
-php -S "127.0.0.1:$STUB_PORT" "$ROOT/tests/stub/router.php" > /dev/null 2>&1 &
+# Several workers, so the concurrency tests reach it at the same time; the stub
+# serialises its own state with a file lock, as the real services do per key.
+PHP_CLI_SERVER_WORKERS=6 php -S "127.0.0.1:$STUB_PORT" "$ROOT/tests/stub/router.php" > /dev/null 2>&1 &
 STUB_PID=$!
 trap 'kill $STUB_PID 2>/dev/null || true' EXIT
 
@@ -49,4 +51,5 @@ done
 status=0
 php "$ROOT/tests/integration.php" || status=$?
 php "$ROOT/tests/ai_gateway.php" || status=$?
+php "$ROOT/tests/remediation.php" || status=$?
 exit $status
