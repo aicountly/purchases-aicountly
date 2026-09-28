@@ -115,16 +115,8 @@ final class PurchaseOrdersController extends Controller
             Http::notFound('That purchase order does not exist.');
         }
 
-        $response = (new InventoryClient())
-            ->withSession($auth->sesKey())
-            ->documentBySource($ctx, 'purchases', 'purchases.order', (int) $id);
-
-        $documents = [];
-        $reachable = $response['ok'];
-        if ($reachable) {
-            $body = $response['body']['data'] ?? [];
-            $documents = isset($body['document_id']) ? [$body] : (array) $body;
-        }
+        // Each GRN is its own source in Inventory; see ReceiptService::inventoryDocumentsFor.
+        [$documents, $reachable] = \Aicountly\Api\Domain\ReceiptService::inventoryDocumentsFor($ctx, $auth, (int) $id);
 
         Http::data([
             'po_id'               => (int) $po['po_id'],

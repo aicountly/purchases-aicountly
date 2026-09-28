@@ -226,11 +226,25 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
         ]);
         exit;
     }
+    // Inventory's duplicate guard (DocumentsController::createDocument): ONE live
+    // document per (source_app, source_document_type, source_document_id). A second
+    // post naming the same source gets the FIRST document back, marked duplicate —
+    // which is how two GRNs sent under their purchase order became one.
+    $sourceKey = ($body['source_app'] ?? '') . '|' . ($body['source_document_type'] ?? '') . '|' . ($body['source_document_id'] ?? '');
+    if (!empty($body['source_document_type']) && !empty($body['source_document_id']) && isset($documents[$sourceKey])) {
+        echo json_encode(['data' => remember($store, $seen, $key, $documents[$sourceKey] + ['duplicate' => true]), 'duplicate' => true]);
+        exit;
+    }
+
     $payload = [
         'document_id'   => 7000 + $n,
         'document_uuid' => 'invdoc-' . $n,
         'document_no'   => 'SI/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT),
+        'document_type' => strtoupper((string) $body['document_type']),
         'status'        => 'POSTED',
+        'source_app'           => $body['source_app'] ?? null,
+        'source_document_type' => $body['source_document_type'] ?? null,
+        'source_document_id'   => $body['source_document_id'] ?? null,
         'lines' => array_map(static fn ($l) => [
             'source_line_ref' => $l['source_line_ref'] ?? null,
             'item_id'         => $l['item_id'] ?? null,
@@ -239,12 +253,8 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
         ], $body['lines'] ?? []),
     ];
 
-    // Only an inward document counts as a receipt for by-source purposes; a
-    // return going out must not read back as more goods arriving. The GRN is an
-    // INWARD_CHALLAN now; PURCHASE_RECEIPT stays for older receipts.
-    if (in_array($body['document_type'] ?? '', ['INWARD_CHALLAN', 'PURCHASE_RECEIPT'], true)) {
-        $sourceKey = ($body['source_app'] ?? '') . '|' . ($body['source_document_type'] ?? '') . '|' . ($body['source_document_id'] ?? '');
-        $documents[$sourceKey][] = $payload;
+    if (!empty($body['source_document_type']) && !empty($body['source_document_id'])) {
+        $documents[$sourceKey] = $payload;
         file_put_contents($documentStore, json_encode($documents));
     }
 
