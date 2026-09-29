@@ -141,6 +141,22 @@ export function ApprovalControlsCard({
           <small>Prevent posting bills with unresolved 3-way match exceptions</small>
         </span>
       </label>
+
+      <label className="pp-check">
+        <input
+          type="checkbox"
+          disabled={!editable}
+          checked={form.approvals.receiveStockAtGrn}
+          onChange={(event) => set({ receiveStockAtGrn: event.target.checked })}
+        />
+        <span>
+          <strong>Put received goods into stock at the goods receipt</strong>
+          <small>
+            Goods are on hand when they arrive, held in Goods Received Not Invoiced until the supplier&apos;s bill;
+            the bill settles the receipt at the billed cost. Off: goods go on hand when the bill is posted.
+          </small>
+        </span>
+      </label>
     </PpCard>
   )
 }

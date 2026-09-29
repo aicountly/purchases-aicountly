@@ -31,6 +31,8 @@ export interface ProfileApprovals {
   sodPolicy: 'strict' | 'owner_with_reason'
   /** Percentage of an order line that may arrive beyond it without special authority. */
   overReceiptTolerance: string
+  /** Received goods go into stock at the goods receipt, not at the bill. */
+  receiveStockAtGrn: boolean
 }
 
 export interface ProfileForm {
@@ -74,6 +76,7 @@ export const DEFAULT_PROFILE: ProfileForm = {
     blockBillOnMatchException: true,
     sodPolicy: 'owner_with_reason',
     overReceiptTolerance: '0',
+    receiveStockAtGrn: false,
   },
   active: true,
 }
@@ -135,6 +138,7 @@ export function fromSettings(row: Partial<PurchaseSettings> | null | undefined):
         : Boolean(row.block_bill_on_match_failure),
       sodPolicy: row.sod_policy === 'strict' ? 'strict' : 'owner_with_reason',
       overReceiptTolerance: amountForDisplay(row.over_receipt_tolerance_pc),
+      receiveStockAtGrn: Boolean(row.receive_stock_at_grn),
     },
     active: row.is_active === undefined ? true : Boolean(row.is_active),
   }
@@ -172,6 +176,7 @@ export function toPayload(form: ProfileForm): ProfileSavePayload {
     block_bill_on_match_failure: form.approvals.blockBillOnMatchException,
     sod_policy: form.approvals.sodPolicy,
     over_receipt_tolerance_pc: amountForPayload(form.approvals.overReceiptTolerance),
+    receive_stock_at_grn: form.approvals.receiveStockAtGrn,
   }
 }
 
@@ -198,7 +203,8 @@ export function sameProfile(a: ProfileForm, b: ProfileForm): boolean {
     a.approvals.approvedSuppliersOnly === b.approvals.approvedSuppliersOnly &&
     a.approvals.blockBillOnMatchException === b.approvals.blockBillOnMatchException &&
     a.approvals.sodPolicy === b.approvals.sodPolicy &&
-    sameAmount(a.approvals.overReceiptTolerance, b.approvals.overReceiptTolerance)
+    sameAmount(a.approvals.overReceiptTolerance, b.approvals.overReceiptTolerance) &&
+    a.approvals.receiveStockAtGrn === b.approvals.receiveStockAtGrn
   )
 }
 

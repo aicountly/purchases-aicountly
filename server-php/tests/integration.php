@@ -771,14 +771,14 @@ check('a duplicate supplier invoice number is refused', function () use ($ctx, $
     );
 });
 
-check('the PO -> GRN -> bill journey receives the goods once, at the GRN, and the bill settles it', function () use ($ctx, $auth) {
+check('the PO -> GRN -> bill journey receives the goods once, and the bill settles the GRN', function () use ($ctx, $auth) {
     resetDatabase();
     $po = receivedOrder($ctx, $auth);
 
     $grn = inventoryPosts();
     assertSame(1, count($grn), 'one document for the goods receipt');
     assertSame('INWARD_CHALLAN', $grn[0]['document_type'], 'the GRN is an inward challan');
-    assertSame('physical', $grn[0]['stock_effect'] ?? null, 'that puts the goods on hand now, at a provisional cost');
+    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'by default the receipt notes the goods and the bill receives them (receive_stock_at_grn is off)');
     assertSame('purchases.receipt', $grn[0]['source_document_type'] ?? null, 'filed under the receipt, not the order');
     assertSame((int) $po['receipts'][0]['request_id'], (int) $grn[0]['source_document_id'], 'the receipt is the source');
     assertSame((int) $po['po_id'], (int) ($grn[0]['metadata']['purchase_order_id'] ?? 0), 'the order travels beside it as a reference');
@@ -805,7 +805,7 @@ check('the PO -> GRN -> bill journey receives the goods once, at the GRN, and th
     assertSame('DST/2026/1001', $payload['bill']['bill_ref'] ?? null, 'the supplier invoice is the bill Books tracks the payable against');
     assertSame('2026-10-19', $payload['bill']['due_date'] ?? null, 'with its due date');
     assertSame(2, (int) ($payload['bill']['dr_cr'] ?? 0), 'on the credit side: a payable, not a receivable');
-    assertSame('from_physical_challan', $payload['stock_effect'] ?? null, 'the bill settles the GRN without receiving the goods again');
+    assertSame('from_challan', $payload['stock_effect'] ?? null, 'the bill settles the GRN; Inventory receives the goods once, from it');
     assertSame(2, count($payload['challan_settlements']), 'one settlement per billed line');
     foreach ($payload['challan_settlements'] as $settlement) {
         assertSame($grnDocumentId, (int) $settlement['source_document_id'], 'against the GRN');
@@ -841,6 +841,68 @@ check('a second bill on the same order settles only what the first did not', fun
     $b = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'A-2', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
     $bills->post((int) $b['request_id']);
     assertSame([[$first, 10.0], [$second, 40.0]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty']], lastDraftPayload(11)['challan_settlements']), 'the second takes the rest of the first GRN, then the second');
+});
+
+/** Turn the company's "put received goods into stock at the goods receipt" setting on or off. */
+function receiveStockAtGrn(Context $ctx, bool $on): void
+{
+    if (Db::first('SELECT cmp_id FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]) === null) {
+        Db::insert('purchase_settings', ['cmp_id' => $ctx->cmpId], 'cmp_id');
+    }
+    Db::update('purchase_settings', ['receive_stock_at_grn' => $on], ['cmp_id' => $ctx->cmpId]);
+}
+
+check('with receive_stock_at_grn on, the goods receipt puts the goods into stock and its bill settles it', function () use ($ctx, $auth) {
+    resetDatabase();
+    receiveStockAtGrn($ctx, true);
+    $po = receivedOrder($ctx, $auth);
+
+    $grn = inventoryPosts();
+    assertSame(1, count($grn), 'one document for the goods receipt');
+    assertSame('physical', $grn[0]['stock_effect'] ?? null, 'the goods go on hand at the receipt, at the order rate');
+    $reference = Db::jsonColumn(Db::first("SELECT external_reference FROM purchase_integration_commands WHERE entity_type = 'receipt_request' ORDER BY command_id DESC LIMIT 1")['external_reference'] ?? null);
+    assertSame('physical', $reference['stock_effect'] ?? null, 'what the receipt did is recorded with it');
+
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'PHY/1', 'supplier_invoice_date' => '2026-09-20',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    $bills->post((int) $bill['request_id']);
+
+    $payload = lastDraftPayload(11);
+    assertSame('from_challan', $payload['stock_effect'] ?? null, 'the same bill as ever: Inventory sees the receipt moved the goods and does not move them again');
+    assertSame((int) $po['receipts'][0]['inventory_document_id'], (int) $payload['challan_settlements'][0]['source_document_id'], 'settling the goods receipt');
+    assertSame(1, count(inventoryPosts()), 'Purchases posted no stock of its own for the bill');
+    receiveStockAtGrn($ctx, false);
+});
+
+check('one bill cannot settle a receipt that put goods into stock with one that only noted them', function () use ($ctx, $auth) {
+    resetDatabase();
+    $orders = new PurchaseOrderService($ctx, $auth);
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $receipts = new ReceiptService($ctx, $auth);
+    $receipts->request((int) $po['po_id'], ['lines' => [['line_id' => $lineId, 'qty' => 60]]]);
+    receiveStockAtGrn($ctx, true);
+    $receipts->request((int) $po['po_id'], ['lines' => [['line_id' => $lineId, 'qty' => 40]]]);
+    receiveStockAtGrn($ctx, false);
+
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'MIX/1', 'supplier_invoice_date' => '2026-09-20', 'lines' => [['po_line_id' => $lineId, 'qty' => 100, 'rate' => 250]]]);
+    try {
+        $bills->post((int) $bill['request_id']);
+        throw new \RuntimeException('a bill across both kinds of receipt was posted');
+    } catch (ResponseSent $sent) {
+        assertSame(409, $sent->status, 'refused before Books or Inventory is asked');
+        assertTrue(str_contains((string) ($sent->payload['message'] ?? ''), 'bill the two receipts separately'), 'and says what to do');
+    }
+
+    // Billed separately, each goes through.
+    $first = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'MIX/2', 'supplier_invoice_date' => '2026-09-20', 'lines' => [['po_line_id' => $lineId, 'qty' => 60, 'rate' => 250]]]);
+    assertSame('POSTED', $bills->post((int) $first['request_id'])['status'], 'the receipt that only noted its goods, billed on its own');
 });
 
 check('an order line billed before its goods arrive is refused, even with the exception accepted', function () use ($ctx, $auth) {

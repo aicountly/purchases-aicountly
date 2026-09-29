@@ -691,6 +691,16 @@ if (str_contains($path, '/integration/capabilities') && $method === 'GET') {
 
 $draftStore = sys_get_temp_dir() . '/stub-drafts.json';
 $drafts = is_file($draftStore) ? (json_decode((string) file_get_contents($draftStore), true) ?: []) : [];
+// Real Books' API accepts only a person's session (Authorization: Bearer) on its
+// voucher routes — BaseController::auth(). A service key is refused, so a bill or a
+// debit note must be posted AS the user.
+if (str_contains($path, '/vouchers/drafts') && $method === 'POST'
+    && !preg_match('/^Bearer\s+\S+/i', (string) ($headers['authorization'] ?? ''))) {
+    http_response_code(401);
+    echo json_encode(['status' => 401, 'error' => 401, 'messages' => ['error' => 'Books voucher routes need a signed-in session.']]);
+    exit;
+}
+
 $voucherStore = sys_get_temp_dir() . '/stub-vouchers.json';
 $vouchers = is_file($voucherStore) ? (json_decode((string) file_get_contents($voucherStore), true) ?: []) : [];
 

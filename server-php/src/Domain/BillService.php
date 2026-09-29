@@ -7,7 +7,6 @@ namespace Aicountly\Api\Domain;
 use Aicountly\Api\Audit;
 use Aicountly\Api\Auth;
 use Aicountly\Api\Clients\BooksClient;
-use Aicountly\Api\Clients\ProducerCapabilities;
 use Aicountly\Api\Context;
 use Aicountly\Api\Db;
 use Aicountly\Api\Http;
@@ -255,17 +254,6 @@ final class BillService
         $bill = $prepared['bill'];
         $command = $prepared['command'];
         $body = is_array($command['request_payload'] ?? null) ? $command['request_payload'] : [];
-        $effect = (string) ($body['stock_effect'] ?? '');
-
-        if (in_array($effect, ['from_physical_challan'], true)) {
-            // Never sent to a Books or an Inventory that would receive the goods again.
-            $missing = ProducerCapabilities::missing($this->ctx, $this->auth, ['11:' . $effect]);
-            if ($missing !== []) {
-                $this->markBill($requestId, 'FAILED', implode(' ', $missing));
-                ProducerCapabilities::requireStockEffects($this->ctx, $this->auth, ['11:' . $effect]);
-            }
-        }
-
         $scope = Context::of((int) $command['cmp_id'], (int) $command['fy_id'], (int) $command['bo_id']);
         $books = (new BooksClient())->withSession($this->auth->sesKey());
         $attempt = IntegrationCommand::attempt(
@@ -1175,10 +1163,10 @@ final class BillService
      *  - Goods on a purchase order: they came in at the GRN. The bill SETTLES those GRNs —
      *    first in, first out per order line, after what every other live bill of the order
      *    has already claimed (stored on those bills, so one still on its way to Books
-     *    counts) — and never receives the goods again. A physical GRN is settled with
-     *    `from_physical_challan`: no stock moves, and the provisional cost is trued up to
-     *    the billed cost. A challan-only GRN (goods on the pending register) is settled
-     *    with `from_challan`, which receives them now.
+     *    counts) — and never receives the goods again. Both kinds of GRN are settled with
+     *    `from_challan`; Inventory decides from what the settled receipts did whether the
+     *    goods still move: a physical GRN's bill moves nothing, clears the GRNI accrual and
+     *    trues the cost up to the billed rate; a challan-only GRN's bill receives them now.
      *
      * Refused rather than guessed: goods billed beyond what has arrived and is not yet
      * billed (one Books voucher has one stock effect, and receiving the rest on this bill
@@ -1296,11 +1284,11 @@ final class BillService
         }
 
         if (count($kinds) > 1) {
-            Http::conflict('This bill settles goods received two different ways (on hand, and on the pending register). Bill them separately.');
+            Http::conflict('This bill settles goods received two different ways (on hand, and on the pending register): bill the two receipts separately.');
         }
 
         return [
-            'stock_effect'        => isset($kinds['challan_only']) ? 'from_challan' : 'from_physical_challan',
+            'stock_effect'        => 'from_challan',
             'challan_settlements' => $settlements,
         ];
     }

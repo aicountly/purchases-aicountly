@@ -560,6 +560,8 @@ final class PurchaseOrderService
             ['id' => $poId, 'cmp' => $this->ctx->cmpId],
         );
         $progress = PoProgress::figures($poId, $this->ctx->cmpId);
+        // What a new receipt on this order will do to stock — the company's choice today.
+        $row['grn_stock_effect'] = ReceiptService::stockEffectFor($this->ctx->cmpId);
         $row['progress'] = [
             'receipt_status' => $progress['receipt_status'],
             'billing_status' => $progress['billing_status'],

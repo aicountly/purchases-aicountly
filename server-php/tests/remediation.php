@@ -20,7 +20,6 @@ require __DIR__ . '/../src/Autoload.php';
 
 Env::load(__DIR__ . '/../.env');
 
-use Aicountly\Api\Clients\ProducerCapabilities;
 use Aicountly\Api\Domain\BillService;
 use Aicountly\Api\Domain\PoProgress;
 use Aicountly\Api\Domain\PurchaseOrderService;
@@ -34,7 +33,6 @@ function check(string $name, callable $fn): void
 {
     global $passed, $failed;
     Context::forgetVerified();
-    ProducerCapabilities::forget();
     try {
         $fn();
         echo "  ok    {$name}\n";
@@ -600,21 +598,34 @@ check('what Books recorded is checked, and a voucher that is not this bill is fl
     truthy(str_contains($problems, 'bill reference'), 'and the missing supplier invoice reference');
 });
 
-check('a bill that would settle a physical GRN waits for a Books and an Inventory that can settle one', function () use ($ctx, $owner) {
+check('each company chooses whether goods go into stock at the goods receipt; the bill settles either kind with from_challan', function () use ($ctx, $owner) {
     reset();
     $po = orderOf($ctx, $owner);
-    receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 100);
-    file_put_contents(sys_get_temp_dir() . '/stub-books-caps.json', 'null');
+    $line = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $line, 40);
+    $grns = array_values(array_filter(stubRequests('/v1/inventory-documents/post'), static fn ($r) => ($r['body']['document_type'] ?? '') === 'INWARD_CHALLAN'));
+    same('challan_only', end($grns)['body']['stock_effect'] ?? null, 'off by default: the receipt notes the goods, the bill receives them');
+
+    Db::run('INSERT INTO purchase_settings (cmp_id, receive_stock_at_grn) VALUES (88, TRUE) ON CONFLICT (cmp_id) DO UPDATE SET receive_stock_at_grn = TRUE');
+    receive($ctx, $owner, (int) $po['po_id'], $line, 30);
+    $grns = array_values(array_filter(stubRequests('/v1/inventory-documents/post'), static fn ($r) => ($r['body']['document_type'] ?? '') === 'INWARD_CHALLAN'));
+    same('physical', end($grns)['body']['stock_effect'] ?? null, 'on: the goods go into stock at the receipt');
+    same(['challan_only', 'physical'], array_column(Db::all('SELECT stock_effect FROM purchase_receipt_requests ORDER BY request_id'), 'stock_effect'), 'each receipt keeps what it did');
+
     $bills = new BillService($ctx, $owner);
-    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'CAP-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]]]);
+    $mixed = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'MIX-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $line, 'qty' => 70, 'rate' => 250]]]);
+    $refusal = refused(fn () => $bills->post((int) $mixed['request_id']), '', 'a bill over both kinds');
+    same(409, $refusal['status'], 'is refused');
+    same(0, count(stubRequests('/vouchers/drafts')), 'before Books is asked');
+    $bills->cancel((int) $mixed['request_id'], ['reason' => 'Split by receipt.']);
 
-    $refusal = refused(fn () => $bills->post((int) $bill['request_id']), 'producer_capability_missing', 'an older Books');
-    same(409, $refusal['status'], 'refused');
-    same(0, count(stubRequests('/vouchers/drafts')), 'nothing was sent — an older Books would have received the goods again');
-    @unlink(sys_get_temp_dir() . '/stub-books-caps.json');
-    ProducerCapabilities::forget();
-
-    same('POSTED', $bills->post((int) $bill['request_id'])['status'], 'posted once Books can settle a physical GRN');
+    $first = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'MIX-2', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $line, 'qty' => 40, 'rate' => 250]]]);
+    same('POSTED', $bills->post((int) $first['request_id'])['status'], 'the challan-only receipt is billed on its own');
+    $second = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'MIX-3', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $line, 'qty' => 30, 'rate' => 250]]]);
+    same('POSTED', $bills->post((int) $second['request_id'])['status'], 'and the physical one on its own');
+    $sent = array_values(array_filter(stubRequests('/vouchers/drafts'), static fn ($r) => $r['method'] === 'POST' && (int) ($r['body']['vch_type_id'] ?? 0) === 11));
+    same(2, count($sent), 'two purchase vouchers');
+    same(['from_challan', 'from_challan'], array_map(static fn ($r) => $r['body']['payload']['stock_effect'] ?? null, $sent), 'Books is sent from_challan either way; Inventory decides from the receipts whether goods still move');
 });
 
 check('a bill Books refused is revised as a new operation with a new key', function () use ($ctx, $owner) {

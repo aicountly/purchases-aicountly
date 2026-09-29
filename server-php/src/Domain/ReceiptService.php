@@ -9,7 +9,6 @@ use Aicountly\Api\Auth;
 use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Context;
 use Aicountly\Api\Db;
-use Aicountly\Api\Env;
 use Aicountly\Api\Http;
 use Aicountly\Api\IntegrationCommand;
 use Aicountly\Api\Permissions;
@@ -70,16 +69,28 @@ final class ReceiptService
     }
 
     /**
-     * How a GRN moves stock. `physical` is the agreed model: goods on hand at the GRN at
-     * a provisional cost, settled by the bill. `challan_only` puts them on the pending-in
-     * register until the bill receives them — kept for a deployment whose Inventory and
-     * Books do not yet settle a physical challan from a bill.
+     * How this company's goods receipts move stock — its own choice
+     * (purchase_settings.receive_stock_at_grn, migration 006, off by default):
+     *
+     *   off  `challan_only`: the receipt only notes the goods; the bill receives them.
+     *   on   `physical`: the goods are on hand at the order rate and Books accrues them
+     *        (Goods Received Not Invoiced); the bill settles the receipt without receiving
+     *        again — Inventory sees the receipt moved stock — and trues the cost up.
+     *
+     * Decided when the receipt is recorded and stored on it, so a later change of the
+     * setting never changes how an existing receipt is billed.
      */
-    public static function grnStockEffect(): string
+    public function grnStockEffect(): string
     {
-        $mode = strtolower(trim(Env::get('PURCHASE_GRN_STOCK_EFFECT', 'physical')));
+        return self::stockEffectFor($this->ctx->cmpId);
+    }
 
-        return $mode === 'challan_only' ? 'challan_only' : 'physical';
+    /** The same answer for a company, for screens that describe it (the order's receive panel). */
+    public static function stockEffectFor(int $cmpId): string
+    {
+        $on = Db::scalar('SELECT receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $cmpId]);
+
+        return $on === true || $on === 't' || $on === 1 || $on === '1' ? 'physical' : 'challan_only';
     }
 
     /**
@@ -147,7 +158,7 @@ final class ReceiptService
                 'client_token'         => $clientToken,
                 'source_document_type' => self::SOURCE_TYPE,
                 'document_type'        => 'INWARD_CHALLAN',
-                'stock_effect'         => self::grnStockEffect(),
+                'stock_effect'         => $this->grnStockEffect(),
                 'status'               => 'REQUESTED',
                 'received_at'          => self::date($input['received_at'] ?? null),
                 'warehouse_id'         => self::id($input['warehouse_id'] ?? $po['delivery_warehouse_id'] ?? null),
@@ -588,7 +599,7 @@ final class ReceiptService
 
         return [
             'document_type'        => (string) ($receipt['document_type'] ?? 'INWARD_CHALLAN'),
-            'stock_effect'         => (string) ($receipt['stock_effect'] ?? self::grnStockEffect()),
+            'stock_effect'         => (string) ($receipt['stock_effect'] ?? $this->grnStockEffect()),
             'document_date'        => (string) ($receipt['received_at'] ?? gmdate('Y-m-d')),
             'source_app'           => 'purchases',
             // The receipt is the source; the order is a reference beside it.

@@ -64,6 +64,7 @@ export interface ProfileFile {
       block_bill_on_match_failure: boolean
       sod_policy?: string
       over_receipt_tolerance_pc?: number
+      receive_stock_at_grn?: boolean
     }
   }
   match_policies: ExportedPolicy[]
@@ -102,6 +103,7 @@ export function buildExport(form: ProfileForm, policies: MatchPolicy[]): Profile
         block_bill_on_match_failure: form.approvals.blockBillOnMatchException,
         sod_policy: form.approvals.sodPolicy,
         over_receipt_tolerance_pc: amount(form.approvals.overReceiptTolerance),
+        receive_stock_at_grn: form.approvals.receiveStockAtGrn,
       },
     },
     // Named tolerances only. `policy_id` is this database's key and means
@@ -300,6 +302,7 @@ export function parseProfileFile(text: string, knownTypes: string[]): ImportResu
       blockBillOnMatchException: readBoolean(approvals, 'block_bill_on_match_failure', true),
       sodPolicy: (approvals as Record<string, unknown>)?.sod_policy === 'strict' ? 'strict' : 'owner_with_reason',
       overReceiptTolerance: String(readAmount(approvals, 'over_receipt_tolerance_pc', 'Over-receipt tolerance', errors, 0)),
+      receiveStockAtGrn: readBoolean(approvals, 'receive_stock_at_grn', false),
     },
     active: readBoolean(profile, 'active', true),
   }

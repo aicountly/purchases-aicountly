@@ -33,7 +33,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ### 1. Integration commands
 - [x] Deterministic operation identity (company, operation, entity, revision); no random tail — `IntegrationCommand::key()`
-- [x] Database uniqueness on the operation; atomic acquisition (`INSERT … ON CONFLICT`), lease for in-flight attempts, no lock held across a network call — migration 006; race-tested with 6 processes
+- [x] Database uniqueness on the operation; atomic acquisition (`INSERT … ON CONFLICT`), lease for in-flight attempts, no lock held across a network call — migration 007; race-tested with 6 processes
 - [x] `UNCERTAIN` state for a lost response; upstream ids persisted; recovery reuses the same key and the stored body
 - [x] Cancel withdraws the command atomically (`withdraw()`), so a cancel and a Retry cannot both win; a revised bill's refused revision is withdrawn as superseded
 - [x] PO CommandStrip finds the order's receipt, bill and return commands; Retry / Reconcile (for `UNCERTAIN`) / Withdraw in the UI with Purchase wording (`CommandStrip.recoveryPath`)
@@ -49,7 +49,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Read-only discrepancy report and reviewable repair procedure for receipts posted under the PO-keyed identity — `bin/receipt-repair.php` (report / `--plan` / `--apply` with re-validation and audit; never posts to Inventory or Books)
 
 ### 3. Purchase order lifecycle and procurement decisions
-- [x] Receipt completion, billing completion and closure tracked separately; payment stays Books' (`PoProgress`, migration 007)
+- [x] Receipt completion, billing completion and closure tracked separately; payment stays Books' (`PoProgress`, migration 008)
 - [x] A PO never closes because what arrived so far was billed (PO 100 → receipt 40 → bill 40 stays open for 60)
 - [x] Authorised short-close with reason, audit and remaining quantities (API, tests and UI)
 - [x] Bill entry and posting refuse invalid PO states, under a row lock; `CANCELLED` is never overwritten — cancel-vs-bill race tested
@@ -67,9 +67,10 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [x] Standalone / direct / service-expense bill entry in Purchase, reviewed, no stock movement for services (API, tests and UI; service lines book to Books' Purchase / Direct / Indirect expense ledgers via `v1/catalog/ledgers`)
 
 ### 5. Physical GRN and cost true-up
-- [x] Inventory: a purchase that settles a physical inward challan without moving stock, trueing up cost (`PURCHASE_RECEIPT` + `from_physical_challan`; unabsorbed remainder warned; reversal unwinds; wrong challan kind refused; per-type effect validation; `GET v1/capabilities`) — 10 PostgreSQL tests
-- [x] Books: passes that effect through for purchase bills; never falls back to receiving stock (`GET integration/capabilities`)
-- [x] Purchase: GRN posts goods on hand at provisional cost; bill settles it (capability-gated; deploy Inventory and Books first)
+Delivered by the shared `awesome-hypatia` work now on each `main` (Purchase #4, Inventory #50, Books #887); this branch's parallel implementation was withdrawn in favour of it on 2026-09-29.
+- [x] Inventory: a bill whose settled receipts moved stock becomes `from_physical_challan` and moves nothing; the receipt accrues through GRNI; `ReceiptCostTrueUpService` trues the cost up, replays the year or states a price variance; reversal withdraws it (Inventory `0d31106`)
+- [x] Books: journals the accrual and its clearing from Inventory's stated effects; purchase bills are sent `from_challan`, and an integration's declared effect is posted as declared or refused 422 — never read as `on_invoice` (`DeclaredStockEffectTest`)
+- [x] Purchase: per-company `receive_stock_at_grn` (migration 006, off by default); each receipt records what it did; a bill over both kinds is refused before Books is asked
 
 ### 6. Returns and claims
 - [x] Runtime answer: does Books trigger Inventory for a Purchase debit note? **Yes** — Books sends the debit note's item lines to Inventory as `PURCHASE_RETURN` (books `DebitNoteReachesInventoryTest`); Books' own pending register skips Purchase's challans; Inventory moves the goods once (inventory `PurchaseReturnSingleMovementTest`)
@@ -81,14 +82,14 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ### 7. Supplier identity, duplicate bills, periods
 - [x] Contacts client on Contacts' real routes; communication identity from Contacts, creditor from Books — company routes only (`/api/companies/{cmp}/contacts…`, the in-flight Contacts `fervent-volta` release), linked by Contacts' `books/ledger_account` identity reference, idempotent, nothing copied; personal contacts never read; undeployed Contacts reported as unavailable
-- [x] Cross-app supplier-invoice duplicate protection at the Books boundary — Books migration 174 register (company, supplier, type, normalised number, April–March year); PostgreSQL race test; Purchase journey test; Purchase now reads Books' `messages.error` refusals
-- [x] Branch and FY validated through Manage — the same `companyinfo` answer that confirms the company must list the year (`fy_list`) and branch (`branch_list`), else 403; its dates bound a bill's new posting date (migration 010), kept apart from the supplier's invoice date. Manage has no closed-year flag, so a carried-forward year is not treated as closed
+- [x] Cross-app supplier-invoice duplicate protection at the Books boundary — Books migration 176 register (company, supplier, type, normalised number, April–March year); PostgreSQL race test; Purchase journey test; Purchase now reads Books' `messages.error` refusals
+- [x] Branch and FY validated through Manage — the same `companyinfo` answer that confirms the company must list the year (`fy_list`) and branch (`branch_list`), else 403; its dates bound a bill's new posting date (migration 011), kept apart from the supplier's invoice date. Manage has no closed-year flag, so a carried-forward year is not treated as closed
 - [x] Books' closed/locked-period policy enforced for Purchase postings — Purchase posts through Books' own draft→post path, which applies `FinancialYearPostingGuardService` (archived year, date within year); a refusal blocks the bill for revision (tested). Books has no separate lock-date setting today
 
 ### 8. Permissions and supplier communication
 - [x] `v1/approvals` permission-gated (approve permission per kind, stage permission, this year; values with the document's view permission); legacy `v1/dashboard` retired (410 → `v1/dashboards/overview`; no caller — Insights uses `v1/dashboards/*`)
 - [x] Amount/cost permissions consistent across APIs, exports and UI — rule: a document's own amounts go with its view permission; spend, historical prices and aggregates need `cost.view`/`reports.view`. The PO PDF needs `po.view` like the screen; Approvals shows "withheld" where the API withholds; the Connect label never carries an amount or supplier
-- [x] PO PDF; prepared / sent / supplier-acknowledged distinguished; manual acknowledgement with source and evidence (migration 011); names read live from Manage and Inventory; fingerprint ties "sent" to the version
+- [x] PO PDF; prepared / sent / supplier-acknowledged distinguished; manual acknowledgement with source and evidence (migration 012); names read live from Manage and Inventory; fingerprint ties "sent" to the version
 - [d] Sending the PO through a connected service (Email / Connect) — not built: no real supplier communication is allowed in this phase; the channel is recorded by the buyer. The Connect widget (section 9) is the intended channel
 
 ### 9. Connect, Pulse, Advisor
@@ -105,12 +106,13 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 
 ## Continuation checkpoint
 
-Last verified (2026-09-28): `server-php/tests/run.sh` → integration 141/0, ai_gateway 17/0,
-remediation 54/0; `npm run build`; `web/tests/remediation.mjs` 14/14 (and 14/14 with Connect
-unreachable); cross-app Connect run 12/12; `web/tests/dashboards.mjs` 25/35 — the 10 failures
-target markup (`.purchase-switcher`, `.purchase-monitor__pill`, `.purchase-metric__footer`) that is
-not in `web/src` on this branch or its base (8be4231): test drift from the dashboard rebuild, not
-a regression.
+Last verified (2026-09-29, after merging `main` — awesome-hypatia #4 — into this work):
+`server-php/tests/run.sh` → integration 143/0 (incl. `main`'s two GRN-setting tests), ai_gateway
+17/0, remediation 54/0; `npm run build`; `web/tests/remediation.mjs` 14/14; live Connect `main` ↔
+Purchase share checks; `web/tests/dashboards.mjs` 25/35 — the 10 failures target markup
+(`.purchase-switcher`, `.purchase-monitor__pill`, `.purchase-metric__footer`) that is not in
+`web/src` on this branch or its base (8be4231): test drift from the dashboard rebuild, not a
+regression.
 
 Done: sections 1–9 and the producer checks. Open:
 1. Deferred by design: unbilled-goods returns (needs an Inventory GRN-return); PO sending through

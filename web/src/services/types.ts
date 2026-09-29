@@ -282,6 +282,8 @@ export interface PurchaseOrder {
   acknowledgement_source: string | null
   progress: PoProgress
   communications: PoCommunication[]
+  /** What a new receipt on this order does to stock: the company's receive_stock_at_grn today. */
+  grn_stock_effect?: 'physical' | 'challan_only'
 }
 
 export interface PoProgress {
@@ -524,6 +526,8 @@ export interface PurchaseSettings {
   block_bill_on_match_failure: boolean
   sod_policy?: 'strict' | 'owner_with_reason'
   over_receipt_tolerance_pc?: string
+  /** Goods go on hand at the goods receipt (accrued to GRNI) instead of at the bill. */
+  receive_stock_at_grn?: boolean
   default_warehouse_id: number | null
   updated_at?: string | null
 }
@@ -553,6 +557,7 @@ export interface ProfileSavePayload {
   block_bill_on_match_failure: boolean
   sod_policy: 'strict' | 'owner_with_reason'
   over_receipt_tolerance_pc: number
+  receive_stock_at_grn: boolean
 }
 
 export interface ProfileTypeOption {
