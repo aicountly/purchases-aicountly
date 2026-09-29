@@ -14,7 +14,7 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 |---|---|---|
 | purchases-aicountly | `claude/awesome-hypatia-wba25w` | nested `party`/`bill` bill payload; GRN as challan; `block_bill_on_match_failure` read fix |
 | purchases-aicountly | `claude/hopeful-meitner-2ctk5i` | all Purchase AI through the AI Pulse gateway |
-| connect-aicountly | `claude/fervent-volta-k2w05d` | Embed SDK v1 (loader, Pulse relay, product context); this branch adds Purchase's registration |
+| connect-aicountly | `main` (share-check design, 307ec4c) | Purchase registered there as a document product (c0b15fa). The Embed SDK v1 widget is still on the unmerged `claude/fervent-volta-k2w05d` |
 
 ## Dependency order
 
@@ -92,14 +92,14 @@ This branch is built on the in-flight corrections, merged rather than re-impleme
 - [d] Sending the PO through a connected service (Email / Connect) — not built: no real supplier communication is allowed in this phase; the channel is recorded by the buyer. The Connect widget (section 9) is the intended channel
 
 ### 9. Connect, Pulse, Advisor
-- [x] Embedded Connect widget — Connect's own Embed SDK v1 loader (connect `fervent-volta`, extended on this branch), not a fork: conversations, calling, company contacts from Contacts, launcher labelled "Connect"; the person's own ses_key, scope kept in step, destroyed on sign-out; "Discuss in Connect" on orders, bills, returns, requisitions and RFQs; a shared record opens in Purchase's router. Connect down → no widget, Purchase unaffected (browser-tested both ways)
+- [x] Embedded Connect widget — Connect's own Embed SDK v1 loader, not a fork, loaded only when Connect serves SDK v1 (`version === '1'`; Connect `main` still serves the older loader, which Purchase never initialises — the v1 widget is on Connect's unmerged `fervent-volta` branch): conversations, calling, company contacts from Contacts, launcher labelled "Connect"; the person's own ses_key, scope kept in step, destroyed on sign-out; "Discuss in Connect" on orders, bills, returns, requisitions and RFQs; a shared record opens in Purchase's router. Connect down → no widget, Purchase unaffected (browser-tested both ways)
 - [x] Pulse pinned first in Connect, served by Pulse's live session API through Connect's relay (sandbox default now `pulse.gh.aicountly.com`). Advisor is a link out through the portal's SSO jump with no token in the URL — Advisor accepts no deep path or context today (its SSO callback returns to `/`), so it lands on Advisor's home
-- [x] Document-share permission and recipient visibility — Connect verifies each record with Purchase's own read endpoint using the sharer's, then each viewer's, session (registered in Connect `ProductContexts`); Purchase also answers the per-recipient contract (`POST v1/connect/share-check`, `GET v1/connect/context/{type}/{id}`). Cross-app run: a delegate without `po.view` cannot attach an order and sees it redacted in a conversation she belongs to
+- [x] Document-share permission and recipient visibility — Purchase answers Connect's contract (`POST v1/connect/share-check` with the sharer's session, per-recipient `can_view`; `GET v1/connect/context/{type}/{id}` with each viewer's), registered in Connect `main`'s `ProductRegistry`. Live against Connect `main`: owner shares; `po.view` holder `can_open` and reads the details; a delegate without it gets the label only, 403 on the read, and is refused sharing (`share_check_denied`)
 - [x] Every AI feature through AI Pulse (gateway `/api/ai/v1/*`, `X-Pulse-Product: purchases`, the user's own session; no provider key or host anywhere — `tests/ai_gateway.php` enforces it); "Using AI Pulse" shown on the Ask drawer and on each Payables answer AI took part in, "Rules only" otherwise
 
 ### 10. Verification
 - [x] Journey tests on real PostgreSQL, concurrency included (`tests/remediation.php`, 54 tests, sections 1–9) and browser checks of every changed screen (`web/tests/remediation.mjs`)
-- [x] Producer-verified contracts — Books and Inventory by their own PostgreSQL suites on this branch; Connect by a live cross-app run (real Connect API + real Purchase API); Contacts by Purchase's API against a live Contacts on its `fervent-volta` release (candidates, link, idempotent re-link — one `books/ledger_account` reference — conflict 409, outsider 403, foreign contact 404)
+- [x] Producer-verified contracts — Books and Inventory by their own PostgreSQL suites on this branch; Connect by live runs against both of its designs (real Connect API + real Purchase API); Contacts by Purchase's API against a live Contacts on its `fervent-volta` release (candidates, link, idempotent re-link — one `books/ledger_account` reference — conflict 409, outsider 403, foreign contact 404)
 - [x] SmartBooks regression — Books `scripts/check-unit-suite.php` 4577/0, security 119 OK, integration 427 with 1 pre-existing error (`VendorReconciliationImportIntegrationTest`, fails identically on base)
 - [x] Report: changes by repository, tests run, migrations/configuration, historical repair, remaining blockers — [`REMEDIATION_2026-10_REPORT.md`](REMEDIATION_2026-10_REPORT.md)
 

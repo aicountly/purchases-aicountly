@@ -37,10 +37,12 @@ supplier invoice register (migration 174) — one live purchase voucher per supp
 and April–March year, claimed inside the posting transaction, whichever product posts it; debit
 note items reach Inventory as a purchase return settling the dispatch.
 
-### connect-aicountly (1 commit, on top of the in-flight `fervent-volta` Embed SDK v1)
-Purchase registered for record sharing (six document types, verified against Purchase's own read
-endpoints with each person's session; labels are document numbers only); Purchase origins in CORS;
-Pulse relay sandbox default `pulse.gh.aicountly.com`; docs and unit tests.
+### connect-aicountly (1 commit on `main`, c0b15fa)
+Connect `main` settled on the per-recipient share-check design (307ec4c). Purchase is registered
+there as a document product beside Billing (six document types, numeric ids, the sharer's and each
+viewer's own session; labels are kind and number only); Purchase origins in CORS; Pulse sandbox
+default `pulse.gh.aicountly.com`; unit tests. An earlier registration built on the `fervent-volta`
+design was not merged, because it would have overwritten `main`'s design.
 
 ### Not changed
 contacts-react-app, pulse-aicountly, advisor-aicountly, manage-aicountly, billing, pay — used as
@@ -54,12 +56,13 @@ they are (Contacts' and Pulse's in-flight releases), or not needed.
 | Purchase `npm run build` (tsc + vite) | clean |
 | Purchase `web/tests/remediation.mjs` (Chromium, every changed screen) | 14/14; 14/14 again with Connect unreachable |
 | Purchase `web/tests/dashboards.mjs` | 25/35 — the 10 failures look for markup that is not in `web/src` on this branch or its base (8be4231); pre-existing drift, not a regression |
-| Cross-app Connect run: Purchase page → built widget → Connect API (PostgreSQL) → Purchase API | 12/12 browser checks + API: delegate without `po.view` refused (403) and shown redacted; owner and `po.view` holder see `PO/6/0001` |
+| Connect `main` API (PostgreSQL) ↔ Purchase API, live | owner shares an order; `po.view` holder `can_open` and reads amount, supplier and link; delegate without it: label only, 403 on the read, sharing refused (`share_check_denied`) |
+| Embed SDK v1 widget (Connect `fervent-volta` build) in the Purchase page, live | 12/12 browser checks: launcher "Connect", Discuss in Connect, Pulse pinned, Advisor SSO link without token, record opens in Purchase, removed on sign-out |
 | Contacts contract against a live Contacts (`fervent-volta`, PostgreSQL) | candidates, link, idempotent re-link (one reference), conflict 409, outsider 403, foreign contact 404 |
 | Inventory full suite (PostgreSQL) incl. `PurchaseSettlesPhysicalGrnTest` (10), `PurchaseReturnSingleMovementTest` (1) | 852 OK |
 | Books `scripts/check-unit-suite.php` (SmartBooks regression) | 4577/0; security 119 OK; integration 427 with 1 pre-existing error (`VendorReconciliationImportIntegrationTest`, identical on base) |
 | Books new: supplier invoice register (6), PostgreSQL race, physical GRN effect (4), debit note → Inventory | pass |
-| Connect phpunit · web unit · `test:embed` (hostile host page) | 207 OK · 73/73 · 40/40 |
+| Connect `main` + this change: phpunit · web unit · `build:cpanel` | 226 OK · 55/55 · clean |
 
 ## Migrations and configuration
 
@@ -74,7 +77,7 @@ refuses to post rather than receive goods twice if either is older.
 | Connect | none | built-in CORS for `purchase[.gh]`; `PURCHASES_API_BASE` optional; `PULSE_API_BASE` optional |
 
 **Release dependencies:** Contacts' company-contacts release (`fervent-volta`) for supplier
-contacts; Connect's Embed SDK v1 (`fervent-volta` + this branch) for the widget; Pulse's gateway
+contacts; Connect's Embed SDK v1 (`fervent-volta`, not on Connect `main`) for the widget — until then Purchase shows no widget; Pulse's gateway
 and `pulse.gh` host (`hopeful-meitner`) for AI and for Pulse inside Connect, with a model bound for
 Purchases in Console. Each is absent from its repository's `main` today; until deployed, Purchase
 reports the feature as unavailable and everything else works.
@@ -96,9 +99,9 @@ reports the feature as unavailable and everything else works.
 
 1. **Deploy the in-flight producer releases** above (Contacts, Connect, Pulse). `origin/main` of
    Purchase still calls Gemini directly; this branch removes that.
-2. **Connect has two incompatible designs in flight** for verifying shared documents
-   (`fervent-volta`: product read endpoint; `clever-darwin`: `v1/connect/share-check`). Purchase
-   answers both; Connect's owners need to choose before either merges.
+2. **Connect's embeddable widget is not on `main`.** `main` took the share-check design; the Embed
+   SDK v1 widget (`fervent-volta`) was built on the other design and now conflicts with `main` in
+   ten files. It needs rebasing onto `main` by its owner before any product can embed Connect.
 3. **Advisor accepts no deep link or context** — its SSO callback returns to `/`. Purchase links to
    Advisor's home through the portal jump; a context deep link needs an Advisor change.
 4. **Deferred by design:** return of goods received but not yet billed (needs an Inventory

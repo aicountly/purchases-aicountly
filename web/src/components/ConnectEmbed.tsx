@@ -34,7 +34,7 @@ export function ConnectEmbed() {
     void loadConnect().then(async (api) => {
       if (!api || cancelled) return
       const current = latest.current.scope
-      const mounted = await api.init({
+      const mounted = await Promise.resolve().then(() => api.init({
         // The person's own session, and only theirs. A signed-out person gets null, and Connect
         // shows its own "Sign in to use Connect" rather than sending anyone anywhere.
         getSesKey: async (forceRefresh) => {
@@ -55,7 +55,7 @@ export function ConnectEmbed() {
         onEvent: (name, detail) => {
           if (name === 'aicountly:connect:context-open') openShared(detail)
         },
-      }).catch(() => false)
+      })).then((ok) => ok === true, () => false)
       if (!cancelled) setConnectReady(mounted)
     })
 

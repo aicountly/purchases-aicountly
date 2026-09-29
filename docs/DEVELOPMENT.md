@@ -99,7 +99,8 @@ PURCHASE_APP_URL=http://127.0.0.1:5173 npm --prefix web run test:remediation   #
 
 ### Aicountly Connect
 
-The shell loads Connect's own widget (`{connect}/embed/v1/loader.js`, Embed SDK v1). On
+The shell loads Connect's own widget (`{connect}/embed/v1/loader.js`) and initialises it only
+when it is Embed SDK v1 (`version === '1'`). On
 `purchase.gh` it comes from `connect.gh`, on `purchase` from `connect`; on localhost there is
 none unless you point at one:
 
@@ -107,8 +108,9 @@ none unless you point at one:
 printf 'VITE_CONNECT_ORIGIN=http://127.0.0.1:8895\n' >> web/.env.local   # `off` disables it
 ```
 
-Connect must admit the page's origin (`CORS_ALLOWED_ORIGINS` in Connect's API) and know where
-Purchase's API is (`PURCHASES_API_BASE`) to verify a shared document. With Connect unreachable
+Connect must admit the page's origin (`purchase[.gh]` are built in; `CONNECT_CORS_EXTRA_ORIGINS`
+for others) and know where Purchase's API is (`PURCHASES_API_BASE`) to ask
+`v1/connect/share-check` and `v1/connect/context/{type}/{id}`. With Connect unreachable
 the product works exactly as before, without the widget or the "Discuss in Connect" buttons.
 
 `test:ui` uses Playwright's Chromium. Where one is already installed, point at

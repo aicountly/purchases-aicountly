@@ -83,8 +83,15 @@ export function connectOrigin(hostname: string = window.location.hostname): stri
   return app ? resolveAppOrigin(app, isSandboxHost(hostname)) : null
 }
 
+/**
+ * The widget, only when it is Embed SDK v1. Connect's earlier loader also defines
+ * `window.AICountlyChat`, but it mounts Connect's own sign-in and styles straight into the host
+ * page and returns nothing from init() — a Connect deployment still serving it is treated as
+ * "no Connect here", never initialised.
+ */
 export function connectApi(): ConnectApi | null {
-  return window.AICountlyChat ?? window.AICountlyConnect ?? null
+  const api = window.AICountlyChat ?? window.AICountlyConnect ?? null
+  return api && api.version === '1' && typeof api.init === 'function' ? api : null
 }
 
 let loading: Promise<ConnectApi | null> | null = null

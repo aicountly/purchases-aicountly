@@ -1294,6 +1294,17 @@ check('Connect may attach an order only for someone who can open it, and learns 
     same('unsupported_entity', $payload['error']['code'] ?? null, 'saying so');
     [$status] = endpoint(static fn () => (new Domain\ConnectShareService($ctx, person()))->shareCheck(['entity_type' => 'purchase_order', 'entity_id' => $po['po_id'], 'recipient_uuids' => 'user-viewer']), $owner);
     same(422, $status, 'recipients must be a list');
+
+    // Through the route, as Connect calls it: a JSON number id and no year when it knows none.
+    $body = new \ReflectionProperty(Http::class, 'body');
+    $body->setValue(null, ['entity_type' => 'purchase_order', 'entity_id' => (int) $po['po_id'], 'recipient_uuids' => ['user-viewer']]);
+    try {
+        [$status, $payload] = endpoint([Controllers\ConnectController::class, 'shareCheck'], person('user-viewer', 0), ['cmp_id' => '88']);
+    } finally {
+        $body->setValue(null, null);
+    }
+    same(200, $status, 'without the sharer\'s year, the order\'s own year is used');
+    same(true, $payload['data']['allowed'] ?? null, 'and a viewer may share it');
 });
 
 check('what a viewer sees of a shared document is asked with their own session, every time', function () use ($ctx, $owner) {
