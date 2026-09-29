@@ -54,6 +54,54 @@ behaviours worth knowing:
 - **An unreachable Inventory is `REVIEW_REQUIRED`, never `MATCHED`.** "We could
   not check" and "we checked and it was fine" are different facts.
 
+## Stock moves once: GRN on challan, received by the bill
+
+```
+PO ──▶ GRN                    ──▶ bill
+       INWARD_CHALLAN               Books purchase (party.acc_id, bill.bill_ref = supplier invoice)
+       challan_only:                stock_effect from_challan + challan_settlements
+       goods in, pending the bill   → Books sends PURCHASE_RECEIPT to Inventory, which
+                                      settles the challans and receives the goods ONCE,
+                                      valued at the billed cost
+```
+
+The GRN used to be a `PURCHASE_RECEIPT` of its own, and the bill's item lines made
+Books post another one: every billed purchase received its goods twice. Now the
+bill is the single owner of the stock receipt. The settlements are allocated first
+in, first out per order line, after what earlier bills settled (`billed_qty`). A
+bill for more than was received and not yet billed is refused (one Books voucher
+has one stock effect), and so is a bill whose goods were received before this
+change (they are already in stock; post that bill in Books). A bill with nothing
+received behind it (goods billed ahead) receives the goods itself (`on_invoice`).
+
+**Goods on hand at the GRN (`purchase_settings.receive_stock_at_grn`, off by
+default).** Off, received goods sit on Inventory's pending-in register — not on
+hand, not sellable — until their bill is posted. On, the GRN is a `physical`
+INWARD_CHALLAN:
+
+```
+PO ──▶ GRN (physical)                         ──▶ bill (unchanged: from_challan + settlements)
+       goods on hand at the order rate              Inventory sees the receipts moved the goods:
+       Books: Dr Stock-in-Hand / Cr GRNI            settles them WITHOUT moving stock again,
+                                                    clears GRNI at the provisional value and trues
+                                                    the cost up to the billed rate
+```
+
+Goods consumed or sold before the bill take their share of the price difference
+(Inventory replays the year; Books posts the revisions at the bill date). A bill in
+a later financial year than its GRN expenses the difference instead of rewriting
+the closed year. Each receipt records what it did (`stock_effect` on its command
+reference), so turning the setting on or off never changes how an existing receipt
+is billed, and one bill cannot settle both kinds (refused: bill them separately).
+Returning goods before the bill means reversing the GRN; a partial return before
+the bill is not supported yet. Freight captured on the GRN is not sent (an inward
+challan carries no valuation of its own): charges are capitalised from the bill,
+where Books allocates bill sundries onto the goods.
+
+Purchase returns follow the same rule: the dispatch is a `DELIVERY_CHALLAN`
+(challan_only) and the debit note settles it (`from_challan`), so the goods leave
+stock once, with the debit note.
+
 ## What is stored here, and what is not
 
 `server-php/database/migrations/` is the complete list. The reference columns —

@@ -113,6 +113,12 @@ export function ProfilePreviewDialog({
                 ? 'A bill cannot be posted while an exception is open'
                 : 'Bills may be posted with an exception open',
             },
+            {
+              label: 'Goods receipt',
+              value: form.approvals.receiveStockAtGrn
+                ? 'Goods go on hand at the receipt (accrued until billed)'
+                : 'Goods go on hand when the bill is posted',
+            },
           ]}
         />
       </PpSummary>

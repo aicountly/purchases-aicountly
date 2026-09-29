@@ -38,7 +38,7 @@ if (!function_exists(__NAMESPACE__ . '\\resetPurchaseTables')) {
 
         Db::connect()->exec('TRUNCATE ' . implode(', ', $tables) . ' RESTART IDENTITY CASCADE');
 
-        foreach (['stub-idempotency.json', 'stub-requests.jsonl', 'stub-documents.json'] as $file) {
+        foreach (['stub-idempotency.json', 'stub-requests.jsonl', 'stub-documents.json', 'stub-drafts.json'] as $file) {
             @unlink(sys_get_temp_dir() . '/' . $file);
         }
 

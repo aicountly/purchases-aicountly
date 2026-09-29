@@ -313,26 +313,16 @@ final class ThreeWayMatchService
             return [[], true];
         }
 
-        $client = (new InventoryClient());
-        $client = $this->auth->isService()
-            ? $client->withService($this->auth->uuid)
-            : $client->withSession($this->auth->sesKey());
-
-        $response = $client->documentBySource($this->ctx, 'purchases', 'purchases.order', $poId);
-
-        if (!$response['ok']) {
+        // One read per GRN — each is its own source in Inventory — with receipts from
+        // before that found under the order. See ReceiptService::inventoryDocumentsFor.
+        [$documents, $answered] = ReceiptService::inventoryDocumentsFor($this->ctx, $this->auth, $poId);
+        if (!$answered) {
             // Unreachable is not "nothing was received". Report it and let the
             // verdict be REVIEW_REQUIRED, never MATCHED.
             return [[], false];
         }
 
         $received = [];
-        $documents = $response['body']['data'] ?? [];
-        // by-source may answer with one document or a list, depending on how
-        // many receipts a purchase order has had. Both shapes are handled.
-        if (isset($documents['document_id'])) {
-            $documents = [$documents];
-        }
 
         foreach ((array) $documents as $document) {
             if (!is_array($document)) {

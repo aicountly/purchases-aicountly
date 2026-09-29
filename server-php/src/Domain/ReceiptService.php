@@ -17,9 +17,26 @@ use Aicountly\Api\Permissions;
  * Goods receipt — ORCHESTRATION ONLY.
  *
  * THE GRN IS INVENTORY'S. Purchases says "these goods arrived against this
- * order"; Inventory records the receipt, the batch, the serial, the quality
- * status, the stock movement and the valuation, and hands back a uuid. That
- * uuid is all that is stored here.
+ * order"; Inventory records it as an INWARD_CHALLAN and hands back its id and
+ * uuid. That is all that is stored here.
+ *
+ * ONE OWNER PER MOVEMENT, whichever kind of receipt the company chose
+ * (purchase_settings.receive_stock_at_grn):
+ *
+ *   off (default)  challan_only: the receipt only notes the goods, and the bill
+ *                  receives them — Books sends the bill's lines to Inventory as a
+ *                  PURCHASE_RECEIPT settling these challans (from_challan). Goods
+ *                  are on the pending-in register, not on hand, until billed.
+ *   on             physical: the receipt brings the goods into stock at the order
+ *                  rate and Books accrues them (Goods Received Not Invoiced). The
+ *                  bill settles the receipt WITHOUT receiving the goods again —
+ *                  Inventory sees the receipts moved stock — clears the accrual and
+ *                  trues the cost up to the billed rate; goods already consumed or
+ *                  sold take their share of the difference.
+ *
+ * The GRN used to be a PURCHASE_RECEIPT of its own, so every billed purchase
+ * received its goods twice — once here, once from the bill. Neither kind can now:
+ * Inventory refuses a bill that would receive goods a receipt already brought in.
  *
  * `received_qty` on our PO line is progress against OUR commitment, written
  * from Inventory's own response. When a screen needs to show what was actually
@@ -29,6 +46,9 @@ use Aicountly\Api\Permissions;
  */
 final class ReceiptService
 {
+    /** The Inventory source type of a GRN: each receipt is its own source document. */
+    public const SOURCE_TYPE = 'purchases.receipt';
+
     public const COMMAND_RECEIPT = 'purchases.receipt.request';
 
     public function __construct(
@@ -122,15 +142,27 @@ final class ReceiptService
         $commandId = (int) $command['command_id'];
         IntegrationCommand::markPosting($commandId);
 
+        // Decided when the receipt is sent, and recorded with it: a bill settles each
+        // receipt according to what that receipt did, not what the setting says today.
+        $physical = (bool) (Db::first('SELECT receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $this->ctx->cmpId])['receive_stock_at_grn'] ?? false);
+        $stockEffect = $physical ? 'physical' : 'challan_only';
+
         $payload = [
-            'document_type'        => 'PURCHASE_RECEIPT',
+            'document_type'        => 'INWARD_CHALLAN',
+            'stock_effect'         => $stockEffect,
             'document_date'        => self::date($input['received_at'] ?? null),
+            // The GRN's own identity, not its purchase order's. Inventory keeps ONE
+            // live document per source, so every GRN sent under the order came
+            // back as the first one, marked duplicate, and was counted again. The
+            // order is the reference; the receipt is the source.
             'source_app'           => 'purchases',
-            'source_document_type' => 'purchases.order',
-            'source_document_id'   => $poId,
-            'source_document_uuid' => (string) $po['po_uuid'],
-            'source_document_no'   => (string) $po['po_no'],
-            'source_document_date' => (string) $po['po_date'],
+            'source_document_type' => self::SOURCE_TYPE,
+            'source_document_id'   => $requestId,
+            'source_document_uuid' => 'purchases-receipt-' . $this->ctx->cmpId . '-' . $requestId,
+            'source_document_no'   => 'GRN-' . $requestId . ' / ' . $po['po_no'],
+            'source_document_date' => self::date($input['received_at'] ?? null),
+            // Inventory keeps what it knows and drops the rest; metadata is kept.
+            'metadata'             => ['purchase_order_id' => $poId, 'purchase_order_uuid' => (string) $po['po_uuid'], 'purchase_order_no' => (string) $po['po_no']],
             'party_ref'            => (string) $po['supplier_account_id'],
             'party_name'           => $po['supplier_name_snapshot'],
             'narration'            => 'Receipt against ' . $po['po_no']
@@ -152,11 +184,10 @@ final class ReceiptService
                 'amount'          => round((float) $line['qty'] * (float) $line['rate'], 4),
                 'direction'       => 'in',
                 'hsn_sac'         => $line['hsn_sac'],
-                // Landed cost is capitalised by Inventory according to the
-                // company's own policy — we pass the charge, we do not decide
-                // whether it becomes part of the cost of the goods.
-                'landed_cost_amount'    => $line['landed_cost_amount'],
-                'landed_cost_breakdown' => $line['landed_cost_breakdown'],
+                // No landed cost here: an inward challan carries no valuation of
+                // its own, so Inventory refuses a charge on it. Freight and charges
+                // are capitalised from the bill (Books' bill sundries) or a landed
+                // cost document.
             ], static fn ($value) => $value !== null && $value !== []), $received),
         ];
 
@@ -184,10 +215,27 @@ final class ReceiptService
         }
 
         $document = $response['body']['data'] ?? [];
+        if (($response['body']['duplicate'] ?? $document['duplicate'] ?? false)
+            && isset($document['source_document_id'])
+            && ((string) ($document['source_document_type'] ?? self::SOURCE_TYPE) !== self::SOURCE_TYPE || (int) $document['source_document_id'] !== $requestId)) {
+            // Inventory answered with ANOTHER receipt's document. Recording it would
+            // count that receipt's goods a second time.
+            $message = 'Inventory answered with a different receipt\'s document; nothing was recorded.';
+            IntegrationCommand::block($commandId, $message);
+            Db::update('purchase_receipt_requests', ['status' => 'FAILED', 'last_error' => $message, 'updated_at' => self::now()], ['request_id' => $requestId]);
+            Http::error(409, 'inventory_duplicate_mismatch', $message, ['request_id' => $requestId, 'retryable' => false]);
+        }
         IntegrationCommand::complete($commandId, [
             'inventory_document_id'   => $document['document_id'] ?? null,
             'inventory_document_uuid' => $document['document_uuid'] ?? null,
             'inventory_document_no'   => $document['document_no'] ?? null,
+            // What the GRN is in Inventory. A bill settles an INWARD_CHALLAN; a
+            // receipt recorded before this was a PURCHASE_RECEIPT and has no
+            // pending quantity to settle (BillService::challanSettlements).
+            'document_type'           => 'INWARD_CHALLAN',
+            // Whether this receipt brought the goods into stock (physical) or only noted
+            // them (challan_only); BillService keeps the two apart on one bill.
+            'stock_effect'            => (string) ($document['stock_effect'] ?? $stockEffect),
         ]);
 
         Db::update('purchase_receipt_requests', [
@@ -206,6 +254,77 @@ final class ReceiptService
         ]);
 
         return $orders->find($poId);
+    }
+
+    /**
+     * The Inventory documents for this order's receipts, as Inventory holds them now.
+     *
+     * One by-source read per receipt Purchases recorded (each GRN is its own source).
+     * Receipts recorded before that were sent under the ORDER as source; those are found
+     * once by the order and matched to the receipts by document id, never counted twice.
+     *
+     * @return array{0: list<array<string, mixed>>, 1: bool} the documents, and whether Inventory answered every read
+     */
+    public static function inventoryDocumentsFor(Context $ctx, Auth $auth, int $poId): array
+    {
+        $receipts = Db::all(
+            "SELECT request_id, inventory_document_id FROM purchase_receipt_requests
+              WHERE cmp_id = :cmp AND po_id = :po AND status = 'ACCEPTED' ORDER BY request_id",
+            ['cmp' => $ctx->cmpId, 'po' => $poId],
+        );
+
+        $client = new InventoryClient();
+        $client = $auth->isService() ? $client->withService($auth->uuid) : $client->withSession($auth->sesKey());
+
+        $byId = [];
+        $answered = true;
+        $missing = [];
+        foreach ($receipts as $receipt) {
+            $response = $client->documentBySource($ctx, 'purchases', self::SOURCE_TYPE, (int) $receipt['request_id']);
+            if (!$response['ok']) {
+                $answered = false;
+                continue;
+            }
+            $found = self::documentsFromBody($response['body']['data'] ?? []);
+            if ($found === []) {
+                $missing[] = (int) ($receipt['inventory_document_id'] ?? 0);
+            }
+            foreach ($found as $document) {
+                $byId[(int) ($document['document_id'] ?? 0)] = $document;
+            }
+        }
+
+        $missing = array_filter($missing);
+        if ($missing !== []) {
+            // Receipts from before a GRN was its own source.
+            $legacy = $client->documentBySource($ctx, 'purchases', 'purchases.order', $poId);
+            if (!$legacy['ok']) {
+                $answered = false;
+            } else {
+                foreach (self::documentsFromBody($legacy['body']['data'] ?? []) as $document) {
+                    $id = (int) ($document['document_id'] ?? 0);
+                    if (in_array($id, $missing, true)) {
+                        $byId[$id] = $document;
+                    }
+                }
+            }
+        }
+
+        return [array_values($byId), $answered];
+    }
+
+    /**
+     * by-source answers one document or a list, depending on the caller's version.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function documentsFromBody(mixed $body): array
+    {
+        if (!is_array($body) || $body === []) {
+            return [];
+        }
+
+        return isset($body['document_id']) ? [$body] : array_values(array_filter($body, 'is_array'));
     }
 
     /** Retry a receipt that failed, on its original idempotency key. */

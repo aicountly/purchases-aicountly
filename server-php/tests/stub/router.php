@@ -203,12 +203,49 @@ if (str_contains($path, '/v1/inventory-documents/by-source')) {
     exit;
 }
 
+/**
+ * The document types Inventory actually has — Inventory-aicountly
+ * server-php/app/Config/DocumentTypeRegistry.php. An unknown type is the 422 the
+ * real service answers; this stub used to accept anything. Keep the list in step
+ * with the registry.
+ */
+const INVENTORY_DOCUMENT_TYPES = [
+    'OPENING_STOCK', 'STOCK_TRANSFER', 'STOCK_JOURNAL', 'PHYSICAL_ADJUSTMENT', 'WRITE_OFF', 'WRITE_IN',
+    'CONSUMPTION', 'MATERIAL_ISSUE', 'MATERIAL_RECEIPT', 'PRODUCTION', 'ASSEMBLY', 'DISASSEMBLY',
+    'JOB_WORK_OUT', 'JOB_WORK_IN', 'BATCH_ADJUSTMENT', 'SERIAL_ADJUSTMENT', 'REVALUATION', 'LANDED_COST',
+    'RESERVATION', 'RESERVATION_RELEASE', 'DELIVERY_CHALLAN', 'INWARD_CHALLAN', 'PACKING',
+    'SALES_ISSUE', 'PURCHASE_RECEIPT', 'SALES_RETURN', 'PURCHASE_RETURN', 'JOURNAL_ADJUSTMENT',
+];
+
 if (str_contains($path, '/v1/inventory-documents/post')) {
+    if (!in_array(strtoupper((string) ($body['document_type'] ?? '')), INVENTORY_DOCUMENT_TYPES, true)) {
+        http_response_code(422);
+        echo json_encode([
+            'error'   => ['code' => 'validation_failed', 'message' => 'Unknown or missing document_type', 'details' => ['allowed' => INVENTORY_DOCUMENT_TYPES]],
+            'message' => 'Unknown or missing document_type',
+        ]);
+        exit;
+    }
+    // Inventory's duplicate guard (DocumentsController::createDocument): ONE live
+    // document per (source_app, source_document_type, source_document_id). A second
+    // post naming the same source gets the FIRST document back, marked duplicate —
+    // which is how two GRNs sent under their purchase order became one.
+    $sourceKey = ($body['source_app'] ?? '') . '|' . ($body['source_document_type'] ?? '') . '|' . ($body['source_document_id'] ?? '');
+    if (!empty($body['source_document_type']) && !empty($body['source_document_id']) && isset($documents[$sourceKey])) {
+        echo json_encode(['data' => remember($store, $seen, $key, $documents[$sourceKey] + ['duplicate' => true]), 'duplicate' => true]);
+        exit;
+    }
+
     $payload = [
         'document_id'   => 7000 + $n,
         'document_uuid' => 'invdoc-' . $n,
         'document_no'   => 'SI/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT),
+        'document_type' => strtoupper((string) $body['document_type']),
+        'stock_effect'  => $body['stock_effect'] ?? null,
         'status'        => 'POSTED',
+        'source_app'           => $body['source_app'] ?? null,
+        'source_document_type' => $body['source_document_type'] ?? null,
+        'source_document_id'   => $body['source_document_id'] ?? null,
         'lines' => array_map(static fn ($l) => [
             'source_line_ref' => $l['source_line_ref'] ?? null,
             'item_id'         => $l['item_id'] ?? null,
@@ -217,11 +254,8 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
         ], $body['lines'] ?? []),
     ];
 
-    // Only an inward document counts as a receipt for by-source purposes; a
-    // return going out must not read back as more goods arriving.
-    if (($body['document_type'] ?? '') === 'PURCHASE_RECEIPT') {
-        $sourceKey = ($body['source_app'] ?? '') . '|' . ($body['source_document_type'] ?? '') . '|' . ($body['source_document_id'] ?? '');
-        $documents[$sourceKey][] = $payload;
+    if (!empty($body['source_document_type']) && !empty($body['source_document_id'])) {
+        $documents[$sourceKey] = $payload;
         file_put_contents($documentStore, json_encode($documents));
     }
 
@@ -321,13 +355,44 @@ if (str_contains($path, '/dashboard/purchase')) {
     ]]);
     exit;
 }
-if (str_contains($path, '/vouchers/drafts') && str_contains($path, '/post')) {
-    $payload = ['vch_txn_id' => 4000 + $n, 'vch_uuid' => 'vch-' . $n, 'vch_no' => 'INV/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT), 'status' => 'POSTED'];
+/*
+ * Books drafts, as Books' VoucherPostingService treats them: an invoice, bill or
+ * note (18, 11, 2, 3) with no party.acc_id and no journal lines is refused 422 —
+ * Books composes those from party.acc_id and the lines, and the flat party_acc_id
+ * this app used to send was never read. Item lines are the stock half, which
+ * Books sends to Inventory itself; the answer says so in `stock`.
+ */
+$draftStore = sys_get_temp_dir() . '/stub-drafts.json';
+$drafts = is_file($draftStore) ? (json_decode((string) file_get_contents($draftStore), true) ?: []) : [];
+// Real Books' API accepts only a person's session (Authorization: Bearer) on its
+// voucher routes — BaseController::auth(). A service key is refused, so a bill or a
+// debit note must be posted AS the user.
+if (str_contains($path, '/vouchers/drafts') && $method === 'POST'
+    && !preg_match('/^Bearer\s+\S+/i', (string) ($headers['authorization'] ?? ''))) {
+    http_response_code(401);
+    echo json_encode(['status' => 401, 'error' => 401, 'messages' => ['error' => 'Books voucher routes need a signed-in session.']]);
+    exit;
+}
+if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
+    $draft = $drafts[$dm[1]] ?? null;
+    $type = (int) ($draft['vch_type_id'] ?? 0);
+    $voucherPayload = is_array($draft['payload'] ?? null) ? $draft['payload'] : [];
+    if (in_array($type, [18, 11, 2, 3], true) && (int) ($voucherPayload['party']['acc_id'] ?? 0) <= 0 && empty($voucherPayload['lines'])) {
+        http_response_code(422);
+        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'This voucher has no party account and no journal lines, so it would post with no sale, tax or balance on it. Send the party as party.acc_id with the item lines (inventory_lines) or service lines; nothing was posted.']]);
+        exit;
+    }
+    $stockLines = array_filter($voucherPayload['inventory_lines'] ?? [], static fn ($l) => !empty($l['item_id']) && (float) ($l['qty'] ?? 0) > 0);
+    $stock = $stockLines === [] ? null : ['owner' => 'books', 'state' => 'COMPLETED', 'inventory_document_id' => 7500 + $n, 'inventory_document_uuid' => 'books-invdoc-' . $n];
+    $number = 'INV/' . str_pad((string) $n, 4, '0', STR_PAD_LEFT);
+    $payload = ['vch_txn_id' => 4000 + $n, 'vch_uuid' => 'vch-' . $n, 'vch_number' => $number, 'vch_no' => $number, 'status' => 'posted', 'stock' => $stock];
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
     exit;
 }
 if (str_contains($path, '/vouchers/drafts') && $method === 'POST') {
     $payload = ['draft_id' => 3000 + $n, 'status' => 'DRAFT'];
+    $drafts[(string) (3000 + $n)] = ['vch_type_id' => (int) ($body['vch_type_id'] ?? 0), 'payload' => $body['payload'] ?? []];
+    file_put_contents($draftStore, json_encode($drafts));
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
     exit;
 }

@@ -27,6 +27,8 @@ export interface ProfileApprovals {
   purchaseOrderLimit: string
   approvedSuppliersOnly: boolean
   blockBillOnMatchException: boolean
+  /** Received goods go into stock at the goods receipt, not at the bill. */
+  receiveStockAtGrn: boolean
 }
 
 export interface ProfileForm {
@@ -68,6 +70,7 @@ export const DEFAULT_PROFILE: ProfileForm = {
     purchaseOrderLimit: '0',
     approvedSuppliersOnly: false,
     blockBillOnMatchException: true,
+    receiveStockAtGrn: false,
   },
   active: true,
 }
@@ -127,6 +130,7 @@ export function fromSettings(row: Partial<PurchaseSettings> | null | undefined):
       blockBillOnMatchException: row.block_bill_on_match_failure === undefined
         ? true
         : Boolean(row.block_bill_on_match_failure),
+      receiveStockAtGrn: Boolean(row.receive_stock_at_grn),
     },
     active: row.is_active === undefined ? true : Boolean(row.is_active),
   }
@@ -162,6 +166,7 @@ export function toPayload(form: ProfileForm): ProfileSavePayload {
     po_approval_above_amount: amountForPayload(form.approvals.purchaseOrderLimit),
     enforce_approved_vendors: form.approvals.approvedSuppliersOnly,
     block_bill_on_match_failure: form.approvals.blockBillOnMatchException,
+    receive_stock_at_grn: form.approvals.receiveStockAtGrn,
   }
 }
 
@@ -186,7 +191,8 @@ export function sameProfile(a: ProfileForm, b: ProfileForm): boolean {
     sameAmount(a.approvals.requisitionLimit, b.approvals.requisitionLimit) &&
     sameAmount(a.approvals.purchaseOrderLimit, b.approvals.purchaseOrderLimit) &&
     a.approvals.approvedSuppliersOnly === b.approvals.approvedSuppliersOnly &&
-    a.approvals.blockBillOnMatchException === b.approvals.blockBillOnMatchException
+    a.approvals.blockBillOnMatchException === b.approvals.blockBillOnMatchException &&
+    a.approvals.receiveStockAtGrn === b.approvals.receiveStockAtGrn
   )
 }
 

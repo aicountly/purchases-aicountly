@@ -1,0 +1,12 @@
+-- Put received goods into stock at the goods receipt, instead of at the bill.
+--
+-- Off (the default, and how every existing company works): a goods receipt is an Inventory
+-- INWARD_CHALLAN that only notes the goods (challan_only); the supplier's bill receives them.
+-- Goods are on the pending-in register, not on hand, until their bill is posted.
+--
+-- On: the goods receipt brings the goods into stock at the order rate (stock_effect physical)
+-- and Books accrues them to Goods Received Not Invoiced; the supplier's bill settles the receipt
+-- without receiving the goods again, clears the accrual and trues the cost up to the billed rate
+-- (Inventory ReceiptCostTrueUpService). Receipts already recorded keep the kind they were
+-- recorded as, and one bill cannot settle both kinds.
+ALTER TABLE purchase_settings ADD COLUMN IF NOT EXISTS receive_stock_at_grn BOOLEAN NOT NULL DEFAULT FALSE;

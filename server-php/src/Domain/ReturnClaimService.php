@@ -119,7 +119,15 @@ final class ReturnClaimService
         return $this->findReturn($returnId);
     }
 
-    /** Ask Inventory to move the goods out. */
+    /**
+     * Record the goods leaving for the supplier: a DELIVERY_CHALLAN (challan_only) in Inventory —
+     * goods out on challan, pending the debit note.
+     *
+     * ONE OWNER PER MOVEMENT. The stock leaves once, with the debit note: Books sends its item
+     * lines to Inventory as a PURCHASE_RETURN that settles this challan (from_challan). The
+     * dispatch used to be a PURCHASE_RETURN of its own, and the debit note issued the same goods
+     * again.
+     */
     public function dispatchReturn(int $returnId): array
     {
         Permissions::assert($this->ctx, $this->auth, 'return.approve');
@@ -145,7 +153,8 @@ final class ReturnClaimService
         IntegrationCommand::markPosting($commandId);
 
         $payload = [
-            'document_type'        => 'PURCHASE_RETURN',
+            'document_type'        => 'DELIVERY_CHALLAN',
+            'stock_effect'         => 'challan_only',
             'document_date'        => (string) $return['return_date'],
             'source_app'           => 'purchases',
             'source_document_type' => 'purchases.return',
@@ -178,7 +187,13 @@ final class ReturnClaimService
         }
 
         $document = $response['body']['data'] ?? [];
-        IntegrationCommand::complete($commandId, ['inventory_document_uuid' => $document['document_uuid'] ?? null]);
+        IntegrationCommand::complete($commandId, [
+            'inventory_document_id'   => $document['document_id'] ?? null,
+            'inventory_document_uuid' => $document['document_uuid'] ?? null,
+            // What the dispatch is in Inventory: the debit note settles a DELIVERY_CHALLAN. One
+            // recorded before this was a PURCHASE_RETURN — the goods already left stock.
+            'document_type'           => 'DELIVERY_CHALLAN',
+        ]);
 
         Db::transaction(function () use ($returnId, $document, $stockLines) {
             Db::update('purchase_returns', [
@@ -204,6 +219,42 @@ final class ReturnClaimService
         return $this->findReturn($returnId);
     }
 
+    /**
+     * How the debit note's goods leave stock: settling the dispatch challan, or issued by the
+     * debit note itself when nothing was dispatched through here.
+     *
+     * @param list<array<string, mixed>> $stockLines
+     * @return array{stock_effect: string, challan_settlements: list<array<string, mixed>>}
+     */
+    private function debitNoteStockEffect(int $returnId, array $stockLines): array
+    {
+        $dispatch = Db::first(
+            "SELECT status, external_reference FROM purchase_integration_commands
+             WHERE cmp_id = :cmp AND entity_type = 'purchase_return' AND entity_id = :id AND command_type = :type
+             ORDER BY command_id DESC LIMIT 1",
+            ['cmp' => $this->ctx->cmpId, 'id' => $returnId, 'type' => self::COMMAND_RETURN_DISPATCH],
+        );
+        if ($dispatch === null || $dispatch['status'] !== IntegrationCommand::COMPLETED) {
+            return ['stock_effect' => 'on_invoice', 'challan_settlements' => []];
+        }
+        $reference = Db::jsonColumn($dispatch['external_reference'] ?? null);
+        if (($reference['document_type'] ?? null) !== 'DELIVERY_CHALLAN' || (int) ($reference['inventory_document_id'] ?? 0) <= 0) {
+            // Dispatched before the dispatch was a challan: those goods already left stock.
+            Http::conflict('These goods left stock when they were dispatched, before returns went out on a challan; raising the debit note here would issue them again. Raise it in Books, where the stock effect can be chosen.');
+        }
+        $documentId = (int) $reference['inventory_document_id'];
+
+        return [
+            'stock_effect'        => 'from_challan',
+            'challan_settlements' => array_map(static fn (array $line) => [
+                'source_document_id' => $documentId,
+                'item_id'            => (int) $line['item_id'],
+                'qty'                => (float) $line['return_qty'],
+                'mc_id'              => $line['warehouse_id'] === null ? null : (int) $line['warehouse_id'],
+            ], $stockLines),
+        ];
+    }
+
     /** Ask Books for the debit note. Books owns the credit against the payable. */
     public function requestDebitNote(int $returnId): array
     {
@@ -220,13 +271,19 @@ final class ReturnClaimService
             Http::conflict('A debit note has already been raised for this return.');
         }
 
+        // Decided before the command is opened, so a refusal leaves nothing POSTING.
+        $stockLines = array_values(array_filter($return['lines'], static fn (array $l) => $l['item_id'] !== null));
+        $stock = $this->debitNoteStockEffect($returnId, $stockLines);
+
         $command = IntegrationCommand::open($this->ctx, 'books', self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, ['return_no' => $return['return_no']]);
         $commandId = (int) $command['command_id'];
         IntegrationCommand::markPosting($commandId);
 
         $payload = [
             'vch_date'     => (string) $return['return_date'],
-            'party_acc_id' => (int) $return['supplier_account_id'],
+            // party.acc_id is what Books composes a debit note from; the flat party_acc_id was
+            // never read.
+            'party'        => ['acc_id' => (int) $return['supplier_account_id']],
             'narration'    => 'Debit note against purchase return ' . $return['return_no'],
             'reference_no' => (string) $return['return_no'],
             'bo_id'        => (int) $return['bo_id'],
@@ -236,19 +293,28 @@ final class ReturnClaimService
             'source_document_id'   => $returnId,
             'source_document_uuid' => (string) $return['return_uuid'],
 
+            // The goods leave once, with this debit note: settling the dispatch challan when the
+            // goods went back on one, or issuing them here when the debit note comes first.
+            'stock_effect'        => $stock['stock_effect'],
+            'challan_settlements' => $stock['challan_settlements'],
+
             'inventory_lines' => array_values(array_map(static fn (array $line) => [
                 'source_line_ref' => (string) $line['line_id'],
-                'item_id'         => $line['item_id'] === null ? null : (int) $line['item_id'],
+                'item_id'         => (int) $line['item_id'],
                 'unit_id'         => $line['unit_id'] === null ? null : (int) $line['unit_id'],
                 'mc_id'           => $line['warehouse_id'] === null ? null : (int) $line['warehouse_id'],
+                'batch_id'        => $line['batch_id'] === null ? null : (int) $line['batch_id'],
+                // A debit note's item line is on the credit side in Books.
+                'dr_cr'           => 2,
                 'qty'             => (float) $line['return_qty'],
                 'rate'            => (float) $line['rate'],
                 'amount'          => (float) $line['line_amount'],
-            ], array_filter($return['lines'], static fn (array $l) => $l['item_id'] !== null))),
+            ], $stockLines)),
         ];
 
+        // As the person raising the debit note: Books' voucher routes take a session, never a service key.
         $response = (new BooksClient())
-            ->withService($this->auth->uuid)
+            ->withSession($this->auth->sesKey())
             ->createAndPostVoucher($this->ctx, BooksClient::VCH_DEBIT_NOTE, $payload, (string) $command['idempotency_key']);
 
         if (!$response['ok']) {
