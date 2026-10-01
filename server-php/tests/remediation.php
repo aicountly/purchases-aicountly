@@ -1638,6 +1638,76 @@ check('a bill is posted, read back and revised in the year and branch it was ent
     same(1, (int) $revised['revision'], 'revised within its own year');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU3: a product's key acts only for its companies, and only reads unless granted\n";
+
+/** What Auth::resolve() builds for a product's X-Service-Key: the product, an actor it names, no session. */
+function productKey(string $app = 'insights'): Auth
+{
+    $r = new \ReflectionClass(Auth::class);
+    $auth = $r->newInstanceWithoutConstructor();
+    foreach (['uuid' => 'service:' . $app, 'kind' => 'service', 'sourceApp' => $app, 'sesKey' => '', 'session' => null] as $prop => $value) {
+        $r->getProperty($prop)->setValue($auth, $value);
+    }
+
+    return $auth;
+}
+
+check('a product key opens only the companies it is bound to, and reads but cannot write, approve or administer', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $key = productKey();
+
+    $refusal = refused(fn () => Context::of(88, 6, 0)->assertAllowed($key), 'SERVICE_KEY_COMPANIES', 'a key bound to no company');
+    same(403, $refusal['status'], 'opens none');
+    [$status] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key);
+    same(403, $status, 'not even to read');
+
+    putenv('SERVICE_KEY_COMPANIES=insights:88|94,billing:91');
+    try {
+        Context::of(88, 6, 0)->assertAllowed($key);
+        [$status, $payload] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key);
+        same(200, $status, 'its own company\'s orders are readable');
+        same((int) $po['po_id'], (int) ($payload['data'][0]['po_id'] ?? 0), 'and read');
+        [$status] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key, ['cmp_id' => '91', 'fy_id' => '6', 'bo_id' => '0']);
+        same(403, $status, 'another company\'s are not, though another product may hold that one');
+
+        same(ServiceKeys::DEFAULT_PERMISSIONS, Permissions::granted($ctx, $key), 'unlisted, a key only reads');
+        $write = refused(fn () => (new PurchaseOrderService($ctx, $key))->create(['supplier_account_id' => 601, 'supplier_name' => 'X', 'po_date' => '2026-09-01', 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 1]]]), 'SERVICE_KEY_PERMISSIONS', 'a write');
+        same(403, $write['status'], 'refused, naming the setting');
+
+        putenv('SERVICE_KEY_PERMISSIONS=insights:po.view|po.create|access.manage|po.approve|bill.post|made.up');
+        Permissions::forget();
+        same(['po.view', 'po.create'], Permissions::granted($ctx, $key), 'granted more, it holds real codes only and never administration, approval or posting');
+        [$status] = endpoint([Controllers\AccessController::class, 'profiles'], $key);
+        same(403, $status, 'access administration stays closed to a key');
+        same([], Permissions::grantable($ctx, $key), 'and a key can grant nobody anything');
+        refused(fn () => (new PurchaseOrderService($ctx, $key))->cancel((int) $po['po_id'], ['reason' => 'test']), 'service key is not allowed', 'nor cancel an order');
+        refused(fn () => (new PurchaseOrderService($ctx, $key))->decide((int) $po['po_id'], 'approve', []), 'service key is not allowed', 'nor approve one');
+    } finally {
+        putenv('SERVICE_KEY_COMPANIES');
+        putenv('SERVICE_KEY_PERMISSIONS');
+        Permissions::forget();
+    }
+});
+
+check('the key resolves to its product by constant-time comparison, and a placeholder authenticates nothing', function () {
+    putenv('SERVICE_KEYS=insights:k-insights-0001,billing:CHANGE_ME_LATER');
+    try {
+        $_SERVER['HTTP_X_SERVICE_KEY'] = 'k-insights-0001';
+        $_SERVER['HTTP_X_ACTOR_UUID'] = 'user-7';
+        $auth = Auth::resolve();
+        same(['service', 'insights', 'user-7'], [$auth?->kind, $auth?->sourceApp, $auth?->uuid], 'the product, acting for the person it names');
+        $_SERVER['HTTP_X_SERVICE_KEY'] = 'CHANGE_ME_LATER';
+        same(null, Auth::resolve(), 'a placeholder left in .env is no key');
+        $_SERVER['HTTP_X_SERVICE_KEY'] = 'k-insights-0002';
+        same(null, Auth::resolve(), 'nor is a near miss');
+    } finally {
+        unset($_SERVER['HTTP_X_SERVICE_KEY'], $_SERVER['HTTP_X_ACTOR_UUID']);
+        putenv('SERVICE_KEYS');
+    }
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

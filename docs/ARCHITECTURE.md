@@ -150,10 +150,25 @@ User presses Save
 
 No lock is held across a network call; the lease stops two attempts running at once.
 
+The key Books or Inventory receives is the stored key **sized to that product's column**
+(`IdempotencyKey`, applied by `ApiClient` to every call): unchanged when it fits; otherwise a
+readable head plus a sha256 of the whole key and its step (`:draft` / `:post`). Books keeps 64
+characters; a debit note's key with its step is 66+. Commands Books refused for the length
+before this was in place are recovered per company with `bin/books-key-recovery.php`.
+
 A **retry drives the original request row**, not a new one — `ReceiptService`
 splits `request()` from `dispatch()` for exactly this reason. A fresh row would
 mint a fresh key, and a receipt Inventory had already recorded but whose response
 was lost would be recorded twice.
+
+## Another product calling Purchases
+
+Every caller today — Email, Insights, Connect — sends the **person's own session**, and gets
+exactly that person's company access and permissions. A product key (`SERVICE_KEYS`) is bounded
+(`ServiceKeys`): it acts only for the companies `SERVICE_KEY_COMPANIES` lists for it (none by
+default — a key has no session to ask Manage with), it only reads unless
+`SERVICE_KEY_PERMISSIONS` grants more, and it never holds administration, an approval, match
+resolution or anything that posts to Books, whatever is listed.
 
 ## Why there is no reconciliation cron
 

@@ -74,10 +74,14 @@ final class Context
     public function assertAllowed(Auth $auth): void
     {
         if ($auth->isService()) {
-            // A service key is issued to a product, not to a person, and the
-            // owning product has already checked the human behind it. What it
-            // must still not do is act on a company outside the key's scope,
-            // which ServiceKeys enforces when the key is resolved.
+            // A service key is issued to a product, not to a person, and the owning product
+            // has already checked the human behind it — there is no session here to ask Manage
+            // with. What it must still not do is act for a company outside the key's binding,
+            // and until this check existed nothing stopped it: any key opened any company.
+            if (!ServiceKeys::allowsCompany($auth->sourceApp, $this->cmpId)) {
+                Http::forbidden('The ' . $auth->sourceApp . ' service key is not allowed to act for this company (SERVICE_KEY_COMPANIES).');
+            }
+
             return;
         }
 
