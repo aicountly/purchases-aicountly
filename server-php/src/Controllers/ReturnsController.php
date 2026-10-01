@@ -59,7 +59,7 @@ final class ReturnsController extends Controller
     public static function debitNote(string $id): void
     {
         [$auth, $ctx] = self::enter();
-        Http::data((new ReturnClaimService($ctx, $auth))->requestDebitNote((int) $id));
+        Http::data((new ReturnClaimService($ctx, $auth))->requestDebitNote((int) $id, Http::body()));
     }
 
     public static function cancel(string $id): void

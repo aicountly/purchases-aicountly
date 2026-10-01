@@ -109,6 +109,7 @@ export function BillDetail() {
   const [reviseDate, setReviseDate] = useState('')
   const [revisePosting, setRevisePosting] = useState('')
   const [reviseNote, setReviseNote] = useState('')
+  const [reviseGstin, setReviseGstin] = useState('')
   const [cancelReason, setCancelReason] = useState('')
 
   const { data, loading, reload } = useApi(
@@ -211,6 +212,9 @@ export function BillDetail() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.6rem' }}>
               <Field label="Supplier invoice date"><Input type="date" value={reviseDate} onChange={(e) => setReviseDate(e.target.value)} /></Field>
               <Field label="Posting date"><Input type="date" value={revisePosting} onChange={(e) => setRevisePosting(e.target.value)} /></Field>
+              <Field label="Supplier GSTIN on the invoice" hint="Only if it differs from their ledger in Smart Books.">
+                <Input value={reviseGstin} maxLength={15} onChange={(e) => setReviseGstin(e.target.value.toUpperCase())} />
+              </Field>
             </div>
             <Field label="What changed"><Input value={reviseNote} onChange={(e) => setReviseNote(e.target.value)} /></Field>
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
@@ -219,7 +223,7 @@ export function BillDetail() {
                 tone="primary"
                 disabled={busy}
                 onClick={async () => {
-                  await act(`v1/bills/${id}/revise`, { supplier_invoice_date: reviseDate || undefined, posting_date: revisePosting || undefined, note: reviseNote || undefined })
+                  await act(`v1/bills/${id}/revise`, { supplier_invoice_date: reviseDate || undefined, posting_date: revisePosting || undefined, supplier_gstin: reviseGstin.trim() || undefined, note: reviseNote || undefined })
                   setPanel('none')
                 }}
               >
@@ -376,6 +380,8 @@ export function BillEditor() {
   const { scope } = usePurchases()
 
   const [invoiceNo, setInvoiceNo] = useState('')
+  // The GSTIN printed on the invoice, only when it is not the one on the supplier's ledger.
+  const [supplierGstin, setSupplierGstin] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [dueDate, setDueDate] = useState('')
   const [postingDate, setPostingDate] = useState('')
@@ -417,6 +423,7 @@ export function BillEditor() {
     supplier_invoice_date: invoiceDate,
     due_date: dueDate || undefined,
     posting_date: postingDate || undefined,
+    supplier_gstin: supplierGstin.trim() || undefined,
   }
 
   async function save() {
@@ -489,6 +496,9 @@ export function BillEditor() {
           {!po && <SupplierPicker onPick={setSupplier} selectedLabel={supplier?.acc_name ?? null} />}
           <Field label="Supplier invoice number" hint="The same invoice cannot be booked twice — here, in Billing or in Smart Books.">
             <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} />
+          </Field>
+          <Field label="Supplier GSTIN on the invoice (optional)" hint="Only when it differs from the one on their ledger in Smart Books. Its state decides how the GST is split.">
+            <Input value={supplierGstin} maxLength={15} onChange={(e) => setSupplierGstin(e.target.value.toUpperCase())} />
           </Field>
           <Field label="Invoice date" hint="As printed on the supplier's invoice."><Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} /></Field>
           <Field label="Due date (optional)"><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>

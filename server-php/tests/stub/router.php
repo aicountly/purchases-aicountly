@@ -638,8 +638,23 @@ if (preg_match('#/masters/accounts$#', $path) === 1 && $method === 'GET') {
     echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows)]]);
     exit;
 }
-if (str_contains($path, '/masters/accounts/')) {
-    echo json_encode(['data' => ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30]]);
+/*
+ * One ledger, as Books' AccountsController::show answers it: the account row (a.*), with the GST
+ * identity a purchase's place of supply is read from — gstin, gst_reg_type, state_code,
+ * country_code, is_non_resident. Supplier 601 is registered in Maharashtra (27); a test changes a
+ * ledger by writing stub-accounts.json ({acc_id: {field: value}}).
+ */
+if (preg_match('#/masters/accounts/(\d+)$#', $path, $am) === 1 && $method === 'GET') {
+    $overrides = is_file(sys_get_temp_dir() . '/stub-accounts.json') ? (json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-accounts.json'), true) ?: []) : [];
+    $accId = (int) $am[1];
+    $row = ['acc_id' => $accId, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30,
+        'gstin' => '27AAPFU0939F1ZV', 'gst_reg_type' => 'regular', 'state_code' => '27', 'country_code' => 'IN', 'is_non_resident' => 0];
+    if (isset($overrides[(string) $accId]) && $overrides[(string) $accId] === null) {
+        http_response_code(404);
+        echo json_encode(['status' => 404, 'error' => 404, 'messages' => ['error' => 'Account not found']]);
+        exit;
+    }
+    echo json_encode(['data' => array_merge($row, (array) ($overrides[(string) $accId] ?? []))]);
     exit;
 }
 /**
@@ -825,6 +840,15 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
             }
         }
     }
+    // Opt-in: the refusal Books is being changed to make (launch plan LB-2) — a voucher with a
+    // GST-categorised line and no place of supply is refused 422, never posted with no GST.
+    $posState = trim((string) ($voucherPayload['party']['pos_state_code'] ?? ''));
+    $categorised = array_filter(array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []), static fn ($l) => !empty($l['tax_cat_id']));
+    if (!empty($modes['books_refuses_unknown_pos']) && $categorised !== [] && $posState === '') {
+        http_response_code(422);
+        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'The place of supply is unknown (party.pos_state_code), so the GST on this voucher cannot be split. Nothing was posted.'], 'error_code' => 'gst_split_unknown']);
+        exit;
+    }
     foreach ($voucherPayload['service_lines'] ?? [] as $svc) {
         if ((int) ($svc['purchase_acc_id'] ?? $svc['sales_acc_id'] ?? $svc['line_acc_id'] ?? 0) <= 0) {
             http_response_code(422);
@@ -842,15 +866,33 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
     ];
 
     // What Books composes: the supplier credited with the total, the goods and services
-    // debited. No tax in the stub (no rates bound), so the total is the taxable value.
+    // debited. No tax by default (no rates bound), so the total is the taxable value. With the
+    // opt-in mode books_gst_state (the branch's state code) every categorised line is taxed at
+    // 18%, split as Books splits it: CGST + SGST when the place of supply is that state, IGST
+    // when it is another, nothing when it is unknown (Books' behaviour before LB-2).
     $taxable = 0.0;
+    $cgst = $sgst = $igst = 0.0;
+    $branchState = (string) ($modes['books_gst_state'] ?? '');
     foreach (array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []) as $l) {
         $taxable += (float) ($l['amount'] ?? 0);
+        if ($branchState !== '' && !empty($l['tax_cat_id']) && $posState !== '') {
+            $gst = round((float) ($l['amount'] ?? 0) * 0.18, 4);
+            if ($posState === $branchState) {
+                $cgst += $gst / 2;
+                $sgst += $gst / 2;
+            } else {
+                $igst += $gst;
+            }
+        }
     }
+    $grandTotal = round($taxable + $cgst + $sgst + $igst, 4);
     $partyAcc = (int) ($voucherPayload['party']['acc_id'] ?? 0);
     $partySide = in_array($type, [11, 2], true) ? 2 : 1;
-    $lines = [['acc_id' => $partyAcc, 'dr_cr' => $partySide, 'amount' => round($taxable, 4)]];
+    $lines = [['acc_id' => $partyAcc, 'dr_cr' => $partySide, 'amount' => $grandTotal]];
     $lines[] = ['acc_id' => $type === 11 ? 9001 : 9002, 'dr_cr' => $partySide === 2 ? 1 : 2, 'amount' => round($taxable, 4)];
+    if ($grandTotal > round($taxable, 4)) {
+        $lines[] = ['acc_id' => 9100, 'dr_cr' => $partySide === 2 ? 1 : 2, 'amount' => round($grandTotal - $taxable, 4)];
+    }
     $bill = is_array($voucherPayload['bill'] ?? null) ? $voucherPayload['bill'] : [];
     if (!empty($modes['books_mangle'])) {
         $bill['bill_ref'] = '';
@@ -870,7 +912,9 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         ],
         'lines'       => $lines,
         'inventory_lines' => array_values($stockLines),
-        'tax_summary' => ['taxable_value' => round($taxable, 4), 'cgst' => 0, 'sgst' => 0, 'igst' => 0, 'grand_total' => round($taxable, 4)],
+        'tax_summary' => ['taxable_value' => round($taxable, 4), 'cgst' => round($cgst, 4), 'sgst' => round($sgst, 4), 'igst' => round($igst, 4), 'grand_total' => $grandTotal],
+        'pos_state_code' => $posState === '' ? null : $posState,
+        'supply_nature' => $voucherPayload['supply_nature'] ?? null,
         'stock'       => $stock,
         'challan_settlements' => $voucherPayload['challan_settlements'] ?? [],
         'source_document_id'  => $voucherPayload['source_document_id'] ?? null,

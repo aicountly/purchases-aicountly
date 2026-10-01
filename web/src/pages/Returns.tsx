@@ -130,6 +130,7 @@ export function ReturnDetail() {
           const path = recoveryPath(command, 'retry')
           if (path) void post(path)
         }}
+        onResend={() => void post(`v1/returns/${id}/debit-note`, { resend: true })}
       />
 
       {physical && item.status === 'APPROVED' && (

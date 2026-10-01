@@ -1784,6 +1784,193 @@ check('the overview\'s priority inbox lists approvals only to those who decide t
     same('25000', $items['delivery'][0]['amount'] ?? null, 'and what is still to come');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU5: Books is told where the supplier supplies from, and a debit note reverses the tax billed\n";
+
+/** Change supplier ledgers as Books answers them. @param array<int, array<string, mixed>|null> $byAccount */
+function ledgers(array $byAccount): void
+{
+    file_put_contents(sys_get_temp_dir() . '/stub-accounts.json', json_encode(array_map(static fn ($v) => $v, $byAccount)));
+}
+
+/** The body of the last draft of a voucher type Books was sent (the tests' probes excluded). @return array<string, mixed> */
+function lastDraftOf(int $type): array
+{
+    $drafts = array_values(array_filter(stubRequests('/vouchers/drafts'), static fn (array $r) => $r['method'] === 'POST' && empty($r['headers']['x-test-probe']) && !str_contains((string) $r['path'], '/post') && (int) ($r['body']['vch_type_id'] ?? 0) === $type));
+
+    return $drafts === [] ? [] : (array) end($drafts)['body']['payload'];
+}
+
+/** A reviewed service bill with a GST category, entered and matched. @return array<string, mixed> */
+function taxedServiceBill(BillService $bills, string $invoiceNo, array $extra = []): array
+{
+    $bill = $bills->enter($extra + ['supplier_account_id' => 601, 'supplier_invoice_no' => $invoiceNo, 'supplier_invoice_date' => '2026-09-19', 'lines' => [['description' => 'Annual maintenance', 'is_service' => true, 'purchase_acc_id' => 7301, 'tax_cat_id' => 18, 'qty' => 1, 'rate' => 10000]]]);
+    acceptOpenExceptions($bills, (int) $bill['request_id']);
+
+    return $bill;
+}
+
+function acceptOpenExceptions(BillService $bills, int $requestId): void
+{
+    foreach ($bills->find($requestId)['matches'][0]['exceptions'] ?? [] as $exception) {
+        if ($exception['status'] === 'OPEN') {
+            $bills->resolveException((int) $exception['exception_id'], 'accept', ['note' => 'Reviewed.']);
+        }
+    }
+}
+
+check('the place of supply is where the supplier supplies from: its GSTIN, the invoice\'s, abroad, or its state', function () {
+    $pos = static fn (array $ledger, ?string $billGstin = null) => array_values(array_intersect_key(Domain\PlaceOfSupply::decide($ledger, $billGstin), ['pos_state_code' => 1, 'supply_nature' => 1]));
+    same(['27', null], $pos(['gstin' => '27AAPFU0939F1ZV', 'state_code' => '29']), 'the GSTIN\'s state, before the ledger\'s address');
+    same(['29', null], $pos(['gstin' => '27AAPFU0939F1ZV'], '29AABCU9603R1ZM'), 'the GSTIN on the invoice, when it names another registration');
+    same(['96', null], $pos(['gstin' => '', 'gst_reg_type' => 'overseas', 'country_code' => 'US']), 'a supplier abroad: Other Country, an import');
+    same(['96', null], $pos(['gstin' => '', 'country_code' => 'DE']), 'a foreign address too');
+    same(['96', null], $pos(['gstin' => '', 'is_non_resident' => 1]), 'and a non-resident');
+    same(['07', null], $pos(['gstin' => '', 'state_code' => '7']), 'an unregistered supplier: the state on its ledger');
+    same([null, null], $pos(['gstin' => '', 'state_code' => '']), 'nothing to go on: unknown, and nothing is sent');
+    same(['24', 'sez'], $pos(['gstin' => '24AAACS1234A1Z5', 'gst_reg_type' => 'sez']), 'an SEZ unit carries Books\' own SEZ nature');
+    same('29AABCU9603R1ZM', Domain\PlaceOfSupply::normaliseGstin(' 29aabcu9603r1zm ', 'supplier_gstin'), 'a GSTIN as typed');
+    refused(fn () => Domain\PlaceOfSupply::normaliseGstin('GST-29', 'supplier_gstin'), 'not a GSTIN', 'and not anything else');
+});
+
+check('a bill tells Books where the supplier supplies from, so its GST is split, and a Books it cannot ask sends nothing', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_gst_state' => '27']);
+    $bills = new BillService($ctx, $owner);
+
+    $local = taxedServiceBill($bills, 'POS-1');
+    same('POSTED', $bills->post((int) $local['request_id'])['status'], 'posted');
+    same('27', lastDraftOf(11)['party']['pos_state_code'] ?? null, 'from the supplier\'s GSTIN on its Books ledger');
+    $voucher = array_values(booksVouchers())[0];
+    same([900.0, 900.0, 0.0], [(float) $voucher['tax_summary']['cgst'], (float) $voucher['tax_summary']['sgst'], (float) $voucher['tax_summary']['igst']], 'same state as the branch: CGST and SGST');
+
+    $other = taxedServiceBill($bills, 'POS-2', ['supplier_gstin' => '29AABCU9603R1ZM']);
+    $posted = $bills->post((int) $other['request_id']);
+    same('29', lastDraftOf(11)['party']['pos_state_code'] ?? null, 'invoiced from its Karnataka registration');
+    same(1800.0, (float) array_values(booksVouchers())[1]['tax_summary']['igst'], 'another state: IGST');
+    same(true, $posted['posting_check']['verified'] ?? null, 'and what Books booked agrees with the bill');
+
+    $third = taxedServiceBill($bills, 'POS-3');
+    $drafts = count(stubRequests('/vouchers/drafts'));
+    stubFail('/masters/accounts/', 503);
+    $refusal = refused(fn () => $bills->post((int) $third['request_id']), 'supplier_ledger_unreadable', 'the ledger cannot be read');
+    stubRecover();
+    same(502, $refusal['status'], 'a retryable failure');
+    same($drafts, count(stubRequests('/vouchers/drafts')), 'and nothing was sent without a place of supply');
+    same('POSTED', $bills->post((int) $third['request_id'])['status'], 'posted once the ledger can be read');
+});
+
+check('a GST bill whose supplier has no GSTIN or state is refused by Books with what to fix, and posts once it is put right', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_refuses_unknown_pos' => true, 'books_gst_state' => '27']);
+    ledgers([601 => ['gstin' => '', 'state_code' => '']]);
+    $bills = new BillService($ctx, $owner);
+    $bill = taxedServiceBill($bills, 'NOPOS-1');
+
+    $refusal = refused(fn () => $bills->post((int) $bill['request_id']), 'no GSTIN and no state', 'Books refuses a GST bill with no place of supply');
+    truthy(str_contains($refusal['message'], 'place of supply is unknown'), 'Books\' own words first: ' . $refusal['message']);
+    truthy(str_contains($refusal['message'], 'then revise the bill'), 'and what to do next');
+    same('BLOCKED', $bills->find((int) $bill['request_id'])['status'], 'the bill waits for a revision');
+    same(0, count(booksVouchers()), 'nothing posted');
+
+    ledgers([601 => ['gstin' => '27AAPFU0939F1ZV', 'state_code' => '27']]);
+    $bills->revise((int) $bill['request_id'], ['note' => 'GSTIN added to the supplier\'s ledger in Smart Books.']);
+    acceptOpenExceptions($bills, (int) $bill['request_id']);
+    same('POSTED', $bills->post((int) $bill['request_id'])['status'], 'the revision posts');
+    same('27', lastDraftOf(11)['party']['pos_state_code'] ?? null, 'with the place of supply');
+    same(900.0, (float) array_values(booksVouchers())[0]['tax_summary']['cgst'], 'and its GST');
+});
+
+check('a bill Books posts with no GST, or an SEZ supply with CGST, is flagged after posting rather than trusted', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_gst_state' => '27']); // Books as it is today: no refusal, no split without a place of supply
+    $bills = new BillService($ctx, $owner);
+
+    ledgers([601 => ['gstin' => '', 'state_code' => '']]);
+    $none = taxedServiceBill($bills, 'ZERO-1');
+    $posted = $bills->post((int) $none['request_id']);
+    same(false, $posted['posting_check']['verified'] ?? null, 'not verified');
+    truthy(str_contains(implode(' ', $posted['posting_check']['problems']), 'booked no GST'), 'Smart Books\' zero GST is put in front of a person');
+
+    ledgers([601 => ['gstin' => '27AAACS1234A1Z5', 'gst_reg_type' => 'sez']]);
+    $sez = taxedServiceBill($bills, 'SEZ-1');
+    $posted = $bills->post((int) $sez['request_id']);
+    same('sez', lastDraftOf(11)['supply_nature'] ?? null, 'an SEZ supplier is sent as an SEZ supply');
+    truthy(str_contains(implode(' ', $posted['posting_check']['problems'] ?? []), 'SEZ'), 'and CGST on it is flagged: an SEZ supply is inter-state');
+});
+
+check('a return\'s debit note reverses the GST the bill charged — its category and its rate — from where the supplier supplies', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner); // ordered at 250, item default category
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 100);
+    $bills = new BillService($ctx, $owner);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'TAX-12', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 100, 'rate' => 240, 'tax_cat_id' => 12, 'hsn_sac' => '7214']]]);
+    acceptOpenExceptions($bills, (int) $bill['request_id']);
+    same('POSTED', $bills->post((int) $bill['request_id'])['status'], 'billed at 240 under category 12');
+
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $return = returnOf($ctx, $owner, $po, 10);
+    same([240.0, 12], [(float) $return['lines'][0]['rate'], (int) $return['lines'][0]['tax_cat_id']], 'the return is valued and taxed as it was billed, not as it was ordered');
+    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->dispatchReturn((int) $return['return_id']);
+    $returns->requestDebitNote((int) $return['return_id']);
+    $note = lastDraftOf(3);
+    same([12, '7214', 240.0], [(int) ($note['inventory_lines'][0]['tax_cat_id'] ?? 0), $note['inventory_lines'][0]['hsn_sac'] ?? null, (float) $note['inventory_lines'][0]['rate']], 'the debit note carries the billed category, HSN and rate');
+    same('27', $note['party']['pos_state_code'] ?? null, 'and the supplier\'s state');
+});
+
+check('a financial return and a claim settled by a debit note carry the tax category they are booked under', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $return = $returns->createReturn(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'return_kind' => 'financial', 'adjustment_acc_id' => 7310, 'adjustment_reason' => 'Rate agreed down.', 'lines' => [['description' => 'Rate difference', 'return_qty' => 1, 'rate' => 1500, 'tax_cat_id' => 18]]]);
+    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->requestDebitNote((int) $return['return_id']);
+    same(18, (int) (lastDraftOf(3)['service_lines'][0]['tax_cat_id'] ?? 0), 'a rate difference reverses its GST too');
+
+    $claimId = approvedClaim($ctx, $owner, 900);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 900, 'adjustment_acc_id' => 7310, 'tax_cat_id' => 18]);
+    $resolutions->approve((int) $r['resolution_id']);
+    $note = lastDraftOf(3);
+    same([18, '27'], [(int) ($note['service_lines'][0]['tax_cat_id'] ?? 0), $note['party']['pos_state_code'] ?? null], 'and so does a claim\'s debit note, from where the supplier supplies');
+});
+
+check('a debit note Books refused is sent again — as a new request, once what it refused is put right — and posts once', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_refuses_unknown_pos' => true]);
+    $po = orderOf($ctx, $owner, [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250, 'warehouse_id' => 3, 'tax_cat_id' => 18]]);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 100);
+    $bills = new BillService($ctx, $owner);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'RS-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 100, 'rate' => 250]]]);
+    $bills->post((int) $bill['request_id']);
+
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
+    $returns->approveReturn($id, []);
+    $returns->dispatchReturn($id);
+
+    ledgers([601 => ['gstin' => '', 'state_code' => '']]); // the ledger lost its GSTIN
+    $refusal = refused(fn () => $returns->requestDebitNote($id), 'then send it again', 'Books refuses the debit note, and says what to do');
+    refused(fn () => $returns->requestDebitNote($id), 'place of supply is unknown', 'pressing the same button sends nothing new');
+    refused(fn () => $returns->requestDebitNote($id, ['resend' => true]), 'place of supply is unknown', 'sent again before the ledger is put right, it is refused again');
+    same(0, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'no debit note yet');
+
+    ledgers([601 => ['gstin' => '27AAPFU0939F1ZV']]);
+    $debited = $returns->requestDebitNote($id, ['resend' => true, 'note' => 'GSTIN restored on the ledger.']);
+    same('DEBITED', $debited['status'], 'sent again, it posts');
+    $commands = IntegrationCommand::forEntity($ctx, 'purchase_return', $id);
+    $notes = array_values(array_filter($commands, static fn ($c) => $c['command_type'] === Domain\ReturnClaimService::COMMAND_DEBIT_NOTE));
+    same([['CANCELLED', 'superseded'], ['CANCELLED', 'superseded'], ['COMPLETED', 'response']], array_map(static fn ($c) => [$c['status'], $c['resolved_by']], $notes), 'each refused request superseded by the next, under its own key');
+    same('27', lastDraftOf(3)['party']['pos_state_code'] ?? null, 'built from the return as it stands now');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'one debit note in Books');
+    same(2, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'return.debit_note_resent'"), 'each resend audited');
+    same('DEBITED', $returns->requestDebitNote($id, ['resend' => true])['status'], 'asked again once debited, nothing more is sent');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'still one debit note');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

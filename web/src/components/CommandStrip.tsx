@@ -22,11 +22,14 @@ export function CommandStrip({
   commands,
   onRetry,
   onReconcile,
+  onResend,
   busy,
 }: {
   commands: IntegrationCommand[]
   onRetry?: (command: IntegrationCommand) => void
   onReconcile?: (command: IntegrationCommand) => void
+  /** A refused request sent again as a new one, built from the document as it stands now. */
+  onResend?: (command: IntegrationCommand) => void
   busy?: boolean
 }) {
   const unresolved = commands.filter((command) => command.status !== 'COMPLETED' && command.status !== 'CANCELLED')
@@ -51,6 +54,11 @@ export function CommandStrip({
                   Retry
                 </Button>
               )}
+              {command.status === 'BLOCKED' && onResend && resendable(command) && (
+                <Button tone="secondary" disabled={busy} onClick={() => onResend(command)}>
+                  Send again
+                </Button>
+              )}
             </div>
           }
         >
@@ -71,6 +79,7 @@ export function CommandStrip({
           {command.status === 'BLOCKED' && (
             <p style={{ margin: '0.4rem 0 0', fontSize: '0.82rem', color: 'var(--muted)' }}>
               This was refused rather than missed, so retrying it unchanged will fail the same way.
+              {onResend && resendable(command) && ' Put right what Smart Books refused, then Send again: it goes as a new request, built from the document as it stands now.'}
             </p>
           )}
           {command.status === 'POSTING' && (
@@ -98,6 +107,11 @@ export function describe(command: IntegrationCommand): string {
   const what = WHAT[command.command_type] ?? command.command_type
 
   return `${what} in ${target}`
+}
+
+/** Commands that can be sent again as a new request after a refusal (a new revision with its own key). */
+export function resendable(command: IntegrationCommand): boolean {
+  return command.command_type === 'purchases.return.debit_note'
 }
 
 /**
