@@ -840,13 +840,20 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
             }
         }
     }
-    // Opt-in: the refusal Books is being changed to make (launch plan LB-2) — a voucher with a
-    // GST-categorised line and no place of supply is refused 422, never posted with no GST.
+    // Books' CommercialVoucherComposer::guardGstSplit (books 7c10e6eb, C1): for a product posting
+    // through the API (X-Saas-Origin other than books) a GST-rated line whose CGST/SGST-or-IGST split
+    // is unknown — no party.pos_state_code — is a 422 and nothing is posted. Every categorised line
+    // counts as GST-rated here. Mode books_before_c1 answers as Books did before it: posted, no GST.
     $posState = trim((string) ($voucherPayload['party']['pos_state_code'] ?? ''));
-    $categorised = array_filter(array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []), static fn ($l) => !empty($l['tax_cat_id']));
-    if (!empty($modes['books_refuses_unknown_pos']) && $categorised !== [] && $posState === '') {
+    $categorised = array_filter(array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []), static fn ($l) => !empty($l['tax_cat_id']) && abs((float) ($l['amount'] ?? 0)) >= 0.00005);
+    $origin = strtolower(trim((string) ($headers['x-saas-origin'] ?? '')));
+    if (empty($modes['books_before_c1']) && $origin !== '' && $origin !== 'books' && $categorised !== [] && $posState === '') {
         http_response_code(422);
-        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'The place of supply is unknown (party.pos_state_code), so the GST on this voucher cannot be split. Nothing was posted.'], 'error_code' => 'gst_split_unknown']);
+        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => sprintf(
+            '%d line(s) carry GST, but the place of supply is not known, so Books cannot tell whether to charge CGST + SGST or IGST. '
+            . 'Nothing was posted (it would have posted with no GST). Send party.pos_state_code (the state the goods or services are supplied to), or set the party\'s state.',
+            count($categorised),
+        )]]);
         exit;
     }
     foreach ($voucherPayload['service_lines'] ?? [] as $svc) {

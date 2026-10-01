@@ -1862,13 +1862,13 @@ check('a bill tells Books where the supplier supplies from, so its GST is split,
 
 check('a GST bill whose supplier has no GSTIN or state is refused by Books with what to fix, and posts once it is put right', function () use ($ctx, $owner) {
     reset();
-    stubMode(['books_refuses_unknown_pos' => true, 'books_gst_state' => '27']);
+    stubMode(['books_gst_state' => '27']);
     ledgers([601 => ['gstin' => '', 'state_code' => '']]);
     $bills = new BillService($ctx, $owner);
     $bill = taxedServiceBill($bills, 'NOPOS-1');
 
     $refusal = refused(fn () => $bills->post((int) $bill['request_id']), 'no GSTIN and no state', 'Books refuses a GST bill with no place of supply');
-    truthy(str_contains($refusal['message'], 'place of supply is unknown'), 'Books\' own words first: ' . $refusal['message']);
+    truthy(str_contains($refusal['message'], 'place of supply is not known'), 'Books\' own words first: ' . $refusal['message']);
     truthy(str_contains($refusal['message'], 'then revise the bill'), 'and what to do next');
     same('BLOCKED', $bills->find((int) $bill['request_id'])['status'], 'the bill waits for a revision');
     same(0, count(booksVouchers()), 'nothing posted');
@@ -1883,7 +1883,7 @@ check('a GST bill whose supplier has no GSTIN or state is refused by Books with 
 
 check('a bill Books posts with no GST, or an SEZ supply with CGST, is flagged after posting rather than trusted', function () use ($ctx, $owner) {
     reset();
-    stubMode(['books_gst_state' => '27']); // Books as it is today: no refusal, no split without a place of supply
+    stubMode(['books_gst_state' => '27', 'books_before_c1' => true]); // Books before 7c10e6eb: no refusal, no split without a place of supply — what vouchers posted before it look like
     $bills = new BillService($ctx, $owner);
 
     ledgers([601 => ['gstin' => '', 'state_code' => '']]);
@@ -1939,8 +1939,7 @@ check('a financial return and a claim settled by a debit note carry the tax cate
 
 check('a debit note Books refused is sent again — as a new request, once what it refused is put right — and posts once', function () use ($ctx, $owner) {
     reset();
-    stubMode(['books_refuses_unknown_pos' => true]);
-    $po = orderOf($ctx, $owner, [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250, 'warehouse_id' => 3, 'tax_cat_id' => 18]]);
+        $po = orderOf($ctx, $owner, [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250, 'warehouse_id' => 3, 'tax_cat_id' => 18]]);
     $lineId = (int) $po['lines'][0]['line_id'];
     receive($ctx, $owner, (int) $po['po_id'], $lineId, 100);
     $bills = new BillService($ctx, $owner);
@@ -1954,8 +1953,8 @@ check('a debit note Books refused is sent again — as a new request, once what 
 
     ledgers([601 => ['gstin' => '', 'state_code' => '']]); // the ledger lost its GSTIN
     $refusal = refused(fn () => $returns->requestDebitNote($id), 'then send it again', 'Books refuses the debit note, and says what to do');
-    refused(fn () => $returns->requestDebitNote($id), 'place of supply is unknown', 'pressing the same button sends nothing new');
-    refused(fn () => $returns->requestDebitNote($id, ['resend' => true]), 'place of supply is unknown', 'sent again before the ledger is put right, it is refused again');
+    refused(fn () => $returns->requestDebitNote($id), 'place of supply is not known', 'pressing the same button sends nothing new');
+    refused(fn () => $returns->requestDebitNote($id, ['resend' => true]), 'place of supply is not known', 'sent again before the ledger is put right, it is refused again');
     same(0, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'no debit note yet');
 
     ledgers([601 => ['gstin' => '27AAPFU0939F1ZV']]);
