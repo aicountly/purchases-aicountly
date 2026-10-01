@@ -157,8 +157,8 @@ final class InventoryClient extends ApiClient
     // Tracking identities a goods receipt names (Inventory 3f66a41, C6). A document line names
     // its serials as serial IDS and its batch as batch_id: a serial number sent as text is
     // refused (422), and a batch number in metadata is never a batch. So the numbers are
-    // registered first — as the person recording the receipt: Inventory's policy grants this
-    // product's key documents, not master data.
+    // registered first — with this product's key (Inventory 2880977 grants it register-only
+    // rights on serials and batches), else as the person recording the receipt (ReceiptTracking).
     // -----------------------------------------------------------------------
 
     /** Batches of an item whose number contains $batchNo (the caller picks the exact one). */

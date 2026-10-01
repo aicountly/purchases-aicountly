@@ -8,6 +8,7 @@ use Aicountly\Api\Auth;
 use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Context;
 use Aicountly\Api\Db;
+use Aicountly\Api\Env;
 use Aicountly\Api\Http;
 use Aicountly\Api\IntegrationCommand;
 
@@ -149,6 +150,13 @@ final class ReceiptTracking
         }
 
         $inventory = (new InventoryClient())->withSession($this->auth->sesKey());
+        // Registering the serials and batches a receipt names is Purchase's own act: Inventory
+        // 2880977 grants this product's key masters.serials.register / masters.batches.register
+        // (create only). An Inventory not yet updated refuses the key (403), and the person
+        // recording the receipt registers them as before, so neither side waits on the other.
+        $registrar = Env::get('INVENTORY_SERVICE_KEY') !== ''
+            ? (new InventoryClient())->withService($this->auth->uuid)
+            : null;
         $batches = [];
         foreach ($lines as $i => $line) {
             if ((float) ($line['qty'] ?? 0) <= 0) {
@@ -161,7 +169,7 @@ final class ReceiptTracking
             if ($batchNo !== null && self::id($line['batch_id'] ?? null) === null) {
                 $key = $itemId . '|' . $batchNo;
                 if (!isset($batches[$key])) {
-                    $found = $this->batchId($inventory, $scope, $itemId, $batchNo, $lineNo);
+                    $found = $this->batchId($inventory, $registrar, $scope, $itemId, $batchNo, $lineNo);
                     if (is_array($found)) {
                         return ['receipt' => $receipt, 'problem' => $found];
                     }
@@ -172,7 +180,7 @@ final class ReceiptTracking
 
             $serials = self::serialNumbers($line['serials'] ?? null);
             if ($serials !== [] && !is_array($line['serial_ids'] ?? null)) {
-                $ids = $this->serialIds($inventory, $scope, $itemId, self::id($line['warehouse_id'] ?? null), self::id($lines[$i]['batch_id'] ?? null), $serials, $lineNo);
+                $ids = $this->serialIds($inventory, $registrar, $scope, $itemId, self::id($line['warehouse_id'] ?? null), self::id($lines[$i]['batch_id'] ?? null), $serials, $lineNo);
                 if (isset($ids['problem'])) {
                     return ['receipt' => $receipt, 'problem' => $ids['problem']];
                 }
@@ -196,10 +204,28 @@ final class ReceiptTracking
         ];
     }
 
-    /** @return int|array{status: int, code: string, message: string, retryable: bool} the batch id, or why not */
-    private function batchId(InventoryClient $inventory, Context $scope, int $itemId, string $batchNo, int $lineNo): int|array
+    /**
+     * Register with Purchase's key when it has one, else — or when Inventory refuses the key
+     * (403: an Inventory before 2880977) — as the person.
+     *
+     * @param callable(InventoryClient): array $call
+     */
+    private static function registerInInventory(?InventoryClient $registrar, InventoryClient $person, callable $call): array
     {
-        $created = $inventory->createBatch($scope, $itemId, $batchNo);
+        if ($registrar !== null) {
+            $answer = $call($registrar);
+            if ((int) ($answer['status'] ?? 0) !== 403) {
+                return $answer;
+            }
+        }
+
+        return $call($person);
+    }
+
+    /** @return int|array{status: int, code: string, message: string, retryable: bool} the batch id, or why not */
+    private function batchId(InventoryClient $inventory, ?InventoryClient $registrar, Context $scope, int $itemId, string $batchNo, int $lineNo): int|array
+    {
+        $created = self::registerInInventory($registrar, $inventory, static fn (InventoryClient $c): array => $c->createBatch($scope, $itemId, $batchNo));
         if ($created['ok'] && self::id($created['body']['data']['batch_id'] ?? null) !== null) {
             return (int) $created['body']['data']['batch_id'];
         }
@@ -223,9 +249,9 @@ final class ReceiptTracking
      * @param list<string> $serials
      * @return array{ids: list<int>}|array{problem: array{status: int, code: string, message: string, retryable: bool}}
      */
-    private function serialIds(InventoryClient $inventory, Context $scope, int $itemId, ?int $warehouseId, ?int $batchId, array $serials, int $lineNo): array
+    private function serialIds(InventoryClient $inventory, ?InventoryClient $registrar, Context $scope, int $itemId, ?int $warehouseId, ?int $batchId, array $serials, int $lineNo): array
     {
-        $registered = $inventory->registerSerials($scope, $itemId, $warehouseId, $batchId, $serials);
+        $registered = self::registerInInventory($registrar, $inventory, static fn (InventoryClient $c): array => $c->registerSerials($scope, $itemId, $warehouseId, $batchId, $serials));
         if (!$registered['ok']) {
             return ['problem' => self::problem($registered, sprintf('Line %d: Inventory did not register the serial numbers', $lineNo))];
         }

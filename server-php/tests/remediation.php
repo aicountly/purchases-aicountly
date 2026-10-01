@@ -2241,7 +2241,7 @@ check('Inventory refuses serial numbers sent as text (the stub answers as Invent
     truthy(str_contains((string) $answer['error'], 'serials must be serial ids'), 'with Inventory\'s words');
 });
 
-check('serial numbers are checked against the item, registered as the person, and sent as ids — one per base unit, never twice into stock', function () use ($ctx, $owner) {
+check('serial numbers are checked against the item, registered with Purchase\'s key, and sent as ids — one per base unit, never twice into stock', function () use ($ctx, $owner) {
     reset();
     stubMode(['tracked_items' => ['201' => ['serial' => 1, 'units' => [['unit_id' => 2, 'conversion_factor' => 10]]]]]);
     $po = orderOf($ctx, $owner);
@@ -2259,7 +2259,7 @@ check('serial numbers are checked against the item, registered as the person, an
     $registered = stubRequests('/v1/serials/bulk');
     same(1, count($registered), 'the numbers are registered once');
     same([201, 3, ['SN-1', 'SN-2', 'SN-3']], [(int) $registered[0]['body']['item_id'], (int) $registered[0]['body']['warehouse_id'], $registered[0]['body']['serial_nos']], 'for the item, in the warehouse they arrive in');
-    truthy(str_starts_with((string) ($registered[0]['headers']['authorization'] ?? ''), 'Bearer ') && !isset($registered[0]['headers']['x-service-key']), 'as the person: Purchase\'s key may not write Inventory\'s masters');
+    truthy(isset($registered[0]['headers']['x-service-key']), 'with Purchase\'s own key: Inventory 2880977 lets it register serials and batches');
     $ids = array_map(static fn ($r) => (int) $r['serial_id'], array_values(serialRegister()['serials']));
     same($ids, grnPosts()[0]['body']['lines'][0]['serials'] ?? null, 'the GRN names the units by the ids Inventory gave them');
     same($ids, Db::jsonColumn(Db::scalar('SELECT requested_lines FROM purchase_receipt_requests ORDER BY request_id LIMIT 1'))[0]['serial_ids'] ?? null, 'kept on the receipt, so a retry sends the same ids');
@@ -2289,6 +2289,21 @@ check('serial numbers are checked against the item, registered as the person, an
     $receipts->request($poId, $with(3, ['SN-1', 'SN-2', 'SN-3']));
     $posts = grnPosts();
     same($ids, end($posts)['body']['lines'][0]['serials'] ?? null, 'the same units, under the same ids');
+});
+
+check('an Inventory that does not yet let Purchase\'s key register serials: the person registers them, as before', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['tracked_items' => ['201' => ['serial' => 1]], 'inventory_pre_register_policy' => true]);
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+
+    (new ReceiptService($ctx, $owner))->request((int) $po['po_id'], ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 2, 'serials' => ['SN-8', 'SN-9']]]]);
+
+    $calls = stubRequests('/v1/serials/bulk');
+    same(2, count($calls), 'the key is refused once, then the person registers them');
+    truthy(isset($calls[0]['headers']['x-service-key']), 'first with Purchase\'s key');
+    truthy(str_starts_with((string) ($calls[1]['headers']['authorization'] ?? ''), 'Bearer ') && !isset($calls[1]['headers']['x-service-key']), 'then as the person');
+    same(2, count(grnPosts()[0]['body']['lines'][0]['serials'] ?? []), 'and the receipt goes through with both ids');
 });
 
 check('serial numbers on an item that does not track them are refused; a batch goes as the batch it is, registered once', function () use ($ctx, $owner) {

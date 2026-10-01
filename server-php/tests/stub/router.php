@@ -444,7 +444,9 @@ function stubTracked(array $modes, int $itemId): array {
 }
 
 if (preg_match('#/v1/(batches|serials/bulk)$#', $path, $mm) === 1 && $method === 'POST') {
-    if ($isServiceCall) {
+    // Inventory 2880977: the purchases key may register (create) serials and batches; an Inventory
+    // before it refused the key for any master write (stub mode inventory_pre_register_policy).
+    if ($isServiceCall && !empty($modes['inventory_pre_register_policy'])) {
         http_response_code(403);
         $perm = $mm[1] === 'batches' ? 'masters.batches.write' : 'masters.serials.write';
         echo json_encode(['error' => ['code' => 'forbidden', 'message' => 'Service caller purchases may not ' . $perm], 'message' => 'forbidden']);
