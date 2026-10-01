@@ -45,9 +45,12 @@ $control = is_file($controlFile) ? (json_decode((string) file_get_contents($cont
 $failAfter = !empty($control['path']) && str_contains($path, (string) $control['path']) && !empty($control['after']);
 if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter) {
     http_response_code((int) ($control['status'] ?? 500));
+    // `message` lets a test answer with the receiver's own words (Books' refusal of a key it
+    // cannot store, say), so what Purchase records is what the real refusal would leave.
+    $forcedMessage = (string) ($control['message'] ?? 'Forced failure for test');
     echo json_encode([
-        'error'   => ['code' => (string) ($control['code'] ?? 'stub_forced'), 'message' => 'Forced failure for test'],
-        'message' => 'Forced failure for test',
+        'error'   => ['code' => (string) ($control['code'] ?? 'stub_forced'), 'message' => $forcedMessage],
+        'message' => $forcedMessage,
     ]);
     exit;
 }
@@ -69,6 +72,31 @@ if ($failAfter) {
  *                           ill-composed voucher had — so the read-back check must see it
  */
 $modes = is_file(sys_get_temp_dir() . '/stub-mode.json') ? (json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-mode.json'), true) ?: []) : [];
+
+/**
+ * The width each product keeps a caller's Idempotency-Key in, enforced the way each does it,
+ * BEFORE anything else — as the real services check it first:
+ *
+ *   Books      books_idempotency_keys / books_voucher_drafts are VARCHAR(64): a longer key is
+ *              400 idempotency_key_too_long (IdempotencyKeyService::tooLong / tooLongBody),
+ *              answered before anything is written. This stub used to take any length, which is
+ *              how every Purchase debit note (66+ characters) passed here and was refused by Books.
+ *   Inventory  BaseController::idempotencyKey() silently cuts the key to 128.
+ *
+ * Books' routes reach the stub at the root (a localhost base has no /api); Inventory's are v1/.
+ */
+$stubKey = (string) ($headers['idempotency-key'] ?? '');
+if ($stubKey !== '' && preg_match('#^/(api/)?(vouchers|masters|receipt-vouchers|payment-vouchers|gst)(/|$)#', $path) === 1 && strlen(trim($stubKey)) > 64) {
+    http_response_code(400);
+    echo json_encode([
+        'error'   => ['code' => 'idempotency_key_too_long', 'message' => 'Idempotency-Key must be at most 64 characters.', 'details' => ['max_length' => 64]],
+        'message' => 'Idempotency-Key must be at most 64 characters.',
+    ]);
+    exit;
+}
+if ($stubKey !== '' && str_starts_with($path, '/v1/')) {
+    $headers['idempotency-key'] = substr(trim($stubKey), 0, 128);
+}
 
 /**
  * Replay by idempotency key, exactly as Books and Inventory do. Two calls with
@@ -796,14 +824,73 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
     file_put_contents($voucherStore, json_encode($vouchers));
 
     $payload = ['vch_txn_id' => $id, 'vch_uuid' => 'vch-' . $n, 'vch_number' => $number, 'vch_no' => $number, 'status' => 'posted', 'stock' => $stock];
+    if (isset($drafts[$dm[1]])) {
+        $drafts[$dm[1]]['status'] = 'posted';
+        $drafts[$dm[1]]['vch_txn_id'] = $id;
+        file_put_contents($draftStore, json_encode($drafts));
+    }
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
     exit;
 }
 if (str_contains($path, '/vouchers/drafts') && $method === 'POST') {
     $payload = ['draft_id' => 3000 + $n, 'status' => 'DRAFT'];
-    $drafts[(string) (3000 + $n)] = ['vch_type_id' => (int) ($body['vch_type_id'] ?? 0), 'payload' => $body['payload'] ?? []];
+    $drafts[(string) (3000 + $n)] = [
+        'vch_type_id' => (int) ($body['vch_type_id'] ?? 0), 'payload' => $body['payload'] ?? [], 'status' => 'draft',
+        'cmp_id' => (int) ($body['cmp_id'] ?? 0), 'fy_id' => (int) ($body['fy_id'] ?? 0),
+    ];
     file_put_contents($draftStore, json_encode($drafts));
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
+    exit;
+}
+/*
+ * GET vouchers/drafts — Books' DraftsController::index: drafts of this company and year, one
+ * status (default 'draft'), optionally one type, newest first, at most `limit` (1–100), each
+ * with the payload it was saved from.
+ */
+if (preg_match('#/vouchers/drafts$#', $path) === 1 && $method === 'GET') {
+    $status = trim((string) ($_GET['status'] ?? 'draft'));
+    $type = (int) ($_GET['vch_type_id'] ?? 0);
+    $limit = max(1, min(100, (int) ($_GET['limit'] ?? 50)));
+    $rows = [];
+    foreach (array_reverse($drafts, true) as $draftId => $d) {
+        if (($type > 0 && (int) $d['vch_type_id'] !== $type) || ($status !== '' && ($d['status'] ?? 'draft') !== $status)) {
+            continue;
+        }
+        if ((int) ($d['fy_id'] ?? 0) > 0 && (int) ($_GET['fy_id'] ?? 0) > 0 && (int) $d['fy_id'] !== (int) $_GET['fy_id']) {
+            continue;
+        }
+        $rows[] = ['draft_id' => (int) $draftId, 'vch_type_id' => (int) $d['vch_type_id'], 'status' => $d['status'] ?? 'draft', 'created_at' => '', 'updated_at' => '', 'payload' => $d['payload'] ?? []];
+        if (count($rows) >= $limit) {
+            break;
+        }
+    }
+    echo json_encode(['data' => $rows]);
+    exit;
+}
+/*
+ * GET registers — Books' RegistersController::index, the part a reference search reads: posted
+ * vouchers of a type whose number or bill reference CONTAINS bill_ref, case-insensitive (it is a
+ * LIKE), each row the voucher header with its party and bill_ref attached.
+ */
+if (preg_match('#/registers$#', $path) === 1 && $method === 'GET') {
+    $type = (int) ($_GET['vch_type_id'] ?? 0);
+    $ref = strtolower(trim((string) ($_GET['bill_ref'] ?? '')));
+    $rows = [];
+    foreach ($vouchers as $v) {
+        if (!empty($v['cancelled']) || ($type > 0 && (int) ($v['vch_type_id'] ?? 0) !== $type)) {
+            continue;
+        }
+        $billRef = (string) ($v['bill']['bill_ref'] ?? '');
+        if ($ref !== '' && !str_contains(strtolower((string) ($v['vch_number'] ?? '')), $ref) && !str_contains(strtolower($billRef), $ref)) {
+            continue;
+        }
+        $rows[] = [
+            'vch_txn_id' => (int) $v['vch_txn_id'], 'vch_type_id' => (int) $v['vch_type_id'], 'vch_number' => $v['vch_number'],
+            'vch_date' => $v['vch_date'] ?? null, 'party_acc_id' => (int) ($v['party']['acc_id'] ?? 0), 'status' => 'posted',
+            'bill_ref' => $billRef,
+        ];
+    }
+    echo json_encode(['data' => $rows, 'meta' => ['voucher_count' => count($rows)]]);
     exit;
 }
 if (preg_match('#/vouchers/(\d+)$#', $path, $vm) === 1 && $method === 'GET') {

@@ -138,3 +138,25 @@ itself, a system directory, or anything containing `..` is refused.
    `https://<host>/api/health` returns the right `env` and open the site to
    sign in. See [auth/AICOUNTLY_AUTH_WORKFLOW.md](auth/AICOUNTLY_AUTH_WORKFLOW.md)
    for what a healthy login looks like.
+
+## After deploying the key-length fix (launch, October 2026)
+
+Until keys were sized on the wire, every purchase-return and claim debit note (and a bill of a
+company whose ids had enough digits) reached Books with an Idempotency-Key longer than the 64
+characters Books keeps. Books refused it before writing anything, and Purchase recorded the
+command as BLOCKED, which nothing sends again by itself. The deploy stops new ones; the ones
+already blocked are recovered per company, by somebody of that company who may post bills and
+raise debit notes (usually the owner), with their own portal session:
+
+```bash
+cd <remote root>/api
+php bin/books-key-recovery.php --cmp=<cmp_id>                     # dry run: lists them, changes nothing
+RECOVERY_SES_KEY=<ses_key> php bin/books-key-recovery.php --cmp=<cmp_id> --check   # asks Books, read-only
+RECOVERY_SES_KEY=<ses_key> php bin/books-key-recovery.php --cmp=<cmp_id> --apply --reason="…"
+```
+
+`--apply` asks Books again and re-issues only what Books confirms it holds nothing for — no
+posted voucher under the document's reference, no draft from the document — through the same
+operation the screen runs. Anything Books does hold (a debit note keyed in by hand while the
+command was stuck) is left alone and reported for a person. Running it twice is safe. Add
+`--json` for a report to keep. The session is read from the environment and never printed.

@@ -173,6 +173,41 @@ final class IntegrationCommand
     }
 
     /**
+     * Put a command Books refused ONLY because its Idempotency-Key was too long back where an
+     * attempt may take it, so it is sent again — under the key it now goes out with.
+     *
+     * Not a general "un-block": a business refusal stays refused. This is for the one refusal
+     * that was our own defect — a key longer than Books' 64 characters, refused 400 before Books
+     * wrote anything — and only after the caller has confirmed with Books that it holds nothing
+     * for the document (Domain\BooksKeyRecovery). Atomic and guarded on the exact key and the
+     * exact refusal, so it re-arms once, and never a command that has moved on since.
+     */
+    public static function rearmAfterKeyRefusal(int $commandId, string $storedKey, string $note): bool
+    {
+        return Db::first(
+            'UPDATE ' . self::TABLE . "
+                SET status = 'PENDING', last_error = :note, resolved_by = :by,
+                    lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+              WHERE command_id = :id AND idempotency_key = :ikey AND target_service = 'books'
+                AND status = 'BLOCKED' AND last_status_code = 400 AND last_error ILIKE :refusal
+             RETURNING command_id",
+            [
+                'note'    => mb_substr($note, 0, 480),
+                'by'      => self::KEY_RECOVERY,
+                'id'      => $commandId,
+                'ikey'    => $storedKey,
+                'refusal' => '%' . self::KEY_TOO_LONG_REFUSAL . '%',
+            ],
+        ) !== null;
+    }
+
+    /** resolved_by of a command re-armed by rearmAfterKeyRefusal(). */
+    public const KEY_RECOVERY = 'key_recovery';
+
+    /** What Books says when it refuses a key it cannot store (IdempotencyKeyService::tooLongBody). */
+    public const KEY_TOO_LONG_REFUSAL = 'Idempotency-Key must be at most';
+
+    /**
      * The other product accepted. Store WHAT IT CALLED THE RESULT — ids, a uuid, a
      * number — and nothing else from its response body.
      *
@@ -413,6 +448,11 @@ final class IntegrationCommand
     /**
      * The idempotency key of an operation: stable for the operation, unique across
      * companies, different for a new revision. No random part — that is the point.
+     *
+     * This is the LOGICAL key, kept here whole. What another product receives is derived from
+     * it on the way out and sized to that product's column (IdempotencyKey, applied by
+     * ApiClient to every call): Books keeps 64 characters, and a debit note's key with its
+     * `:draft` step is longer than that.
      */
     public static function key(int $cmpId, string $commandType, string $entityType, int $entityId, int $revision = 0): string
     {

@@ -129,6 +129,36 @@ final class Auth
         return new self('operator:' . trim($uuid), 'operator', Env::get('APP_PRODUCT_KEY', 'purchases'), '', null);
     }
 
+    /**
+     * A person, by their own portal session, for a maintenance script that has to act AS them —
+     * Books takes a voucher only on a person's session, never on a service key.
+     *
+     * CLI ONLY. The session is validated with the portal exactly as a request's bearer is, and it
+     * grants nothing a request with the same session would not: Manage still decides the company,
+     * year and branch (Context::assertAllowed), this product's permissions still apply, and Books
+     * applies its own. Null when the portal does not accept the session.
+     */
+    public static function cliSession(string $sesKey): ?self
+    {
+        if (PHP_SAPI !== 'cli') {
+            throw new \LogicException('A session is borrowed this way only on the command line.');
+        }
+        $sesKey = trim($sesKey);
+        if ($sesKey === '') {
+            return null;
+        }
+        $session = Portal::validateSesKey($sesKey);
+        if ($session === null) {
+            return null;
+        }
+        $uuid = (string) ($session['uuid_aictly'] ?? $session['uuid'] ?? '');
+        if ($uuid === '') {
+            return null;
+        }
+
+        return new self($uuid, 'user', Env::get('APP_PRODUCT_KEY', 'purchases'), $sesKey, $session);
+    }
+
     public function isService(): bool
     {
         return $this->kind === 'service';

@@ -100,9 +100,9 @@ function reset(): void
     Permissions::forget();
 }
 
-function stubFail(string $path, int $status, bool $after = false, string $code = 'stub_forced'): void
+function stubFail(string $path, int $status, bool $after = false, string $code = 'stub_forced', string $message = ''): void
 {
-    file_put_contents(sys_get_temp_dir() . '/stub-control.json', json_encode(['path' => $path, 'status' => $status, 'after' => $after, 'code' => $code]));
+    file_put_contents(sys_get_temp_dir() . '/stub-control.json', json_encode(['path' => $path, 'status' => $status, 'after' => $after, 'code' => $code] + ($message === '' ? [] : ['message' => $message])));
 }
 
 function stubRecover(): void
@@ -1345,6 +1345,185 @@ check('what a viewer sees of a shared document is asked with their own session, 
     same(404, $status, 'nor is one that does not exist');
     [$status] = endpoint(static fn () => Controllers\ConnectController::context('invoice', (string) $po['po_id']), person('user-viewer', 0));
     same(404, $status, 'nor a kind Purchases does not have');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU1: every key Books receives fits, and what its length blocked is recovered\n";
+
+/** Run bin/books-key-recovery.php; $session, when given, is the person's portal session. @return array{0:int, 1:string} */
+function keyRecovery(string $args, string $session = ''): array
+{
+    $env = $session === '' ? '' : 'RECOVERY_SES_KEY=' . escapeshellarg($session) . ' PORTAL_AUTH_BASE=' . escapeshellarg(Env::get('BOOKS_API_BASE')) . ' ';
+    exec($env . 'php ' . escapeshellarg(__DIR__ . '/../bin/books-key-recovery.php') . ' ' . $args . ' 2>&1', $out, $code);
+
+    return [$code, implode("\n", $out)];
+}
+
+/** POST straight to the stub's Books, as an older Purchase did — to show what Books makes of a key. */
+function rawBooksPost(string $path, string $key): int
+{
+    $ch = curl_init(Env::get('BOOKS_API_BASE') . $path);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_CUSTOMREQUEST => 'POST', CURLOPT_POSTFIELDS => '{"vch_type_id":3,"payload":{}}',
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer stub-ses-key.role-1', 'Idempotency-Key: ' . $key, 'X-Test-Probe: 1'],
+    ]);
+    curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+
+    return $status;
+}
+
+/** Books' answer to a key it cannot store, as Purchase received it before keys were sized. */
+function booksRefusesTheKey(): void
+{
+    stubFail('/vouchers/drafts', 400, false, 'idempotency_key_too_long', 'Idempotency-Key must be at most 64 characters.');
+}
+
+/** @return list<string> every Idempotency-Key Purchase sent to Books' voucher routes (not the tests' own probes) */
+function booksKeysSent(): array
+{
+    return array_values(array_map(
+        static fn (array $r) => (string) ($r['headers']['idempotency-key'] ?? ''),
+        array_filter(stubRequests('/vouchers/drafts'), static fn (array $r) => $r['method'] === 'POST' && empty($r['headers']['x-test-probe'])),
+    ));
+}
+
+check('every key Books receives fits its 64 characters: return and claim debit notes, and a large company\'s bill', function () use ($ctx, $owner) {
+    reset();
+    $short = 'purchases:88:purchases.bill.post:bill_request:5:r0:draft';
+    same($short, IdempotencyKey::forWire($short, '', 64), 'a key that fits goes out unchanged, so one Books already holds is still recognised');
+    $long = 'purchases:88:purchases.return.debit_note:purchase_return:1:r0';
+    $draft = IdempotencyKey::forWire($long, ':draft', 64);
+    same(64, strlen($draft), 'a longer one is compressed to exactly the width');
+    same($draft, IdempotencyKey::forWire($long, ':draft', 64), 'the same bytes every time');
+    truthy($draft !== IdempotencyKey::forWire($long, ':post', 64), 'the draft and its post never share a key');
+    truthy(IdempotencyKey::forWire($long . '0', ':draft', 64) !== $draft, 'two keys that share a head stay two keys');
+    truthy(str_starts_with($draft, 'purchases:88:'), 'and a person can still read whose it is');
+    same(400, rawBooksPost('/vouchers/drafts', $long . ':draft'), 'Books (and now the stub) refuses the uncompressed debit-note key');
+
+    $po = billedOrder($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
+    $returns->approveReturn($id, []);
+    $returns->dispatchReturn($id);
+    same('DEBITED', $returns->requestDebitNote($id)['status'], 'a purchase return\'s debit note posts');
+
+    $claimId = approvedClaim($ctx, $owner, 1200);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 1200, 'adjustment_acc_id' => 7310]);
+    same('COMPLETED', $resolutions->approve((int) $r['resolution_id'])['status'], 'a claim\'s debit note posts');
+
+    // A company and a bill with enough digits that the bill's own key passes 64 with its step.
+    $bigCompany = Context::of(4321987, 6, 0);
+    $bigOwner = person('user-owner', 1, 4321987);
+    Db::run("SELECT setval(pg_get_serial_sequence('purchase_bill_requests', 'request_id'), 98765432)");
+    $bigPo = billedOrder($bigCompany, $bigOwner);
+    same('CLOSED', $bigPo['status'], 'the large company\'s bill posts');
+    $bigKey = (string) Db::scalar("SELECT idempotency_key FROM purchase_integration_commands WHERE cmp_id = 4321987 AND command_type = 'purchases.bill.post'");
+    truthy(strlen($bigKey . ':draft') > 64, 'whose stored key is longer than Books keeps: ' . $bigKey);
+
+    $keys = booksKeysSent();
+    same(8, count($keys), 'two bills, two debit notes: a draft and a post each');
+    truthy(max(array_map('strlen', $keys)) <= 64, 'none longer than 64: ' . json_encode($keys));
+    same(count($keys), count(array_unique($keys)), 'and each its own key');
+    same(2, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'both debit notes are in Books');
+});
+
+check('a debit note Books refused for its key length is found, confirmed absent in Books and re-issued once — dry run first, one company, idempotent', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
+    $returns->approveReturn($id, []);
+    $returns->dispatchReturn($id);
+
+    booksRefusesTheKey();
+    refused(fn () => $returns->requestDebitNote($id), 'at most 64', 'Books refuses the key, before writing anything');
+    stubRecover();
+    $command = IntegrationCommand::find(88, Domain\ReturnClaimService::COMMAND_DEBIT_NOTE, 'purchase_return', $id);
+    same('BLOCKED', $command['status'], 'the debit note is blocked');
+    refused(fn () => $returns->requestDebitNote($id), 'at most 64', 'and pressing the button again never sends it on its own');
+    same('DISPATCHED', $returns->findReturn($id)['status'], 'the return waits with the payable overstated');
+
+    // Another company's command in the same state is not this company's business.
+    $other = IntegrationCommand::ensure(Context::of(91, 6, 0), 'books', Domain\ReturnClaimService::COMMAND_DEBIT_NOTE, 'purchase_return', 4242, ['bill' => ['bill_ref' => 'PR/91/1']]);
+    Db::run("UPDATE purchase_integration_commands SET status = 'BLOCKED', last_status_code = 400, last_error = 'Idempotency-Key must be at most 64 characters.' WHERE command_id = :id", ['id' => (int) $other['command_id']]);
+
+    $sent = count(stubRequests());
+    [$code, $out] = keyRecovery('--cmp=88 --json');
+    same(3, $code, 'a dry run that finds something says so in its exit status: ' . $out);
+    $report = json_decode($out, true);
+    same('dry_run', $report['mode'], 'the default is a dry run');
+    same(1, count($report['commands']), 'only this company\'s command');
+    $found = $report['commands'][0];
+    same($sent, count(stubRequests()), 'nothing was sent anywhere');
+    same('BLOCKED', IntegrationCommand::byId((int) $command['command_id'])['status'], 'and nothing changed');
+    same(null, $found['books_check'], 'Books is not asked in a dry run');
+    same($command['idempotency_key'] . ':draft', $found['refused_key'], 'it names the key Books refused');
+    same(400, rawBooksPost('/vouchers/drafts', $found['refused_key']), 'which Books does refuse');
+    truthy(strlen($found['wire_keys']['draft']) <= 64 && strlen($found['wire_keys']['post']) <= 64, 'and the keys it will go out with');
+
+    [$code] = keyRecovery('--cmp=88 --check');
+    same(1, $code, 'asking Books needs a person\'s session');
+    [$code, $out] = keyRecovery('--cmp=88 --check --json', 'stub-ses-key.role-1');
+    $found = json_decode($out, true)['commands'][0];
+    same('no_voucher', $found['books_check']['verdict'], 'Books holds no voucher and no draft for the return: ' . $found['books_check']['detail']);
+    same('BLOCKED', IntegrationCommand::byId((int) $command['command_id'])['status'], 'a check changes nothing');
+    same(0, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'and posts nothing');
+
+    [$code] = keyRecovery('--cmp=88 --apply', 'stub-ses-key.role-1');
+    same(1, $code, 'applying needs a reason');
+    [$code, $out] = keyRecovery('--cmp=88 --apply --json --reason=' . escapeshellarg('Debit notes stuck on the key length.'), 'stub-ses-key.role-1');
+    same(0, $code, 'everything found was re-issued: ' . $out);
+    $found = json_decode($out, true)['commands'][0];
+    same('reissued', $found['result']['outcome'], 'the debit note was re-issued: ' . $found['result']['detail']);
+    same('COMPLETED', IntegrationCommand::byId((int) $command['command_id'])['status'], 'the command completed');
+    same('DEBITED', $returns->findReturn($id)['status'], 'through the same operation the screen runs: the return is debited');
+    same('10.0000', (string) Db::scalar('SELECT debited_qty FROM purchase_order_lines WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'and the order counts it');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'one debit note in Books');
+    truthy(max(array_map('strlen', booksKeysSent())) <= 64, 'sent under keys Books keeps');
+    same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'integration.key_reissued' AND actor_uuid = 'user-owner' AND reason = 'Debit notes stuck on the key length.'"), 'audited against the person, with the reason');
+
+    [$code, $out] = keyRecovery('--cmp=88 --apply --reason=again', 'stub-ses-key.role-1');
+    same(0, $code, 'running it again finds nothing: ' . $out);
+    truthy(str_contains($out, 'No command'), 'and says so');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'still one debit note');
+    same('BLOCKED', IntegrationCommand::byId((int) $other['command_id'])['status'], 'the other company\'s command is untouched');
+});
+
+check('the recovery leaves alone a debit note Books already holds under the same reference, and re-issues it once that is cleared', function () use ($ctx, $owner) {
+    reset();
+    $claimId = approvedClaim($ctx, $owner, 900);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 900, 'adjustment_acc_id' => 7310]);
+    booksRefusesTheKey();
+    refused(fn () => $resolutions->approve((int) $r['resolution_id']), 'at most 64', 'Books refuses the claim\'s debit note');
+    stubRecover();
+    same('BLOCKED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution is blocked');
+
+    // While it was stuck, an accountant keyed the debit note into Books by hand.
+    $reference = Db::scalar('SELECT claim_no FROM purchase_claims WHERE claim_id = :id', ['id' => $claimId]) . '/' . $r['resolution_id'];
+    file_put_contents(sys_get_temp_dir() . '/stub-vouchers.json', json_encode(['5101' => [
+        'vch_txn_id' => 5101, 'vch_type_id' => 3, 'vch_number' => 'DN/77', 'vch_date' => '2026-09-30',
+        'party' => ['acc_id' => 601], 'bill' => ['bill_ref' => strtolower($reference)], 'lines' => [],
+    ]]));
+    [$code, $out] = keyRecovery('--cmp=88 --apply --json --reason=' . escapeshellarg('Recovery run.'), 'stub-ses-key.role-1');
+    same(3, $code, 'something is left for a person');
+    $found = json_decode($out, true)['commands'][0];
+    same('voucher_found', $found['books_check']['verdict'], 'Books holds a debit note under the claim\'s reference');
+    same(5101, $found['books_check']['matches'][0]['vch_txn_id'] ?? null, 'and names it');
+    same('left_alone', $found['result']['outcome'], 'so it is not re-issued');
+    same('BLOCKED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution is as it was');
+    same(1, count(booksVouchers()), 'and Books has no second debit note');
+
+    // The accountant cancels the hand-made one; now the claim's own debit note can go.
+    file_put_contents(sys_get_temp_dir() . '/stub-vouchers.json', json_encode([]));
+    [$code, $out] = keyRecovery('--cmp=88 --apply --json --reason=' . escapeshellarg('Hand-made note cancelled.'), 'stub-ses-key.role-1');
+    same(0, $code, 'all re-issued: ' . $out);
+    same('COMPLETED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution completes');
+    same('SETTLED', (new Domain\ReturnClaimService($ctx, $owner))->findClaim($claimId)['status'], 'and settles the claim');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'one debit note');
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";

@@ -6,6 +6,7 @@ namespace Aicountly\Api\Clients;
 
 use Aicountly\Api\CrossServiceCallContext;
 use Aicountly\Api\Env;
+use Aicountly\Api\IdempotencyKey;
 
 /**
  * Base for every outbound call to another AICOUNTLY product.
@@ -137,7 +138,7 @@ abstract class ApiClient
         $wire[] = 'X-Source-App: ' . $this->selfName();
         foreach ($headers as $name => $value) {
             if ($value !== '') {
-                $wire[] = $name . ': ' . $value;
+                $wire[] = $name . ': ' . $this->wireHeaderValue((string) $name, (string) $value);
             }
         }
 
@@ -183,6 +184,20 @@ abstract class ApiClient
         }
 
         return $result;
+    }
+
+    /**
+     * A header value as it goes on the wire. Only the Idempotency-Key is touched: it is sized to
+     * the width the product being called keeps it in — every call, every product, whatever built
+     * the key — so no write can reach Books with a key Books refuses (IdempotencyKey).
+     */
+    private function wireHeaderValue(string $name, string $value): string
+    {
+        if (strcasecmp($name, 'Idempotency-Key') !== 0) {
+            return $value;
+        }
+
+        return IdempotencyKey::forWire($value, '', IdempotencyKey::limitFor($this->service()));
     }
 
     /**
