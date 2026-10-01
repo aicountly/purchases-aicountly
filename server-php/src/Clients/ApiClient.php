@@ -43,6 +43,24 @@ abstract class ApiClient
      */
     private array $memo = [];
 
+    /**
+     * CLI ONLY: answers in place of the network, for a test that has to see the exact URL and
+     * headers a deployed base produces — https://contacts.aicountly.com, say — without sending
+     * anything anywhere. Under a web SAPI it is never set and never read.
+     *
+     * @var (callable(string $method, string $url, list<string> $headers, ?array $body): array)|null
+     */
+    private static $interceptor = null;
+
+    /** @param (callable(string, string, list<string>, ?array): array)|null $answer */
+    public static function intercept(?callable $answer): void
+    {
+        if (PHP_SAPI !== 'cli') {
+            return;
+        }
+        self::$interceptor = $answer;
+    }
+
     /** Product name this client talks to: books | inventory | manage | contacts. */
     abstract public function service(): string;
 
@@ -140,6 +158,12 @@ abstract class ApiClient
             if ($value !== '') {
                 $wire[] = $name . ': ' . $this->wireHeaderValue((string) $name, (string) $value);
             }
+        }
+
+        if (PHP_SAPI === 'cli' && self::$interceptor !== null) {
+            $answer = (self::$interceptor)($method, $url, $wire, $body);
+
+            return (is_array($answer) ? $answer : []) + ['ok' => false, 'status' => 0, 'body' => null, 'error' => 'intercepted'];
         }
 
         $options = [

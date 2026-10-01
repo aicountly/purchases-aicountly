@@ -1526,6 +1526,118 @@ check('the recovery leaves alone a debit note Books already holds under the same
     same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'one debit note');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU2: what Purchase sends is what each receiver reads\n";
+
+/** The payload of the last purchase-voucher draft Books was sent. @return array<string, mixed> */
+function lastPurchaseDraft(): array
+{
+    $drafts = array_values(array_filter(stubRequests('/vouchers/drafts'), static fn (array $r) => $r['method'] === 'POST' && !str_contains((string) $r['path'], '/post') && (int) ($r['body']['vch_type_id'] ?? 0) === 11));
+
+    return $drafts === [] ? [] : (array) end($drafts)['body'];
+}
+
+check('item names come from Inventory\'s bulk lookup as Inventory reads it: item_ids in, its own row shape out', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $doc = (new PurchaseOrderService($ctx, $owner))->document((int) $po['po_id']);
+    truthy(str_contains($doc['pdf'], 'Stub Item 201'), 'the order\'s document names the item');
+    $asked = stubRequests('/v1/items/bulk-lookup');
+    same([201], end($asked)['body']['item_ids'] ?? null, 'Inventory is asked by item_ids');
+    truthy(!array_key_exists('ids', end($asked)['body']), 'never by ids, which Inventory ignores');
+
+    $items = (new Dashboards\InventoryReader($ctx, $owner->sesKey()))->items([201, 202]);
+    same(['item_id' => 201, 'name' => 'Stub Item 201', 'code' => 'SKU-201', 'uom' => 'Nos', 'group' => 'Stub Group'], $items['items'][201] ?? null, 'code, unit and group read from Inventory\'s own fields (item_sku, unit_symbol, item_grp_id)');
+    same(1, count(stubRequests('/v1/item-groups')), 'the group names in one read for the whole list');
+});
+
+check('Contacts is asked at /api/companies/… on a deployed base, never /api/api/…', function () {
+    $seen = [];
+    Clients\ApiClient::intercept(static function (string $method, string $url) use (&$seen): array {
+        $seen[] = $method . ' ' . $url;
+
+        return ['ok' => true, 'status' => 200, 'body' => ['status' => 1, 'data' => []], 'error' => null];
+    });
+    $uuid = '0b0e8c7e-1111-4a4a-9c9c-000000000001';
+    try {
+        foreach (['https://contacts.gh.aicountly.com', 'https://contacts.aicountly.com'] as $base) {
+            putenv('CONTACTS_API_BASE=' . $base);
+            $client = (new Clients\ContactsClient())->withSession('ses');
+            $client->companyContacts(88, 'anita');
+            $client->companyContact(88, $uuid);
+            $client->byLedgerAccount(88, 601);
+            $client->linkLedgerAccount(88, $uuid, 601, 'purchases:88:supplier-contact:601');
+        }
+    } finally {
+        Clients\ApiClient::intercept(null);
+        putenv('CONTACTS_API_BASE');
+    }
+    same([
+        'GET https://contacts.gh.aicountly.com/api/companies/88/contacts?q=anita&per_page=20',
+        'GET https://contacts.gh.aicountly.com/api/companies/88/contacts/' . $uuid,
+        'GET https://contacts.gh.aicountly.com/api/companies/88/contacts/by-reference?product=books&ref_type=ledger_account&ref=601',
+        'POST https://contacts.gh.aicountly.com/api/companies/88/contacts/' . $uuid . '/references',
+        'GET https://contacts.aicountly.com/api/companies/88/contacts?q=anita&per_page=20',
+        'GET https://contacts.aicountly.com/api/companies/88/contacts/' . $uuid,
+        'GET https://contacts.aicountly.com/api/companies/88/contacts/by-reference?product=books&ref_type=ledger_account&ref=601',
+        'POST https://contacts.aicountly.com/api/companies/88/contacts/' . $uuid . '/references',
+    ], $seen, 'Contacts\' own routes under its one /api prefix, sandbox and production alike');
+});
+
+check('a bill settles each GRN from the warehouse the GRN put the goods in, and receives them there', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner); // its line says warehouse 3
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 60, ['lines' => [['line_id' => $lineId, 'qty' => 60, 'warehouse_id' => 2]]]);
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 40, ['lines' => [['line_id' => $lineId, 'qty' => 40, 'warehouse_id' => 5]]]);
+    $grns = array_values(array_map(static fn (array $d) => (int) $d['document_id'], inventoryState()['by_id']));
+
+    $bills = new BillService($ctx, $owner);
+    $first = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'WH-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
+    $bills->post((int) $first['request_id']);
+    $sent = lastPurchaseDraft()['payload'];
+    same([[2, 50.0, 12500.0]], array_map(static fn ($l) => [(int) $l['mc_id'], (float) $l['qty'], (float) $l['amount']], $sent['inventory_lines']), 'received where the first GRN put them, not the order line\'s warehouse 3');
+    same([[$grns[0], 50.0, 2]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty'], (int) $s['mc_id']], $sent['challan_settlements']), 'and that GRN\'s pending settled in its warehouse');
+
+    $second = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'WH-2', 'supplier_invoice_date' => '2026-09-20', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
+    $posted = $bills->post((int) $second['request_id']);
+    $sent = lastPurchaseDraft()['payload'];
+    same([[2, 10.0, 2500.0], [5, 40.0, 10000.0]], array_map(static fn ($l) => [(int) $l['mc_id'], (float) $l['qty'], (float) $l['amount']], $sent['inventory_lines']), 'what is left of the first GRN in its warehouse, the second GRN in its own, the amount shared exactly');
+    same([[$grns[0], 10.0, 2], [$grns[1], 40.0, 5]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty'], (int) $s['mc_id']], $sent['challan_settlements']), 'each settlement in its GRN\'s warehouse');
+    same(true, $posted['posting_check']['verified'] ?? null, 'and Books\' voucher still adds up to the bill');
+});
+
+check('a bill is posted, read back and revised in the year and branch it was entered in, not the screen\'s', function () use ($owner) {
+    reset();
+    $branch = Context::of(88, 6, 31);
+    $po = orderOf($branch, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($branch, $owner, (int) $po['po_id'], $lineId, 10);
+    $bill = (new BillService($branch, $owner))->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'BR-31', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 10, 'rate' => 250]]]);
+    same(31, (int) $bill['bo_id'], 'entered under branch 31');
+
+    // Posted from the consolidated view.
+    $posted = (new BillService(Context::of(88, 6, 0), $owner))->post((int) $bill['request_id']);
+    same('POSTED', $posted['status'], 'posted');
+    $sent = lastPurchaseDraft();
+    same([88, 6, 31], [(int) $sent['cmp_id'], (int) $sent['fy_id'], (int) $sent['bo_id']], 'Books is asked for the purchase in branch 31, whose GSTIN decides its tax');
+    same(31, (int) Db::scalar("SELECT bo_id FROM purchase_integration_commands WHERE command_type = 'purchases.bill.post'"), 'and the command keeps that scope for any retry');
+    $reads = array_values(array_filter(stubRequests('/vouchers/'), static fn ($r) => $r['method'] === 'GET'));
+    same('31', end($reads)['query']['bo_id'] ?? null, 'the posted voucher is read back in branch 31 too');
+
+    // A bill of last year, refused by Books and revised from this year's screen, keeps last year's rules.
+    $lastYear = Context::of(88, 5, 0);
+    $old = (new BillService($lastYear, $owner))->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'FY5-1', 'supplier_invoice_date' => '2026-03-20', 'lines' => [['description' => 'Audit fee', 'is_service' => true, 'purchase_acc_id' => 7301, 'qty' => 1, 'rate' => 5000]]]);
+    (new BillService($lastYear, $owner))->resolveException((int) $old['matches'][0]['exceptions'][0]['exception_id'], 'accept', ['note' => 'Reviewed.']);
+    stubFail('/vouchers/drafts', 422, false, 'stub_forced', 'Books refused it.');
+    refused(fn () => (new BillService($lastYear, $owner))->post((int) $old['request_id']), 'Books refused it', 'Books refuses');
+    stubRecover();
+    $thisYearsScreen = new BillService(Context::of(88, 6, 0), $owner);
+    refused(fn () => $thisYearsScreen->revise((int) $old['request_id'], ['posting_date' => '2026-05-02', 'note' => 'move it']), 'outside the financial year', 'a revision cannot carry last year\'s bill into this year');
+    $revised = $thisYearsScreen->revise((int) $old['request_id'], ['posting_date' => '2026-03-25', 'note' => 'booked a few days later']);
+    same(1, (int) $revised['revision'], 'revised within its own year');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

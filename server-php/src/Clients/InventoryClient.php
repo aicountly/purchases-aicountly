@@ -116,15 +116,21 @@ final class InventoryClient extends ApiClient
      * Doing that per line is the loop the cross-service rules call out; this is
      * the hoisted version, and it is why nothing here is ever stored locally.
      *
+     * Inventory reads `item_ids` (ItemsController::bulkLookup) and answers inv_items rows:
+     * item_id, item_name, item_sku, unit_id, unit_symbol, hsn_sac, item_grp_id,
+     * default_warehouse_id, … — never `ids`, which it ignores, answering an empty list. That is
+     * how a purchase order's PDF came to print "Item #123" for every line.
+     *
      * @param list<int> $itemIds
      */
     public function bulkLookupItems(Context $ctx, array $itemIds): array
     {
+        $itemIds = array_values(array_unique(array_filter(array_map('intval', $itemIds), static fn (int $id) => $id > 0)));
         if ($itemIds === []) {
             return ['ok' => true, 'status' => 200, 'body' => ['data' => []], 'error' => null];
         }
 
-        return $this->call('POST', 'v1/items/bulk-lookup', ['ids' => array_values(array_unique($itemIds))] + $ctx->asBody());
+        return $this->call('POST', 'v1/items/bulk-lookup', ['item_ids' => $itemIds] + $ctx->asBody());
     }
 
     public function warehouses(Context $ctx): array

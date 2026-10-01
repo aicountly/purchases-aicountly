@@ -197,7 +197,17 @@ final class BillService
     {
         Permissions::assert($this->ctx, $this->auth, 'bill.post');
 
-        $prepared = Db::transaction(function () use ($requestId, $input): array {
+        // The bill is posted in the year and branch it was ENTERED in, never the ones the
+        // screen happens to be on: a bill entered under branch 2 and posted from the
+        // consolidated view is still branch 2's purchase, with branch 2's GSTIN deciding its tax.
+        // Confirmed with Manage before any row is locked — no lock is held across a network call.
+        $entered = $this->find($requestId);
+        if ($entered === []) {
+            Http::notFound('That bill does not exist.');
+        }
+        $billScope = $this->scopeOf($entered);
+
+        $prepared = Db::transaction(function () use ($requestId, $input, $billScope): array {
             $bill = Db::first(
                 'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
                 ['id' => $requestId, 'cmp' => $this->ctx->cmpId],
@@ -235,7 +245,7 @@ final class BillService
                 $bill['stock_settlements'] = $plan['challan_settlements'];
 
                 $command = IntegrationCommand::ensure(
-                    $this->ctx,
+                    $billScope,
                     'books',
                     self::COMMAND_BILL,
                     'bill_request',
@@ -347,7 +357,9 @@ final class BillService
         if ($dueDate !== null && $dueDate < $invoiceDate) {
             Http::validationFailed('The due date cannot be before the supplier invoice date.', ['field' => 'due_date']);
         }
-        $postingDate = $this->postingDate($input['posting_date'] ?? ($bill['posting_date'] ?? null), $invoiceDate);
+        // Judged against the year the bill belongs to, as confirmed by Manage — not the year the
+        // screen is on, which a revision does not move the bill into.
+        $postingDate = $this->postingDate($input['posting_date'] ?? ($bill['posting_date'] ?? null), $invoiceDate, $this->scopeOf($bill));
 
         $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate, $postingDate): int {
             $locked = Db::first(
@@ -553,7 +565,7 @@ final class BillService
             return [];
         }
 
-        $response = (new BooksClient())->withSession($this->auth->sesKey())->voucher($this->ctx, (int) $bill['books_voucher_id']);
+        $response = (new BooksClient())->withSession($this->auth->sesKey())->voucher($this->scopeOf($bill), (int) $bill['books_voucher_id']);
         $problems = [];
         $voucher = $response['ok'] ? ($response['body']['data'] ?? null) : null;
         if (!is_array($voucher)) {
@@ -1053,6 +1065,27 @@ final class BillService
         ];
     }
 
+    /**
+     * The company, year and branch a bill was entered in — the scope it is posted, read back and
+     * revised in. The same company as the request's (find() is company-scoped); the year and
+     * branch are confirmed with Manage for this person when they differ from the request's, as the
+     * request's own are, so a stored id is never trusted unchecked either.
+     *
+     * @param array<string, mixed> $bill
+     */
+    private function scopeOf(array $bill): Context
+    {
+        $scope = Context::of((int) $bill['cmp_id'], (int) $bill['fy_id'], (int) $bill['bo_id']);
+        if ($scope->cmpId !== $this->ctx->cmpId) {
+            Http::notFound('That bill does not exist.');
+        }
+        if ($scope->fyId !== $this->ctx->fyId || $scope->boId !== $this->ctx->boId || $scope->fyRange() === null) {
+            $scope->assertAllowed($this->auth);
+        }
+
+        return $scope;
+    }
+
     // -----------------------------------------------------------------------
 
     /**
@@ -1074,6 +1107,14 @@ final class BillService
         $inventoryLines = [];
         $serviceLines = [];
 
+        // What each goods line settles, by the bill line it belongs to.
+        $settledBy = [];
+        foreach ($plan['challan_settlements'] as $settlement) {
+            if (isset($settlement['bill_line_no'])) {
+                $settledBy[(int) $settlement['bill_line_no']][] = $settlement;
+            }
+        }
+
         foreach (Db::jsonColumn($bill['requested_lines']) as $line) {
             if (!empty($line['is_service']) || empty($line['item_id'])) {
                 $serviceLines[] = array_filter([
@@ -1088,21 +1129,25 @@ final class BillService
                 ], static fn ($v) => $v !== null);
                 continue;
             }
-            $inventoryLines[] = array_filter([
-                'source_line_ref' => isset($line['po_line_id']) ? (int) $line['po_line_id'] : null,
-                'item_id'         => (int) $line['item_id'],
-                'unit_id'         => $line['unit_id'] ?? null,
-                'mc_id'           => $line['warehouse_id'] ?? null,
-                // A purchase line is on the debit side in Books.
-                'dr_cr'           => 1,
-                'qty'             => (float) ($line['qty'] ?? 0),
-                'rate'            => (float) ($line['rate'] ?? 0),
-                'discount_pc'     => (float) ($line['discount_pc'] ?? 0),
-                'amount'          => (float) ($line['amount'] ?? 0),
-                'tax_cat_id'      => $line['tax_cat_id'] ?? null,
-                'hsn_sac'         => $line['hsn_sac'] ?? null,
-                'description'     => $line['description'] ?? null,
-            ], static fn ($v) => $v !== null);
+            // One Books item line per warehouse the goods are in: where its GRNs put them, for a
+            // line that settles GRNs (one warehouse almost always); the line's own otherwise.
+            foreach (self::warehousePieces($line, $settledBy[(int) ($line['line_no'] ?? 0)] ?? []) as [$warehouseId, $pieceQty, $pieceAmount]) {
+                $inventoryLines[] = array_filter([
+                    'source_line_ref' => isset($line['po_line_id']) ? (int) $line['po_line_id'] : null,
+                    'item_id'         => (int) $line['item_id'],
+                    'unit_id'         => $line['unit_id'] ?? null,
+                    'mc_id'           => $warehouseId,
+                    // A purchase line is on the debit side in Books.
+                    'dr_cr'           => 1,
+                    'qty'             => $pieceQty,
+                    'rate'            => (float) ($line['rate'] ?? 0),
+                    'discount_pc'     => (float) ($line['discount_pc'] ?? 0),
+                    'amount'          => $pieceAmount,
+                    'tax_cat_id'      => $line['tax_cat_id'] ?? null,
+                    'hsn_sac'         => $line['hsn_sac'] ?? null,
+                    'description'     => $line['description'] ?? null,
+                ], static fn ($v) => $v !== null);
+            }
         }
 
         $po = $bill['po_id'] === null ? null : Db::first('SELECT po_no, po_date FROM purchase_orders WHERE po_id = :id', ['id' => (int) $bill['po_id']]);
@@ -1141,7 +1186,8 @@ final class BillService
         if ($inventoryLines !== [] && $plan['stock_effect'] !== null) {
             $payload['stock_effect'] = $plan['stock_effect'];
             if ($plan['challan_settlements'] !== []) {
-                // Books' settlement shape: which GRN, which item, how much, which warehouse.
+                // Books' settlement shape: which GRN, which item, how much, which warehouse —
+                // the GRN's, where Inventory holds that GRN's pending stock.
                 $payload['challan_settlements'] = array_map(static fn (array $s) => array_filter([
                     'source_document_id' => (int) $s['source_document_id'],
                     'item_id'            => (int) $s['item_id'],
@@ -1152,6 +1198,45 @@ final class BillService
         }
 
         return $payload;
+    }
+
+    /**
+     * A goods line as the warehouses its stock is in: [warehouse, qty, amount] per warehouse, in
+     * the order the settlements name them. The amount is shared by quantity, the last warehouse
+     * taking what rounding leaves, so the pieces add up to the line exactly.
+     *
+     * @param array<string, mixed> $line a requested line
+     * @param list<array<string, mixed>> $settlements what this line settles
+     * @return list<array{0: ?int, 1: float, 2: float}>
+     */
+    private static function warehousePieces(array $line, array $settlements): array
+    {
+        $qty = (float) ($line['qty'] ?? 0);
+        $amount = (float) ($line['amount'] ?? 0);
+        $own = isset($line['warehouse_id']) ? ((int) $line['warehouse_id'] ?: null) : null;
+
+        $byWarehouse = [];
+        foreach ($settlements as $settlement) {
+            $warehouse = isset($settlement['mc_id']) ? ((int) $settlement['mc_id'] ?: null) : null;
+            $key = $warehouse ?? 0;
+            $byWarehouse[$key] = ['warehouse' => $warehouse ?? $own, 'qty' => round(($byWarehouse[$key]['qty'] ?? 0.0) + (float) $settlement['qty'], 4)];
+        }
+        if (count($byWarehouse) <= 1) {
+            $only = reset($byWarehouse);
+
+            return [[$only === false ? $own : $only['warehouse'], $qty, $amount]];
+        }
+
+        $pieces = [];
+        $left = $amount;
+        $groups = array_values($byWarehouse);
+        foreach ($groups as $i => $group) {
+            $share = $i === count($groups) - 1 ? round($left, 4) : round($amount * $group['qty'] / $qty, 4);
+            $left = round($left - $share, 4);
+            $pieces[] = [$group['warehouse'], $group['qty'], $share];
+        }
+
+        return $pieces;
     }
 
     /**
@@ -1198,7 +1283,12 @@ final class BillService
             ['po' => $poId, 'cmp' => $this->ctx->cmpId],
         );
 
-        // Per order line, what each GRN brought in, oldest first.
+        // Per order line, what each GRN brought in, oldest first — and WHERE it went: the GRN
+        // line's own warehouse, as the receipt sent it to Inventory (the receiver's pick, which
+        // need not be the order line's). Inventory finds the pending stock a bill settles by that
+        // warehouse, and a bill that receives a challan-only GRN's goods puts them in the line's
+        // warehouse; the bill or order line's was the wrong one to send. One delivery may put one
+        // order line into two warehouses: those are parts of one portion (one GRN, one order line).
         $portions = [];
         foreach ($receipts as $receipt) {
             if ($receipt['inventory_document_id'] === null) {
@@ -1207,15 +1297,28 @@ final class BillService
             $kind = $receipt['source_document_type'] === ReceiptService::LEGACY_SOURCE_TYPE
                 ? 'legacy'
                 : ((string) $receipt['stock_effect'] === 'challan_only' ? 'challan_only' : 'physical');
-            foreach (Db::jsonColumn($receipt['applied_lines'] ?? $receipt['requested_lines']) as $line) {
-                if ((float) ($line['qty'] ?? 0) <= 0) {
+            $sent = Db::jsonColumn($receipt['requested_lines']);
+            // applied_lines mirrors requested_lines line for line (ReceiptService::applyOnce).
+            $applied = $receipt['applied_lines'] === null ? $sent : Db::jsonColumn($receipt['applied_lines']);
+            $byLine = [];
+            foreach ($applied as $i => $line) {
+                $qty = round((float) ($line['qty'] ?? 0), 4);
+                if ($qty <= 0) {
                     continue;
                 }
-                $portions[(int) $line['line_id']][] = [
+                $lineId = (int) ($line['line_id'] ?? 0);
+                $grnLine = $sent[$i] ?? null;
+                $warehouse = is_array($grnLine) && (int) ($grnLine['line_id'] ?? 0) === $lineId ? self::id($grnLine['warehouse_id'] ?? null) : null;
+                $byLine[$lineId]['qty'] = round(($byLine[$lineId]['qty'] ?? 0.0) + $qty, 4);
+                $byLine[$lineId]['parts'][] = ['warehouse_id' => $warehouse, 'qty' => $qty];
+            }
+            foreach ($byLine as $lineId => $portion) {
+                $portions[$lineId][] = [
                     'request_id'   => (int) $receipt['request_id'],
                     'receipt_no'   => $receipt['receipt_no'],
                     'document_id'  => (int) $receipt['inventory_document_id'],
-                    'qty'          => (float) $line['qty'],
+                    'qty'          => $portion['qty'],
+                    'parts'        => $portion['parts'],
                     'kind'         => $kind,
                 ];
             }
@@ -1263,15 +1366,34 @@ final class BillService
                     );
                 }
                 $kinds[$portion['kind']] = true;
-                $settlements[] = [
-                    'source_document_id' => $portion['document_id'],
-                    'item_id'            => (int) $line['item_id'],
-                    'qty'                => $take,
-                    'mc_id'              => isset($line['warehouse_id']) ? ((int) $line['warehouse_id'] ?: null) : null,
-                    'po_line_id'         => $poLineId,
-                    'receipt_request_id' => $portion['request_id'],
-                    'receipt_no'         => $portion['receipt_no'],
-                ];
+                // Out of which warehouse: what other bills already claimed of this GRN line is
+                // used up first, part by part in the GRN's own order, then this bill's share.
+                $skip = (float) ($claimed[$k] ?? 0.0);
+                $left = $take;
+                foreach ($portion['parts'] as $part) {
+                    if ($left <= self::EPSILON) {
+                        break;
+                    }
+                    $partQty = (float) $part['qty'];
+                    if ($skip >= $partQty - self::EPSILON) {
+                        $skip = round($skip - $partQty, 4);
+                        continue;
+                    }
+                    $piece = round(min($left, $partQty - $skip), 4);
+                    $skip = 0.0;
+                    $settlements[] = [
+                        'source_document_id' => $portion['document_id'],
+                        'item_id'            => (int) $line['item_id'],
+                        'qty'                => $piece,
+                        // The GRN's warehouse; the bill line's only when the GRN named none.
+                        'mc_id'              => $part['warehouse_id'] ?? (isset($line['warehouse_id']) ? ((int) $line['warehouse_id'] ?: null) : null),
+                        'po_line_id'         => $poLineId,
+                        'bill_line_no'       => (int) ($line['line_no'] ?? 0),
+                        'receipt_request_id' => $portion['request_id'],
+                        'receipt_no'         => $portion['receipt_no'],
+                    ];
+                    $left = round($left - $piece, 4);
+                }
                 $claimed[$k] = round(($claimed[$k] ?? 0.0) + $take, 4);
                 $need = round($need - $take, 4);
             }
@@ -1309,6 +1431,7 @@ final class BillService
 
         $lines = [];
         $lineNo = 0;
+        $defaultWarehouse = false; // read once, only if a direct goods line needs it
         foreach ($raw as $index => $line) {
             if (!is_array($line)) {
                 continue;
@@ -1332,13 +1455,31 @@ final class BillService
             if (($isService || $itemId === null) && $expenseAcc === null) {
                 Http::validationFailed('Choose the ledger this service or expense is booked to.', ['field' => 'lines', 'index' => $index, 'needs' => 'purchase_acc_id']);
             }
+            $warehouseId = self::id($line['warehouse_id'] ?? ($poLine['warehouse_id'] ?? null));
+            if ($poId === null && !$isService && $itemId !== null && $warehouseId === null) {
+                // Goods bought without an order are received into stock BY THE BILL, and Books
+                // will not receive an item line without the material centre it goes into
+                // (VoucherPostingService::assertMaterialCentresOnInventoryLines, 422). Decided
+                // here, when the bill is entered — not discovered when it is posted and BLOCKED.
+                if ($defaultWarehouse === false) {
+                    $settings = Db::first('SELECT default_warehouse_id FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $this->ctx->cmpId]);
+                    $defaultWarehouse = self::id($settings['default_warehouse_id'] ?? null);
+                }
+                $warehouseId = $defaultWarehouse;
+                if ($warehouseId === null) {
+                    Http::validationFailed(
+                        sprintf('Line %d: say which warehouse these goods go into. A bill without a purchase order receives them into stock itself. (Or set a default warehouse in Settings.)', $lineNo + 1),
+                        ['field' => 'lines', 'index' => $index, 'needs' => 'warehouse_id'],
+                    );
+                }
+            }
 
             $lines[] = [
                 'line_no'         => ++$lineNo,
                 'po_line_id'      => $poLineId,
                 'item_id'         => $isService ? null : $itemId,
                 'unit_id'         => self::id($line['unit_id'] ?? ($poLine['unit_id'] ?? null)),
-                'warehouse_id'    => self::id($line['warehouse_id'] ?? ($poLine['warehouse_id'] ?? null)),
+                'warehouse_id'    => $warehouseId,
                 'is_service'      => $isService || $itemId === null,
                 'purchase_acc_id' => $expenseAcc,
                 'description'     => self::text($line['description'] ?? ($poLine['description'] ?? null)),
@@ -1377,17 +1518,17 @@ final class BillService
      * and booked in this one needs a posting date here, and is refused before it reaches Books
      * rather than by Books.
      */
-    private function postingDate(mixed $given, string $invoiceDate): string
+    private function postingDate(mixed $given, string $invoiceDate, ?Context $scope = null): string
     {
         $date = self::validDate($given) ?? $invoiceDate;
         if ($date < $invoiceDate) {
             Http::validationFailed('A bill cannot be booked before the supplier\'s invoice date.', ['field' => 'posting_date']);
         }
-        $range = $this->ctx->fyRange();
+        $range = ($scope ?? $this->ctx)->fyRange();
         if ($range !== null && ($date < $range['from'] || $date > $range['to'])) {
             Http::validationFailed(
                 sprintf(
-                    'This bill would be booked on %s, outside the financial year selected (%s to %s). %s',
+                    'This bill would be booked on %s, outside the financial year it is booked in (%s to %s). %s',
                     $date,
                     $range['from'],
                     $range['to'],

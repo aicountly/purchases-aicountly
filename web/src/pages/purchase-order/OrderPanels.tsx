@@ -1,36 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Download } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
 import type { PoCommunication, PurchaseOrder } from '../../services/types'
-import { useApi } from '../../hooks/useApi'
+import { useWarehouses } from '../../hooks/useWarehouses'
 import { Button, Card, date, Field, Input, Notice, qty, Select, Textarea } from '../../ui'
 
 type Run = (path: string, body?: Record<string, unknown>) => Promise<boolean>
-
-interface Warehouse {
-  id: number
-  name: string
-}
-
-/** Inventory's warehouses, read live through this product's relay. */
-function useWarehouses(enabled: boolean): Warehouse[] {
-  const { data } = useApi(
-    (signal) => api.get<{ data?: Array<Record<string, unknown>> }>('v1/catalog/warehouses', undefined, signal),
-    [],
-    enabled,
-  )
-
-  return useMemo(
-    () =>
-      (data?.data ?? [])
-        .map((w) => ({
-          id: Number(w.warehouse_id ?? w.id ?? 0),
-          name: String(w.warehouse_name ?? w.name ?? `Warehouse ${w.warehouse_id ?? w.id}`),
-        }))
-        .filter((w) => w.id > 0),
-    [data],
-  )
-}
 
 interface ReceiptDraftLine {
   line_id: number

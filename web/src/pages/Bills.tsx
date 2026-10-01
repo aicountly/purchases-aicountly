@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../services/api'
 import type { BillRequest, CatalogSupplier, PurchaseOrder } from '../services/types'
 import { useApi } from '../hooks/useApi'
+import { useWarehouses } from '../hooks/useWarehouses'
 import { useUrlFilter, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
@@ -352,12 +353,14 @@ interface DirectLine {
   item_label: string | null
   purchase_acc_id: number | null
   ledger_label: string | null
+  /** Where an item line's goods go: the bill receives them into stock itself. '' = the default from Settings. */
+  warehouse_id: string
   qty: string
   rate: string
 }
 
 function blankLine(kind: 'service' | 'item'): DirectLine {
-  return { key: Math.random().toString(36).slice(2), kind, description: '', item_id: null, item_label: null, purchase_acc_id: null, ledger_label: null, qty: '1', rate: '' }
+  return { key: Math.random().toString(36).slice(2), kind, description: '', item_id: null, item_label: null, purchase_acc_id: null, ledger_label: null, warehouse_id: '', qty: '1', rate: '' }
 }
 
 /**
@@ -383,6 +386,8 @@ export function BillEditor() {
   const [error, setError] = useState<string | null>(null)
   const [supplier, setSupplier] = useState<CatalogSupplier | null>(null)
   const [direct, setDirect] = useState<DirectLine[]>(() => [blankLine('service')])
+  // A bill without an order receives its goods itself, so each item line says where they go.
+  const warehouses = useWarehouses(!poId)
 
   const order = useApi(
     (signal) => api.one<PurchaseOrder>(`v1/purchase-orders/${poId}`, undefined, signal),
@@ -441,7 +446,7 @@ export function BillEditor() {
               .map((l) =>
                 l.kind === 'service'
                   ? { is_service: true, description: l.description.trim() || 'Service', purchase_acc_id: l.purchase_acc_id ?? undefined, qty: Number(l.qty), rate: Number(l.rate) }
-                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, qty: Number(l.qty), rate: Number(l.rate) },
+                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : undefined, qty: Number(l.qty), rate: Number(l.rate) },
               ),
           }
       const response = await api.post<BillRequest>('v1/bills', body)
@@ -549,6 +554,12 @@ export function BillEditor() {
                 ) : (
                   <>
                     <ItemPicker onPick={(item) => setLine(l.key, { item_id: item.item_id, item_label: item.item_name })} selectedLabel={l.item_label} />
+                    <Field label="Warehouse" hint="Where the goods go into stock.">
+                      <Select value={l.warehouse_id} onChange={(e) => setLine(l.key, { warehouse_id: e.target.value })}>
+                        <option value="">Default from Settings</option>
+                        {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                      </Select>
+                    </Field>
                     <Field label="Description (optional)"><Input value={l.description} onChange={(e) => setLine(l.key, { description: e.target.value })} /></Field>
                   </>
                 )}
@@ -559,7 +570,8 @@ export function BillEditor() {
             ))}
           </div>
           <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.75rem', marginBottom: 0 }}>
-            Services move no stock. Items bought without an order are received into stock by the bill itself.
+            Services move no stock. Items bought without an order are received into stock by the bill itself, into the warehouse
+            each line names (or the default warehouse from Settings).
           </p>
         </Card>
       )}

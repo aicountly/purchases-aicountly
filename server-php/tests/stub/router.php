@@ -257,10 +257,13 @@ if (str_contains($path, '/validatesession')) {
 // --- Manage ---------------------------------------------------------------
 // --- Contacts (company contacts, the in-flight company-scope release) ---------
 //
-// Only /api/companies/{cmp}/contacts…: a user's personal contacts are never asked for. The
+// Only {base}/companies/{cmp}/contacts…: a user's personal contacts are never asked for. The
 // books/ledger_account reference is Contacts' identity link, one contact per ledger per company.
 // Mode contacts_undeployed answers these routes the way a Contacts without the release does.
-if (preg_match('#^/api/companies/(\d+)/contacts#', $path, $cm) === 1) {
+// Contacts is deployed under /api/ with routes `companies/…`, so a deployed base answers
+// /api/companies/…; a localhost base is served at the root. /api/api/companies/… — the
+// doubled prefix — is no route at all, as in Contacts.
+if (preg_match('#^(?:/api)?/companies/(\d+)/contacts#', $path, $cm) === 1) {
     if (!empty($modes['contacts_undeployed'])) {
         http_response_code(404);
         echo '<html>404 Page Not Found</html>';
@@ -321,7 +324,7 @@ if (preg_match('#^/api/companies/(\d+)/contacts#', $path, $cm) === 1) {
         exit;
     }
 }
-if (preg_match('#^/api/contacts#', $path) === 1) {
+if (preg_match('#^(?:/api)?/contacts#', $path) === 1) {
     // A personal-contacts request from a product is a bug: those are the user's own.
     http_response_code(418);
     echo json_encode(['message' => 'personal contacts requested by a product']);
@@ -562,15 +565,33 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
     exit;
 }
 
+/*
+ * Inventory's ItemsController::bulkLookup: it reads `item_ids` (and `item_skus`) — anything else,
+ * `ids` included, is ignored and answered with an empty list — and each row is an inv_items row
+ * with its unit's symbol (LOOKUP_COLUMNS) plus the item's units. No item_code, uom or group name:
+ * the group is an id, named by v1/item-groups.
+ */
 if (str_contains($path, '/v1/items/bulk-lookup')) {
-    $ids = $body['ids'] ?? [];
+    $ids = array_values(array_unique(array_filter(array_map('intval', (array) ($body['item_ids'] ?? [])), static fn ($i) => $i > 0)));
     echo json_encode(['data' => array_map(static fn ($id) => [
-        'item_id'   => (int) $id,
-        'item_name' => 'Stub Item ' . $id,
-        'item_code' => 'SKU-' . $id,
-        'uom'       => 'Nos',
-        'group_name' => 'Stub Group',
+        'item_id'              => $id,
+        'item_uuid'            => 'item-' . $id,
+        'item_name'            => 'Stub Item ' . $id,
+        'item_alias'           => null,
+        'item_sku'             => 'SKU-' . $id,
+        'hsn_sac'              => '7214',
+        'unit_id'              => 1,
+        'unit_symbol'          => 'Nos',
+        'books_tax_cat_id'     => 18,
+        'default_warehouse_id' => 1,
+        'item_grp_id'          => 5,
+        'is_active'            => 1,
+        'units'                => [],
     ], $ids)]);
+    exit;
+}
+if (str_contains($path, '/v1/item-groups') && $method === 'GET') {
+    echo json_encode(['data' => [['item_grp_id' => 5, 'grp_name' => 'Stub Group', 'parent_grp_id' => null, 'is_primary' => 1, 'item_count' => 2]], 'meta' => ['total' => 1]]);
     exit;
 }
 if (str_contains($path, '/v1/reports/replenishment')) {
@@ -625,20 +646,39 @@ if (str_contains($path, '/masters/accounts/')) {
  * bill-by-bill, exactly as Books behaves: acc_id is REQUIRED and the endpoint
  * answers 400 without one. Purchases once called it without an acc_id, so the
  * stub enforcing this is what stops that regression coming back.
+ *
+ * The rows are Books' rows (ReportService::billByBill → BillAllocationService::listOutstanding):
+ * books_bills b.* — original_amount and pending_amount as NUMERIC strings, dr_cr, the source
+ * voucher's number — plus Books' ON ACCOUNT reconciliation row. There is no `amount`. A bill with
+ * nothing pending is left out unless show_settled is the string '1'.
  */
 if (str_contains($path, '/reports/bill-by-bill')) {
     $accId = (int) ($_GET['acc_id'] ?? 0);
     if ($accId <= 0) {
         http_response_code(400);
-        echo json_encode(['error' => ['code' => 'bad_request', 'message' => 'acc_id required'], 'message' => 'acc_id required']);
+        echo json_encode(['status' => 400, 'error' => 400, 'messages' => ['error' => 'acc_id required'], 'message' => 'acc_id required']);
         exit;
     }
-    echo json_encode(['data' => ['acc_id' => $accId, 'rows' => [
-        ['bill_ref' => 'INV/0001', 'bill_date' => '2026-08-01', 'due_date' => '2026-08-31', 'pending_amount' => 120000.5, 'amount' => 200000.0],
-        ['bill_ref' => 'INV/0002', 'bill_date' => '2026-08-10', 'due_date' => null,         'pending_amount' => 45000.25, 'amount' => 45000.25],
-        ['bill_ref' => 'INV/0003', 'bill_date' => '2026-08-15', 'due_date' => '2099-01-01', 'pending_amount' => 10000.0,  'amount' => 10000.0],
-        ['bill_ref' => 'INV/0004', 'bill_date' => '2026-08-20', 'due_date' => '2026-09-01', 'pending_amount' => 0.0,      'amount' => 5000.0],
-    ]]]);
+    $bill = static fn (int $id, string $ref, string $date, ?string $due, string $original, string $pending, int $flagOnAccount = 0) => [
+        'bill_id' => $id, 'cmp_id' => (int) ($_GET['cmp_id'] ?? 0), 'fy_id' => (int) ($_GET['fy_id'] ?? 0), 'acc_id' => $accId,
+        'bill_ref' => $ref, 'bill_date' => $date, 'due_date' => $due, 'original_amount' => $original, 'pending_amount' => $pending,
+        'dr_cr' => 2, 'source_vch_txn_id' => $flagOnAccount ? null : 4100 + $id, 'source_vch_number' => $flagOnAccount ? null : 'PUR/' . (100 + $id),
+        'source_vch_type_id' => $flagOnAccount ? null : 11, 'is_on_account' => $flagOnAccount, 'is_undefined_reference' => 0,
+        'overdue_days' => 0, 'age_bucket' => 'not_due',
+    ];
+    $rows = [
+        $bill(1, 'INV/0001', '2026-08-01', '2026-08-31', '200000.0000', '120000.5000'),
+        $bill(2, 'INV/0002', '2026-08-10', null, '45000.2500', '45000.2500'),
+        $bill(3, 'INV/0003', '2026-08-15', '2099-01-01', '10000.0000', '10000.0000'),
+        $bill(4, 'INV/0004', '2026-08-20', '2026-09-01', '5000.0000', '0.0000'),
+        $bill(5, 'ON ACCOUNT', '2026-04-01', null, '0.0000', '0.0000', 1),
+    ];
+    if (($_GET['show_settled'] ?? null) !== '1') {
+        $rows = array_values(array_filter($rows, static fn (array $r) => (float) $r['pending_amount'] > 0));
+    }
+    echo json_encode(['data' => ['report' => 'bill_by_bill', 'acc_id' => $accId, 'rows' => $rows,
+        'totals' => ['pending' => array_sum(array_map(static fn ($r) => (float) $r['pending_amount'], $rows)), 'overdue' => 0],
+        'reconciliation' => ['is_reconciled' => true]]]);
     exit;
 }
 
@@ -746,6 +786,20 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         http_response_code(422);
         echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Unknown stock_effect "' . $effect . '" for this voucher type; nothing was posted.']]);
         exit;
+    }
+    // VoucherPostingService::assertMaterialCentresOnInventoryLines: an item line of a purchase,
+    // sale or note needs its material centre (mc_id) unless its goods come from a challan
+    // (from_challan) or, on a purchase, arrive later on an inward challan (defer_inward).
+    if (in_array($type, [11, 18, 2, 3], true) && $effect !== 'from_challan' && !($type === 11 && $effect === 'defer_inward')) {
+        $lineNum = 0;
+        foreach ($voucherPayload['inventory_lines'] ?? [] as $inv) {
+            $lineNum++;
+            if ((int) ($inv['item_id'] ?? 0) > 0 && (float) ($inv['qty'] ?? 0) > 0 && (int) ($inv['mc_id'] ?? 0) <= 0) {
+                http_response_code(422);
+                echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Material centre is required on item line ' . $lineNum]]);
+                exit;
+            }
+        }
     }
     if ($effect === 'from_physical_challan' && empty($voucherPayload['challan_settlements'])) {
         http_response_code(422);
