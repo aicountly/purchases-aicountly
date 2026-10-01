@@ -1350,7 +1350,9 @@ check('concentration refuses to add two currencies together', function () use ($
     $orders->create(poInput());
     $orders->create(poInput(['currency_code' => 'USD', 'exchange_rate' => 83]));
 
-    $overview = dashboardFor('overview', $ctx, $auth);
+    // The orders are dated in September 2026 (poInput): ask for that month, not whichever month
+    // the suite happens to run in — from 1 Oct 2026 the default period held no orders at all.
+    $overview = dashboardFor('overview', $ctx, $auth, ['from' => '2026-09-01', 'to' => '2026-09-30']);
     $concentration = $overview['panels']['concentration'];
 
     assertSame(false, $concentration['available'], 'a mixed-currency base is not shown');
