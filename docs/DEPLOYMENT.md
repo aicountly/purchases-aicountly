@@ -21,6 +21,16 @@ normally `public_html` (or the subdomain's own document root).
 Deployment is manual only — **Actions → pick a workflow → Run workflow**.
 Nothing deploys on push or merge.
 
+## CI and the pre-deploy gate
+
+- **CI** (`.github/workflows/ci.yml`: server-php/tests/run.sh on a throwaway PostgreSQL with the local stub; web typecheck and build) runs automatically on every pull
+  request and on every push to `main`, and can also be run by hand. It only
+  tests and builds; it never deploys or reaches a live host.
+- **Deploys are manual only** (`workflow_dispatch`) and run the full CI suite
+  first: each deploy workflow's first job calls `ci.yml` as a reusable workflow
+  on the commit being deployed, and the deploy job `needs:` it, so a red suite
+  stops the deploy before anything is built or uploaded.
+
 ## One workflow per environment, not per half
 
 Production and sandbox are genuinely separate targets — different SSH
