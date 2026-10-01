@@ -252,6 +252,9 @@ final class ClaimResolutionService
             if ($receipt['applied_at'] === null) {
                 Http::conflict('That goods receipt has not been recorded in Inventory yet; link it once it has.');
             }
+            if (in_array($receipt['status'], ['REVERSED', 'RETURNING'], true)) {
+                Http::conflict('That goods receipt was reversed, or is being returned; link the receipt that brought the replacement goods in.');
+            }
             $used = Db::scalar("SELECT resolution_id FROM purchase_claim_resolutions WHERE cmp_id = :cmp AND kind = 'replacement' AND reference->>'receipt_request_id' = :rid AND resolution_id <> :me", ['cmp' => $this->ctx->cmpId, 'rid' => (string) $receiptId, 'me' => $resolutionId]);
             if ($used !== null) {
                 Http::conflict('That goods receipt already settles another replacement.');

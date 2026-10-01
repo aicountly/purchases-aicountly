@@ -7,8 +7,8 @@ import { useApi } from '../hooks/useApi'
 import { useUrlFilter, useUrlFlag, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip, recoveryPath } from '../components/CommandStrip'
-import type { IntegrationCommand } from '../services/types'
-import { OrderCommunicationsPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
+import type { IntegrationCommand, ReceiptRequest } from '../services/types'
+import { OrderCommunicationsPanel, ReceiptReturnPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
@@ -129,6 +129,7 @@ export function PurchaseOrderDetail() {
   const [cancelling, setCancelling] = useState(false)
   const [receiving, setReceiving] = useState(false)
   const [shortClosing, setShortClosing] = useState(false)
+  const [undoing, setUndoing] = useState<{ receipt: ReceiptRequest; mode: 'return' | 'reverse' } | null>(null)
 
   const { data, loading, reload } = useApi(
     (signal) => api.one<PurchaseOrder>(`v1/purchase-orders/${id}`, undefined, signal),
@@ -267,6 +268,18 @@ export function PurchaseOrderDetail() {
 
       {shortClosing && <ShortClosePanel po={po} run={act} busy={busy} onCancel={() => setShortClosing(false)} />}
 
+      {undoing && (
+        <ReceiptReturnPanel
+          key={`${undoing.receipt.request_id}-${undoing.mode}`}
+          po={po}
+          receipt={undoing.receipt}
+          mode={undoing.mode}
+          run={post}
+          busy={busy}
+          onCancel={() => setUndoing(null)}
+        />
+      )}
+
       <OrderCommunicationsPanel po={po} can={can} run={act} busy={busy} />
 
       {cancelling && (
@@ -374,13 +387,47 @@ export function PurchaseOrderDetail() {
               { key: 'no', header: 'GRN', render: (row) => row.receipt_no ?? `#${row.request_id}` },
               { key: 'date', header: 'Received', render: (row) => date(row.received_at) },
               { key: 'dc', header: 'Supplier DC', render: (row) => row.supplier_dc_no ?? '—' },
-              { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+              {
+                key: 'status',
+                header: 'Status',
+                render: (row) => (
+                  <span style={{ display: 'grid', gap: '0.2rem' }}>
+                    <StatusBadge status={row.status} />
+                    {row.status === 'RETURNING' && row.last_error && <span style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{row.last_error}</span>}
+                  </span>
+                ),
+              },
               { key: 'grn', header: 'In Inventory', render: (row) => row.inventory_document_no ?? (row.inventory_document_id ? `#${row.inventory_document_id}` : '—') },
               {
                 key: 'act',
                 header: '',
                 render: (row) =>
-                  row.applied_at === null && ['FAILED', 'UNCERTAIN'].includes(row.status) && can('receipt.request') ? (
+                  row.status === 'RETURNING' && (can('receipt.request') || can('return.approve')) ? (
+                    <span style={{ display: 'flex', gap: '0.3rem' }}>
+                      <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/retry-return`)}>Retry</Button>
+                      {can('receipt.request') && (
+                        <Button
+                          tone="ghost"
+                          disabled={busy}
+                          onClick={() => {
+                            const reason = window.prompt('Why is this return being withdrawn? The GRN will stand as it was.')
+                            if (reason && reason.trim() !== '') void post(`v1/receipt-requests/${row.request_id}/withdraw-return`, { reason: reason.trim() })
+                          }}
+                        >
+                          Withdraw
+                        </Button>
+                      )}
+                    </span>
+                  ) : row.status === 'ACCEPTED' && row.applied_at !== null && po.status !== 'CANCELLED' && (can('receipt.request') || can('return.approve')) ? (
+                    <span style={{ display: 'flex', gap: '0.3rem' }}>
+                      {row.inventory_document_id !== null && can('return.approve') && (
+                        <Button disabled={busy} onClick={() => setUndoing({ receipt: row, mode: 'return' })}>Give back</Button>
+                      )}
+                      {can('receipt.request') && (
+                        <Button tone="ghost" disabled={busy} onClick={() => setUndoing({ receipt: row, mode: 'reverse' })}>Reverse</Button>
+                      )}
+                    </span>
+                  ) : row.applied_at === null && ['FAILED', 'UNCERTAIN'].includes(row.status) && can('receipt.request') ? (
                     <span style={{ display: 'flex', gap: '0.3rem' }}>
                       {row.status === 'UNCERTAIN' && <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/reconcile`)}>Reconcile</Button>}
                       <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/retry`)}>Retry</Button>
@@ -402,7 +449,8 @@ export function PurchaseOrderDetail() {
             ]}
           />
           <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.6rem', marginBottom: 0 }}>
-            The GRN itself lives in Inventory. Purchases keeps the reference, not a copy.
+            The GRN itself lives in Inventory. Purchases keeps the reference, not a copy. A GRN no bill has settled can be
+            reversed, or its goods given back, through Inventory; billed goods go back on a purchase return.
           </p>
         </Card>
 

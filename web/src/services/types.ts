@@ -229,6 +229,18 @@ export interface ReceiptRequest {
   inventory_document_no: string | null
   last_error: string | null
   created_at: string
+  /** What Inventory recorded, line for line with requested_lines (qty kept after a partial return). */
+  applied_lines?: ReceiptAppliedLine[] | string | null
+  /** A return or reversal on its way to Inventory (status RETURNING). */
+  pending_return?: { kind: 'return' | 'reverse'; reason: string | null } | string | null
+  return_history?: Array<{ kind: string; action: string | null; reason: string | null; applied_at: string }> | string | null
+  reversed_at?: string | null
+}
+
+export interface ReceiptAppliedLine {
+  line_id: number
+  qty: number
+  rejected_qty: number
 }
 
 export interface BillRequestSummary {

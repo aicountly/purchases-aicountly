@@ -92,10 +92,27 @@ a later financial year than its GRN expenses the difference instead of rewriting
 the closed year. Each receipt records what it did (`stock_effect` on its command
 reference), so turning the setting on or off never changes how an existing receipt
 is billed, and one bill cannot settle both kinds (refused: bill them separately).
-Returning goods before the bill means reversing the GRN; a partial return before
-the bill is not supported yet. Freight captured on the GRN is not sent (an inward
-challan carries no valuation of its own): charges are capitalised from the bill,
-where Books allocates bill sundries onto the goods.
+Freight captured on the GRN is not sent (an inward challan carries no valuation of
+its own): charges are capitalised from the bill, where Books allocates bill sundries
+onto the goods.
+
+**Goods received and not billed, given back (`ReceiptReturnService`, Inventory C10).**
+A GRN no bill has settled is undone through Inventory's own endpoints, on this
+product's key, on the receipt it posted: **Reverse** (recorded by mistake — the order
+counts it, and its rejections, as never received) and **Give back** all of it
+(`POST inventory-documents/{id}/reverse`) or part of it (`POST …/{id}/revise` with the
+whole receipt for the quantity kept — Inventory reverses and re-posts in one
+transaction; the receipt keeps the replacement's document id, and only the kept
+quantity can be billed). Given-back goods count as rejected, still owed. The receipt
+is marked `RETURNING` under the order's lock before anything is sent, so no bill can
+settle goods on their way back; the order's counters, the receipt's quantities and its
+document change together only when Inventory confirms. Refused (a bill entered in Smart
+Books settled some of it: 409 `invalid_state`) — the GRN stands exactly as it was, and
+those goods go back on a purchase return after the bill. No answer — Retry on the same
+key. A GRN a Purchase bill already claims is refused before Inventory is asked. A bill
+that would settle a GRN Inventory shows as reversed (done there directly) is refused
+before Books is asked; reversing it here records it, since Inventory answers a reversal
+of a reversed receipt as already done.
 
 Purchase returns follow the same one-movement rule: the dispatch is a `DELIVERY_CHALLAN`
 (challan_only, nothing moves) and the debit note settles it (`from_challan`), so the goods leave

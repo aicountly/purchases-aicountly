@@ -461,6 +461,38 @@ if (str_contains($path, '/v1/inventory-documents/by-source')) {
     echo json_encode(['data' => $documents['by_id'][(string) $id]]);
     exit;
 }
+/**
+ * What a Books voucher has settled of an Inventory receipt: the challan_settlements of every live
+ * voucher the stub holds (a bill posted from Purchase, or one a test files as entered in Smart
+ * Books). Inventory refuses to reverse or revise a receipt any of which is settled
+ * (DocumentPostingService::reverse → 409 invalid_state "...already settled by later documents...").
+ */
+function stubSettledQty(int $documentId): float {
+    $file = sys_get_temp_dir() . '/stub-vouchers.json';
+    $held = is_file($file) ? (json_decode((string) file_get_contents($file), true) ?: []) : [];
+    $qty = 0.0;
+    foreach ($held as $voucher) {
+        if (!empty($voucher['cancelled'])) {
+            continue;
+        }
+        foreach ((array) ($voucher['challan_settlements'] ?? []) as $settlement) {
+            if ((int) ($settlement['source_document_id'] ?? 0) === $documentId) {
+                $qty += (float) ($settlement['qty'] ?? 0);
+            }
+        }
+    }
+    return $qty;
+}
+
+function stubRefuseSettled(int $documentId): void {
+    if (stubSettledQty($documentId) > 0.00005) {
+        http_response_code(409);
+        $message = 'Document has pending quantities that were already settled by later documents; reverse those first';
+        echo json_encode(['error' => ['code' => 'invalid_state', 'message' => $message, 'details' => ['document_id' => $documentId]], 'message' => $message]);
+        exit;
+    }
+}
+
 if (preg_match('#/v1/inventory-documents/(\d+)/reverse$#', $path, $rm) === 1 && $method === 'POST') {
     $doc = $documents['by_id'][$rm[1]] ?? null;
     if ($doc === null) {
@@ -468,6 +500,13 @@ if (preg_match('#/v1/inventory-documents/(\d+)/reverse$#', $path, $rm) === 1 && 
         echo json_encode(['error' => ['code' => 'not_found', 'message' => 'No such document'], 'message' => 'not found']);
         exit;
     }
+    // DocumentPostingService::reverse: a reversed document answers as already done.
+    if (($doc['status'] ?? '') === 'REVERSED') {
+        $doc['duplicate'] = true;
+        echo json_encode(['data' => remember($store, $seen, $key, $doc), 'duplicate' => true]);
+        exit;
+    }
+    stubRefuseSettled((int) $rm[1]);
     $doc['status'] = 'REVERSED';
     $documents['by_id'][$rm[1]] = $doc;
     $sk = stubSourceKey($doc);
@@ -476,6 +515,76 @@ if (preg_match('#/v1/inventory-documents/(\d+)/reverse$#', $path, $rm) === 1 && 
     }
     file_put_contents($documentStore, json_encode($documents));
     echo json_encode(['data' => remember($store, $seen, $key, $doc)]);
+    exit;
+}
+/*
+ * DocumentsController::revise / DocumentPostingService::revise (Inventory 702c177, C10): the old
+ * document reversed (its reverse leg superseded) and the payload posted as its replacement, in one
+ * transaction — 201 with the replacement, carrying replaced_document_id. Nothing but the type is
+ * copied from the old document. Already reversed: the replacement it was given, 200 duplicate, or
+ * 409 invalid_state when it was reversed outright. Settled by a bill: 409 invalid_state.
+ */
+if (preg_match('#/v1/inventory-documents/(\d+)/revise$#', $path, $vm) === 1 && $method === 'POST') {
+    $old = $documents['by_id'][$vm[1]] ?? null;
+    if ($old === null) {
+        http_response_code(404);
+        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'No such document'], 'message' => 'not found']);
+        exit;
+    }
+    if (($old['status'] ?? '') === 'REVERSED') {
+        foreach ($documents['by_id'] as $candidate) {
+            if ((int) ($candidate['replaced_document_id'] ?? 0) === (int) $vm[1]) {
+                $candidate['duplicate'] = true;
+                echo json_encode(['data' => remember($store, $seen, $key, $candidate), 'duplicate' => true]);
+                exit;
+            }
+        }
+        http_response_code(409);
+        echo json_encode(['error' => ['code' => 'invalid_state', 'message' => 'This document has been reversed, so there is nothing left to revise. Create a new document instead.'], 'message' => 'reversed']);
+        exit;
+    }
+    stubRefuseSettled((int) $vm[1]);
+    $old['status'] = 'REVERSED';
+    $documents['by_id'][$vm[1]] = $old;
+    $type = strtoupper((string) ($body['document_type'] ?? $old['document_type'] ?? ''));
+    $id = 7000 + $n;
+    $replacement = [
+        'document_id'          => $id,
+        'document_uuid'        => 'invdoc-' . $n,
+        'document_no'          => ($type === 'INWARD_CHALLAN' ? 'GRN/' : 'DOC/') . str_pad((string) $n, 4, '0', STR_PAD_LEFT),
+        'document_type'        => $type,
+        'stock_effect'         => $body['stock_effect'] ?? null,
+        'document_date'        => $body['document_date'] ?? null,
+        'status'               => 'POSTED',
+        'party_ref'            => $body['party_ref'] ?? null,
+        'source_app'           => $body['source_app'] ?? null,
+        'source_document_type' => $body['source_document_type'] ?? null,
+        'source_document_id'   => isset($body['source_document_id']) ? (int) $body['source_document_id'] : null,
+        'source_document_uuid' => $body['source_document_uuid'] ?? null,
+        'source_document_no'   => $body['source_document_no'] ?? null,
+        'metadata'             => array_merge((array) ($body['metadata'] ?? []), ['revises_document_id' => (int) $vm[1], 'revision_reason' => (string) ($body['reason'] ?? '')]),
+        'lines' => array_map(static fn ($l) => [
+            'source_line_ref' => isset($l['source_line_ref']) ? (int) $l['source_line_ref'] : null,
+            'item_id'         => $l['item_id'] ?? null,
+            'qty'             => $l['qty'] ?? 0,
+            'direction'       => 'in',
+            'warehouse_id'    => $l['warehouse_id'] ?? null,
+            'unit_id'         => $l['unit_id'] ?? null,
+            'batch_id'        => $l['batch_id'] ?? null,
+            'valuation_rate'  => isset($l['rate']) ? (float) $l['rate'] : 80.0,
+        ], $body['lines'] ?? []),
+        'replaced_document_id' => (int) $vm[1],
+        'replaced_status'      => 'REVERSED',
+        'duplicate'            => false,
+    ];
+    $documents['by_id'][(string) $id] = $replacement;
+    $sk = stubSourceKey($replacement);
+    if ($sk !== null) {
+        $documents['by_source'][$sk] = $id;
+    }
+    file_put_contents($documentStore, json_encode($documents));
+    http_response_code(201);
+    echo json_encode(['data' => remember($store, $seen, $key, $replacement), 'duplicate' => false]);
     exit;
 }
 if (preg_match('#/v1/inventory-documents/(\d+)$#', $path, $gm) === 1 && $method === 'GET') {

@@ -202,6 +202,8 @@ const STATUS_TONES: Record<string, 'neutral' | 'info' | 'warning' | 'success' | 
   PARTIAL: 'warning',
   NOT_STARTED: 'neutral',
   NOT_BILLED: 'neutral',
+  RETURNING: 'warning',
+  REVERSED: 'neutral',
 }
 
 export function StatusBadge({ status }: { status: string }) {

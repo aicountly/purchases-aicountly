@@ -592,10 +592,18 @@ final class ReceiptService
      * @param array<string, mixed> $receipt
      * @return array<string, mixed>
      */
-    private function payload(array $receipt): array
+    private function payload(array $receipt, ?array $kept = null): array
     {
         $po = Db::first('SELECT * FROM purchase_orders WHERE po_id = :id AND cmp_id = :cmp', ['id' => (int) $receipt['po_id'], 'cmp' => (int) $receipt['cmp_id']]) ?? [];
-        $lines = array_values(array_filter(Db::jsonColumn($receipt['requested_lines']), static fn (array $l) => (float) ($l['qty'] ?? 0) > 0));
+        $lines = [];
+        foreach (Db::jsonColumn($receipt['requested_lines']) as $i => $line) {
+            if ($kept !== null) {
+                $line['qty'] = (float) ($kept[$i] ?? 0);
+            }
+            if ((float) ($line['qty'] ?? 0) > 0) {
+                $lines[] = $line;
+            }
+        }
 
         return [
             'document_type'        => (string) ($receipt['document_type'] ?? 'INWARD_CHALLAN'),
@@ -648,6 +656,21 @@ final class ReceiptService
                 ], static fn ($v) => $v !== null && $v !== ''),
             ], static fn ($value) => $value !== null && $value !== []), $lines),
         ];
+    }
+
+    /**
+     * The receipt as Inventory is sent it — for a receipt being restated to the quantities KEPT
+     * (ReceiptReturnService), the same document with each requested line's quantity replaced by
+     * $kept[index] and the lines kept at nothing left out. Nothing else changes: Inventory copies
+     * nothing from the receipt it replaces but its type.
+     *
+     * @param array<string, mixed> $receipt
+     * @param array<int, float> $kept quantity kept per requested line, by index
+     * @return array<string, mixed>
+     */
+    public function keptPayload(array $receipt, array $kept): array
+    {
+        return $this->payload($receipt, $kept);
     }
 
     /**

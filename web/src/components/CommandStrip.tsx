@@ -95,6 +95,7 @@ export function CommandStrip({
 
 const WHAT: Record<string, string> = {
   'purchases.receipt.request': 'Recording the goods receipt',
+  'purchases.receipt.return': 'Giving back goods from the goods receipt',
   'purchases.bill.post': 'Posting the supplier\'s bill',
   'purchases.return.dispatch': 'Recording the dispatch of returned goods',
   'purchases.return.recall': 'Recalling the returned goods',
@@ -122,6 +123,9 @@ export function recoveryPath(command: IntegrationCommand, mode: 'retry' | 'recon
   switch (command.command_type) {
     case 'purchases.receipt.request':
       return `v1/receipt-requests/${command.entity_id}/${mode === 'retry' ? 'retry' : 'reconcile'}`
+    case 'purchases.receipt.return':
+      // Inventory recognises the key: a lost answer is recovered by sending the same request.
+      return mode === 'retry' ? `v1/receipt-requests/${command.entity_id}/retry-return` : null
     case 'purchases.bill.post':
       // Books recognises the key, so a lost answer is recovered by sending it again.
       return mode === 'retry' ? `v1/bills/${command.entity_id}/post` : null

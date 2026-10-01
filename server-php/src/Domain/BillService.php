@@ -7,6 +7,7 @@ namespace Aicountly\Api\Domain;
 use Aicountly\Api\Audit;
 use Aicountly\Api\Auth;
 use Aicountly\Api\Clients\BooksClient;
+use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Context;
 use Aicountly\Api\Db;
 use Aicountly\Api\Http;
@@ -222,6 +223,14 @@ final class BillService
                 (int) $entered['supplier_account_id'],
                 $entered['supplier_gstin'] ?? null,
             );
+        }
+
+        // Every GRN this bill will settle, as Inventory holds it NOW — also before any lock, and
+        // only for a revision not yet sent. A GRN reversed (or restated) in Inventory directly,
+        // not through this order, is still counted here: settling it would be refused by Books,
+        // or settle goods that are no longer there. Refused here instead, saying how to record it.
+        if ($supply !== null && $entered['po_id'] !== null) {
+            $this->assertReceiptsLive($entered, $billScope);
         }
 
         $prepared = Db::transaction(function () use ($requestId, $input, $billScope, $supply, $entered): array {
@@ -1323,10 +1332,12 @@ final class BillService
         }
         $poId = (int) $bill['po_id'];
 
+        // A reversed GRN counts for nothing; one with a return on its way to Inventory is not
+        // billable until Inventory has answered (ReceiptReturnService) — its goods may be leaving.
         $receipts = Db::all(
-            "SELECT request_id, receipt_no, inventory_document_id, stock_effect, source_document_type, applied_lines, requested_lines
+            "SELECT request_id, receipt_no, status, inventory_document_id, stock_effect, source_document_type, applied_lines, requested_lines
                FROM purchase_receipt_requests
-              WHERE po_id = :po AND cmp_id = :cmp AND applied_at IS NOT NULL AND status <> 'CANCELLED'
+              WHERE po_id = :po AND cmp_id = :cmp AND applied_at IS NOT NULL AND status NOT IN ('CANCELLED', 'REVERSED')
               ORDER BY request_id",
             ['po' => $poId, 'cmp' => $this->ctx->cmpId],
         );
@@ -1338,9 +1349,18 @@ final class BillService
         // warehouse; the bill or order line's was the wrong one to send. One delivery may put one
         // order line into two warehouses: those are parts of one portion (one GRN, one order line).
         $portions = [];
+        $returning = [];
         foreach ($receipts as $receipt) {
             if ($receipt['inventory_document_id'] === null) {
                 continue; // rejected in full: nothing in stock to settle
+            }
+            if ($receipt['status'] === 'RETURNING') {
+                foreach (Db::jsonColumn($receipt['applied_lines'] ?? $receipt['requested_lines']) as $line) {
+                    if ((float) ($line['qty'] ?? 0) > 0) {
+                        $returning[(int) ($line['line_id'] ?? 0)][] = $receipt['receipt_no'];
+                    }
+                }
+                continue;
             }
             $kind = $receipt['source_document_type'] === ReceiptService::LEGACY_SOURCE_TYPE
                 ? 'legacy'
@@ -1445,6 +1465,12 @@ final class BillService
                 $claimed[$k] = round(($claimed[$k] ?? 0.0) + $take, 4);
                 $need = round($need - $take, 4);
             }
+            if ($need > self::EPSILON && isset($returning[$poLineId])) {
+                Http::conflict(
+                    sprintf('Line %d: goods on %s are being returned to the supplier — the return is waiting for Inventory. Finish (Retry) or withdraw that return before billing them.', $lineNo, implode(', ', array_unique($returning[$poLineId]))),
+                    ['po_line_id' => $poLineId, 'returning' => array_values(array_unique($returning[$poLineId]))],
+                );
+            }
             if ($need > self::EPSILON) {
                 Http::conflict(
                     sprintf('Line %d is billed for %s more than has been received and not yet billed. Record the GRN for those goods first — billing them here would receive them again when they arrive.', $lineNo, self::num($need)),
@@ -1461,6 +1487,49 @@ final class BillService
             'stock_effect'        => 'from_challan',
             'challan_settlements' => $settlements,
         ];
+    }
+
+    /**
+     * Refuse a bill that would settle a GRN Inventory no longer holds as this order counts it.
+     *
+     * The plan is worked out as it will be under the lock (a refusal it makes is the same one),
+     * and each GRN it settles is read back from Inventory by the document id this order stored.
+     * Reversed, cancelled or missing there: refused, naming the GRN and what to do — reverse it
+     * here (Inventory answers a reversal of a reversed receipt as already done, so this records
+     * it without moving anything), or reconcile it. Inventory not reachable: left to the posting,
+     * where Books and Inventory refuse a settlement of a receipt that is gone.
+     *
+     * @param array<string, mixed> $bill
+     */
+    private function assertReceiptsLive(array $bill, Context $scope): void
+    {
+        $documents = [];
+        foreach ($this->stockPlan($bill)['challan_settlements'] as $settlement) {
+            $documents[(int) $settlement['source_document_id']] = (string) ($settlement['receipt_no'] ?? '');
+        }
+        if ($documents === []) {
+            return;
+        }
+        $inventory = (new InventoryClient())->withService($this->auth->uuid);
+        foreach ($documents as $documentId => $receiptNo) {
+            $response = $inventory->document($scope, $documentId);
+            if (!$response['ok']) {
+                if ((int) $response['status'] === 404) {
+                    Http::conflict(
+                        sprintf('Inventory has no document %d, which this order counts as GRN %s. Reconcile the GRN on the order before billing it, so the bill does not settle goods Inventory never recorded.', $documentId, $receiptNo),
+                        ['receipt_no' => $receiptNo, 'inventory_document_id' => $documentId, 'retryable' => false],
+                    );
+                }
+                continue;
+            }
+            $status = strtoupper((string) ($response['body']['data']['status'] ?? ''));
+            if (in_array($status, ['REVERSED', 'CANCELLED'], true)) {
+                Http::conflict(
+                    sprintf('GRN %s was %s in Inventory, but this order still counts its goods as received. Reverse the GRN on the order to record that here (nothing moves twice), then bill what is left.', $receiptNo, strtolower($status)),
+                    ['receipt_no' => $receiptNo, 'inventory_document_id' => $documentId, 'inventory_status' => $status, 'retryable' => false],
+                );
+            }
+        }
     }
 
     /** @return list<array<string, mixed>> */

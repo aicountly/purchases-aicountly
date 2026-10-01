@@ -241,6 +241,20 @@ final class InventoryClient extends ApiClient
         return $this->call('POST', 'v1/inventory-documents/' . $documentId . '/reverse', ['reason' => $reason] + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
     }
 
+    /**
+     * Replace a posted document with a new version in one Inventory transaction (reverse + create
+     * + post). For a goods receipt nothing has billed, the payload is the receipt for the quantity
+     * KEPT — the whole receipt, nothing is copied from the old one but its type — and the answer
+     * (201, or 200 on a replay) is the replacement, carrying replaced_document_id. A receipt any
+     * bill has settled is 409 invalid_state.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function reviseDocument(Context $ctx, int $documentId, array $payload, string $idempotencyKey): array
+    {
+        return $this->call('POST', 'v1/inventory-documents/' . $documentId . '/revise', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
+    }
+
     public function document(Context $ctx, int $documentId): array
     {
         return $this->call('GET', 'v1/inventory-documents/' . $documentId . self::query($ctx->asQuery()));
