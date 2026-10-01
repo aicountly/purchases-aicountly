@@ -418,9 +418,7 @@ final class IntegrationCommand
         return array_map(
             static fn (array $row) => self::decode($row),
             Db::all(
-                'SELECT command_id, target_service, command_type, entity_type, entity_id, revision, status,
-                        attempts, last_error, last_status_code, external_reference, resolved_by,
-                        last_attempt_at, completed_at, lease_expires_at, created_at
+                'SELECT ' . self::PUBLIC_COLUMNS . '
                    FROM ' . self::TABLE . '
                   WHERE cmp_id = :cmp AND (' . implode(' OR ', $conds) . ')
                   ORDER BY command_id',
@@ -429,21 +427,46 @@ final class IntegrationCommand
         );
     }
 
-    /** Everything still unresolved, so the UI can show a real count instead of hiding it. */
-    public static function outstanding(Context $ctx, int $limit = 100): array
+    /**
+     * Everything still unresolved, so the UI can show a real count instead of hiding it — for the
+     * kinds of document the caller may see.
+     *
+     * The columns a person needs to recognise and act on a command, and no more (the same
+     * projection as forEntities()): never the stored request body (a whole bill or receipt,
+     * prices included), the lease token or the idempotency key, which are this product's
+     * machinery and nobody's reading. It used to be SELECT *, to any member of the company.
+     *
+     * @param list<string> $entityTypes the documents the caller may see; none, nothing
+     * @return list<array<string, mixed>>
+     */
+    public static function outstanding(Context $ctx, array $entityTypes, int $limit = 100): array
     {
+        if ($entityTypes === []) {
+            return [];
+        }
         [$scope, $params] = $ctx->scopeClause();
+        $types = [];
+        foreach (array_values($entityTypes) as $i => $type) {
+            $types[] = ':etype' . $i;
+            $params['etype' . $i] = $type;
+        }
 
         return array_map(
             static fn (array $row) => self::decode($row),
             Db::all(
-                'SELECT * FROM ' . self::TABLE . "
+                'SELECT ' . self::PUBLIC_COLUMNS . ' FROM ' . self::TABLE . "
                   WHERE {$scope} AND status IN ('PENDING', 'POSTING', 'FAILED', 'UNCERTAIN', 'BLOCKED')
-                  ORDER BY updated_at DESC LIMIT " . max(1, min(500, $limit)),
+                    AND entity_type IN (" . implode(', ', $types) . ')
+                  ORDER BY updated_at DESC LIMIT ' . max(1, min(500, $limit)),
                 $params,
             ),
         );
     }
+
+    /** What a screen may show of a command. Not request_payload, lease_token or idempotency_key. */
+    private const PUBLIC_COLUMNS = 'command_id, target_service, command_type, entity_type, entity_id, revision, status,
+                        attempts, request_summary, last_error, last_status_code, external_reference, resolved_by,
+                        last_attempt_at, completed_at, lease_expires_at, created_at, updated_at';
 
     /**
      * The idempotency key of an operation: stable for the operation, unique across

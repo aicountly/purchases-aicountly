@@ -412,7 +412,7 @@ check('a cancelled receipt cannot be sent again, and its command leaves the open
 
     refused(fn () => (new ReceiptService($ctx, $owner))->retry($requestId), 'cancelled', 'retrying a cancelled receipt');
     same('CANCELLED', Db::scalar("SELECT status FROM purchase_integration_commands WHERE entity_type = 'receipt_request'"), 'the command is withdrawn');
-    same(0, count(IntegrationCommand::outstanding($ctx)), 'and is not open work');
+    same(0, count(IntegrationCommand::outstanding($ctx, ['receipt_request', 'bill_request', 'purchase_return', 'claim_resolution'])), 'and is not open work');
     same(0, count(inventoryState()['by_id']), 'nothing reached Inventory');
 });
 
@@ -696,7 +696,7 @@ check('a revised bill\'s refused revision leaves the open work and cannot be sen
 
     same('CANCELLED', Db::scalar("SELECT status FROM purchase_integration_commands WHERE entity_type = 'bill_request' AND revision = 0"), 'revision 0 withdrawn');
     same('superseded', Db::scalar("SELECT resolved_by FROM purchase_integration_commands WHERE entity_type = 'bill_request' AND revision = 0"), 'as superseded');
-    same(0, count(array_filter(IntegrationCommand::outstanding($ctx), static fn ($c) => (int) $c['revision'] === 0)), 'and is not open work');
+    same(0, count(array_filter(IntegrationCommand::outstanding($ctx, ['receipt_request', 'bill_request', 'purchase_return', 'claim_resolution']), static fn ($c) => (int) $c['revision'] === 0)), 'and is not open work');
 });
 
 check('the same supplier invoice booked through Billing cannot be posted again from Purchase', function () use ($ctx, $owner) {
@@ -1706,6 +1706,82 @@ check('the key resolves to its product by constant-time comparison, and a placeh
         unset($_SERVER['HTTP_X_SERVICE_KEY'], $_SERVER['HTTP_X_ACTOR_UUID']);
         putenv('SERVICE_KEYS');
     }
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU4: unfinished work and the overview's inbox show only what the reader may see\n";
+
+check('unfinished integration work is listed only to those who work on its documents, and never with its stored body, lease or key', function () use ($ctx) {
+    reset();
+    $bill = IntegrationCommand::ensure($ctx, 'books', BillService::COMMAND_BILL, 'bill_request', 41, ['party' => ['acc_id' => 601], 'inventory_lines' => [['item_id' => 201, 'rate' => 999.5]]], ['supplier_invoice_no' => 'S-41']);
+    $receipt = IntegrationCommand::ensure($ctx, 'inventory', ReceiptService::COMMAND_RECEIPT, 'receipt_request', 42, ['lines' => [['item_id' => 201, 'qty' => 5]]], ['receipt_no' => 'GRN-42']);
+    Db::run("UPDATE purchase_integration_commands SET status = 'BLOCKED', last_error = 'Books refused it.', lease_token = 'lease-secret' WHERE command_id = :id", ['id' => (int) $bill['command_id']]);
+    Db::run("UPDATE purchase_integration_commands SET status = 'FAILED', last_error = 'Inventory was down.' WHERE command_id = :id", ['id' => (int) $receipt['command_id']]);
+    profile('user-req', 'Requisitioner', ['requisition.view', 'requisition.create']);
+    profile('user-buyer', 'Buyer', ['po.view']);
+    profile('user-ap', 'Payables', ['bill.enter']);
+    $list = static fn (Auth $who) => endpoint([Controllers\DashboardController::class, 'commands'], $who);
+
+    [$status] = $list(person('user-req', 0));
+    same(403, $status, 'a member who works on neither document sees none of it');
+    [$status, $payload] = $list(person('user-buyer', 0));
+    same([200, ['receipt_request']], [$status, array_column($payload['data'], 'entity_type')], 'a buyer sees the receipt\'s');
+    [, $payload] = $list(person('user-ap', 0));
+    same(['bill_request'], array_column($payload['data'], 'entity_type'), 'payables sees the bill\'s');
+    [, $payload] = $list(person());
+    same(2, count($payload['data']), 'the owner sees both');
+    foreach ($payload['data'] as $row) {
+        foreach (['request_payload', 'lease_token', 'idempotency_key'] as $secret) {
+            truthy(!array_key_exists($secret, $row), $secret . ' is never sent to a screen');
+        }
+    }
+    truthy(!str_contains(json_encode($payload), '999.5') && !str_contains(json_encode($payload), 'lease-secret'), 'nothing of the stored body or the lease leaks through another field');
+    same('S-41', $payload['data'][array_search('bill_request', array_column($payload['data'], 'entity_type'), true)]['request_summary']['supplier_invoice_no'] ?? null, 'what a person needs to recognise it is still there');
+});
+
+check('the overview\'s priority inbox lists approvals only to those who decide them, and names and values only to those who may see them', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    Db::run("UPDATE purchase_orders SET promised_date = '2026-01-15' WHERE po_id = :id", ['id' => (int) $po['po_id']]);
+    Db::insert('purchase_approval_requests', [
+        'cmp_id' => 88, 'fy_id' => 6, 'entity_type' => 'purchase_order', 'entity_id' => (int) $po['po_id'], 'reason_kind' => 'value',
+        'reason_detail' => 'Order value ₹5,00,000.00 is above the ₹1,00,000.00 approval threshold.', 'status' => 'PENDING',
+        'actual_value' => 500000, 'requested_by' => 'user-buyer',
+    ], 'approval_id');
+    profile('user-member', 'Member', ['requisition.view']);
+    profile('user-approver', 'Approver', ['po.approve']);
+    profile('user-viewer', 'Viewer', ['po.view']);
+    $inbox = static function (Auth $who) use ($ctx): array {
+        $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0', 'preset' => 'this_year'];
+        $overview = (new Dashboards\OverviewDashboard($ctx, $who, Dashboards\Period::fromRequest(), Dashboards\Filters::fromRequest()))->build();
+        $byKind = [];
+        foreach ($overview['panels']['priority_inbox']['items'] as $item) {
+            $byKind[$item['kind']][] = $item;
+        }
+
+        return [$byKind, json_encode($overview['panels']['priority_inbox']) . json_encode($overview['panels']['briefing'])];
+    };
+
+    [$items, $text] = $inbox(person('user-member', 0));
+    same([], array_keys($items), 'a member with no part in orders sees no approval and no late order');
+    truthy(!str_contains($text, 'Deccan') && !str_contains($text, '5,00,000') && !str_contains($text, '25,000'), 'no supplier and no value anywhere in the inbox or the briefing');
+
+    [$items, $text] = $inbox(person('user-approver', 0));
+    same(1, count($items['approval'] ?? []), 'an approver sees what waits for them');
+    same([null, 'po.view'], [$items['approval'][0]['amount'], $items['approval'][0]['values_withheld']], 'without the value, and told why');
+    truthy(!str_contains($text, '5,00,000'), 'not even in the reason text');
+    same(false, isset($items['delivery']), 'and no late order, without po.view');
+
+    [$items] = $inbox(person('user-viewer', 0));
+    same(false, isset($items['approval']), 'a viewer who does not approve sees no approval');
+    same(1, count($items['delivery'] ?? []), 'but sees the late order');
+    truthy(str_contains($items['delivery'][0]['detail'], 'Deccan Steel Traders'), 'with its supplier');
+    same(null, $items['delivery'][0]['amount'], 'and not the money still to come, without cost or report access');
+
+    [$items] = $inbox($owner);
+    same('500000', $items['approval'][0]['amount'] ?? null, 'the owner sees the value');
+    truthy(str_contains($items['approval'][0]['detail'], '5,00,000'), 'and the reason');
+    same('25000', $items['delivery'][0]['amount'] ?? null, 'and what is still to come');
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";
