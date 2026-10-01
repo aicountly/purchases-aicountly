@@ -111,6 +111,10 @@ final class ReceiptService
             Http::validationFailed('The submission token is too long.', ['field' => 'client_token']);
         }
 
+        // Serial numbers Inventory would refuse — on an item that does not track them, or not one
+        // per base unit — are refused before anything is recorded (Inventory C6).
+        (new ReceiptTracking($this->ctx, $this->auth))->check($poId, $input);
+
         $requestId = Db::transaction(function () use ($poId, $input, $clientToken): int {
             $po = PoProgress::lock($poId, $this->ctx->cmpId);
             if ($po === null) {
@@ -365,6 +369,17 @@ final class ReceiptService
             return $this->orderView($poId, $requestId);
         }
 
+        // Serial numbers and batches named by id, as Inventory takes them — registered before the
+        // body is first stored, so every retry of it sends ids (Inventory C6).
+        if (IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_RECEIPT, 'receipt_request', $requestId) === null) {
+            $tracked = (new ReceiptTracking($this->ctx, $this->auth))->register($receipt, $scope, self::COMMAND_RECEIPT);
+            if ($tracked['problem'] !== null) {
+                $this->markReceipt($requestId, 'FAILED', $tracked['problem']['message']);
+                Http::error($tracked['problem']['status'], $tracked['problem']['code'], $tracked['problem']['message'], ['request_id' => $requestId, 'retryable' => $tracked['problem']['retryable']]);
+            }
+            $receipt = $tracked['receipt'];
+        }
+
         $command = IntegrationCommand::ensure(
             $scope,
             'inventory',
@@ -552,10 +567,10 @@ final class ReceiptService
                 }
             }
 
-            $serials = is_array($want['serials'] ?? null) ? array_values(array_filter(array_map(static fn ($s) => is_scalar($s) ? trim((string) $s) : '', $want['serials']), static fn ($s) => $s !== '')) : [];
-            if ($serials !== [] && count($serials) !== (int) round($qty)) {
-                Http::validationFailed(sprintf('Line %d: %d serial numbers were given for %s received.', (int) $line['line_no'], count($serials), self::num($qty)), ['field' => 'lines', 'line_id' => $lineId]);
-            }
+            // The serial NUMBERS typed at the gate; checked against the item's tracking and its
+            // base unit before this (ReceiptTracking::check), registered in Inventory and named
+            // by id before the receipt is first sent (ReceiptTracking::register).
+            $serials = ReceiptTracking::serialNumbers($want['serials'] ?? null);
 
             $out[] = [
                 'line_id'          => $lineId,
@@ -637,8 +652,10 @@ final class ReceiptService
                 'source_line_ref' => (int) $line['line_id'],
                 'item_id'         => (int) $line['item_id'],
                 'warehouse_id'    => $line['warehouse_id'] ?? null,
+                // A batch is its batch_id, a serial its serial_id (Inventory C6): never the
+                // numbers as text, which Inventory refuses. ReceiptTracking registered them.
                 'batch_id'        => $line['batch_id'] ?? null,
-                'serials'         => $line['serials'] ?? [],
+                'serials'         => is_array($line['serial_ids'] ?? null) ? array_map('intval', $line['serial_ids']) : [],
                 'unit_id'         => $line['unit_id'] ?? null,
                 'qty'             => (float) $line['qty'],
                 // The provisional cost (the order's net rate). Inventory values a physical
@@ -649,7 +666,7 @@ final class ReceiptService
                 'hsn_sac'         => $line['hsn_sac'] ?? null,
                 'metadata'        => array_filter([
                     'purchase_order_line_id' => (int) $line['line_id'],
-                    'batch_no'               => $line['batch_no'] ?? null,
+                    'batch_no'               => empty($line['batch_id']) ? ($line['batch_no'] ?? null) : null,
                     'rejected_qty'           => (float) ($line['rejected_qty'] ?? 0) > 0 ? (float) $line['rejected_qty'] : null,
                     'rejection_reason'       => $line['rejection_reason'] ?? null,
                     'inspection_note'        => $line['inspection_note'] ?? null,

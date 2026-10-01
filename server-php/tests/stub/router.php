@@ -428,6 +428,178 @@ if (str_contains($path, '/v1/reservations') && $method === 'POST') {
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
     exit;
 }
+/*
+ * Batches and serials (Inventory BatchesController / SerialsController), with ServiceCallerPolicy as
+ * it stands: a product's key reads masters but writes none (purchases: inward/delivery challans
+ * only), so registering a serial number or a batch needs the person's own session. Serials are
+ * registered 'expected'; an inward document that posts them makes them in_stock (SerialGuard).
+ */
+$serialStore = sys_get_temp_dir() . '/stub-serials.json';
+$serialState = is_file($serialStore) ? (json_decode((string) file_get_contents($serialStore), true) ?: []) : [];
+$serialState += ['serials' => [], 'batches' => []];
+$isServiceCall = trim((string) ($headers['x-service-key'] ?? '')) !== '';
+
+function stubTracked(array $modes, int $itemId): array {
+    return (array) ($modes['tracked_items'][(string) $itemId] ?? []);
+}
+
+if (preg_match('#/v1/(batches|serials/bulk)$#', $path, $mm) === 1 && $method === 'POST') {
+    if ($isServiceCall) {
+        http_response_code(403);
+        $perm = $mm[1] === 'batches' ? 'masters.batches.write' : 'masters.serials.write';
+        echo json_encode(['error' => ['code' => 'forbidden', 'message' => 'Service caller purchases may not ' . $perm], 'message' => 'forbidden']);
+        exit;
+    }
+    $itemId = (int) ($body['item_id'] ?? 0);
+    if ($mm[1] === 'batches') {
+        $no = substr(trim((string) ($body['batch_no'] ?? '')), 0, 64);
+        if ($no === '') {
+            http_response_code(422);
+            echo json_encode(['error' => ['code' => 'validation_failed', 'message' => 'batch_no is required'], 'message' => 'batch_no is required']);
+            exit;
+        }
+        foreach ($serialState['batches'] as $batch) {
+            if ((int) $batch['item_id'] === $itemId && $batch['batch_no'] === $no) {
+                http_response_code(409);
+                echo json_encode(['error' => ['code' => 'conflict', 'message' => 'Batch "' . $no . '" already exists for this item'], 'message' => 'conflict']);
+                exit;
+            }
+        }
+        $id = 61000 + count($serialState['batches']) + 1;
+        $serialState['batches'][(string) $id] = ['batch_id' => $id, 'item_id' => $itemId, 'batch_no' => $no, 'status' => 'active'];
+        file_put_contents($serialStore, json_encode($serialState));
+        http_response_code(201);
+        echo json_encode(['data' => $serialState['batches'][(string) $id]]);
+        exit;
+    }
+    if ((int) (stubTracked($modes, $itemId)['serial'] ?? 0) !== 1) {
+        http_response_code(422);
+        echo json_encode(['error' => ['code' => 'validation_failed', 'message' => 'Item "Stub Item ' . $itemId . '" does not track serial numbers (track_serial)'], 'message' => 'not serial-tracked']);
+        exit;
+    }
+    $created = [];
+    $skipped = [];
+    $wanted = [];
+    foreach ((array) ($body['serial_nos'] ?? []) as $raw) {
+        $no = is_array($raw) ? trim((string) ($raw['serial_no'] ?? '')) : trim((string) $raw);
+        if ($no === '') {
+            $skipped[] = ['serial_no' => $no, 'reason' => 'empty'];
+            continue;
+        }
+        if (isset($wanted[$no])) {
+            $skipped[] = ['serial_no' => $no, 'reason' => 'duplicate_in_request'];
+            continue;
+        }
+        $wanted[$no] = true;
+        $existing = null;
+        foreach ($serialState['serials'] as $serial) {
+            if ((int) $serial['item_id'] === $itemId && $serial['serial_no'] === $no) {
+                $existing = $serial;
+            }
+        }
+        if ($existing !== null) {
+            $skipped[] = ['serial_no' => $no, 'reason' => 'already_registered', 'status' => $existing['status']];
+            continue;
+        }
+        $id = 51000 + count($serialState['serials']) + 1;
+        $serialState['serials'][(string) $id] = ['serial_id' => $id, 'item_id' => $itemId, 'serial_no' => $no, 'status' => 'expected',
+            'warehouse_id' => isset($body['warehouse_id']) ? (int) $body['warehouse_id'] : null, 'batch_id' => isset($body['batch_id']) ? (int) $body['batch_id'] : null];
+        $created[] = ['serial_id' => $id, 'serial_no' => $no];
+    }
+    file_put_contents($serialStore, json_encode($serialState));
+    http_response_code(201);
+    echo json_encode(['data' => ['item_id' => $itemId, 'created' => $created, 'skipped' => $skipped, 'created_count' => count($created), 'skipped_count' => count($skipped)]]);
+    exit;
+}
+if (preg_match('#/v1/(batches|serials)$#', $path, $mm) === 1 && $method === 'GET') {
+    $itemId = (int) ($_GET['item_id'] ?? 0);
+    $q = mb_strtolower(trim((string) ($_GET['q'] ?? '')));
+    $rows = [];
+    foreach ($serialState[$mm[1]] as $row) {
+        $no = mb_strtolower((string) ($mm[1] === 'batches' ? $row['batch_no'] : $row['serial_no']));
+        if (($itemId === 0 || (int) $row['item_id'] === $itemId) && ($q === '' || str_contains($no, $q))) {
+            $rows[] = $row;
+        }
+    }
+    echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows)]]);
+    exit;
+}
+
+/**
+ * DocumentService::serialIds + SerialGuard (Inventory 3f66a41, C6), for an inward line: serials are
+ * ids (an id or {serial_id}) — a serial NUMBER is 422 — each this item's, named once, none already
+ * in stock; a serial-tracked item names one per base unit, or none (policy validate; strict
+ * refuses). Answers the 422 Inventory would, or the ids to bring into stock.
+ *
+ * @return list<int>
+ */
+function stubSerialGuard(array $modes, array $serialState, array $lines): array {
+    $all = [];
+    foreach ($lines as $idx => $line) {
+        $ids = [];
+        foreach ((array) ($line['serials'] ?? []) as $s) {
+            $raw = is_array($s) ? ($s['serial_id'] ?? null) : $s;
+            if (!(is_int($raw) || (is_string($raw) && ctype_digit($raw)))) {
+                stubValidation('Line ' . ($idx + 1) . ': serials must be serial ids (an id or {serial_id}); register serial numbers first and send their ids');
+            }
+            $ids[] = (int) $raw;
+        }
+        $itemId = (int) ($line['item_id'] ?? 0);
+        $tracked = stubTracked($modes, $itemId);
+        if ($ids === []) {
+            if ((int) ($tracked['serial'] ?? 0) === 1 && ($modes['serial_policy'] ?? 'validate') === 'strict') {
+                stubValidation('Line #' . ($idx + 1) . ': item #' . $itemId . ' is serial-tracked, so the line must name its serial numbers (one per unit).', 'serials_required');
+            }
+            continue;
+        }
+        if (count($ids) !== count(array_unique($ids))) {
+            stubValidation('Line #' . ($idx + 1) . ' names the same serial more than once');
+        }
+        foreach ($ids as $id) {
+            $row = $serialState['serials'][(string) $id] ?? null;
+            if ($row === null || (int) $row['item_id'] !== $itemId) {
+                stubValidation('Line #' . ($idx + 1) . ': serial #' . $id . ' is not a serial of item #' . $itemId . ' in this company');
+            }
+            if (in_array($row['status'], ['in_stock', 'reserved'], true)) {
+                stubValidation('Line #' . ($idx + 1) . ': serial #' . $id . ' is already in stock, so it cannot be received again');
+            }
+        }
+        if ((int) ($tracked['serial'] ?? 0) === 1) {
+            $factor = 1.0;
+            foreach ((array) ($tracked['units'] ?? []) as $u) {
+                if ((int) ($u['unit_id'] ?? 0) === (int) ($line['unit_id'] ?? 0)) {
+                    $factor = (float) $u['conversion_factor'];
+                }
+            }
+            $base = (float) ($line['qty'] ?? 0) * $factor;
+            if (abs($base - count($ids)) > 0.0001) {
+                stubValidation(sprintf('Line #%d: item #%d is serial-tracked; %s unit(s) need %s serial(s), %d named', $idx + 1, $itemId, $base, $base, count($ids)));
+            }
+        }
+        $all = array_merge($all, $ids);
+    }
+    return $all;
+}
+
+function stubValidation(string $message, string $code = 'validation_failed'): void {
+    http_response_code(422);
+    echo json_encode(['error' => ['code' => $code, 'message' => $message], 'message' => $message]);
+    exit;
+}
+
+/** @param list<int> $ids */
+function stubSetSerials(string $serialStore, array $serialState, array $ids, string $status, bool $write = true): array {
+    foreach ($ids as $id) {
+        if (isset($serialState['serials'][(string) $id])) {
+            $serialState['serials'][(string) $id]['status'] = $status;
+        }
+    }
+    if ($write) {
+        file_put_contents($serialStore, json_encode($serialState));
+    }
+    return $serialState;
+}
+
 /**
  * Posted documents, as Inventory keeps them: by id, and indexed by source.
  *
@@ -507,6 +679,7 @@ if (preg_match('#/v1/inventory-documents/(\d+)/reverse$#', $path, $rm) === 1 && 
         exit;
     }
     stubRefuseSettled((int) $rm[1]);
+    $serialState = stubSetSerials($serialStore, $serialState, array_merge([], ...array_map(static fn ($l) => (array) ($l['serials'] ?? []), (array) ($doc['lines'] ?? []))), 'expected');
     $doc['status'] = 'REVERSED';
     $documents['by_id'][$rm[1]] = $doc;
     $sk = stubSourceKey($doc);
@@ -544,6 +717,10 @@ if (preg_match('#/v1/inventory-documents/(\d+)/revise$#', $path, $vm) === 1 && $
         exit;
     }
     stubRefuseSettled((int) $vm[1]);
+    // The reverse leg first — its serials leave stock — then the replacement is posted.
+    $released = stubSetSerials($serialStore, $serialState, array_merge([], ...array_map(static fn ($l) => (array) ($l['serials'] ?? []), (array) ($old['lines'] ?? []))), 'expected', false);
+    $inSerials = stubSerialGuard($modes, $released, (array) ($body['lines'] ?? []));
+    $serialState = stubSetSerials($serialStore, $released, $inSerials, 'in_stock');
     $old['status'] = 'REVERSED';
     $documents['by_id'][$vm[1]] = $old;
     $type = strtoupper((string) ($body['document_type'] ?? $old['document_type'] ?? ''));
@@ -571,6 +748,7 @@ if (preg_match('#/v1/inventory-documents/(\d+)/revise$#', $path, $vm) === 1 && $
             'warehouse_id'    => $l['warehouse_id'] ?? null,
             'unit_id'         => $l['unit_id'] ?? null,
             'batch_id'        => $l['batch_id'] ?? null,
+            'serials'         => array_map(static fn ($x) => (int) (is_array($x) ? ($x['serial_id'] ?? 0) : $x), (array) ($l['serials'] ?? [])),
             'valuation_rate'  => isset($l['rate']) ? (float) $l['rate'] : 80.0,
         ], $body['lines'] ?? []),
         'replaced_document_id' => (int) $vm[1],
@@ -635,6 +813,7 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
 
     $type = strtoupper((string) $body['document_type']);
     $direction = in_array($type, ['INWARD_CHALLAN', 'PURCHASE_RECEIPT', 'SALES_RETURN', 'OPENING_STOCK', 'WRITE_IN', 'MATERIAL_RECEIPT'], true) ? 'in' : 'out';
+    $inSerials = $direction === 'in' ? stubSerialGuard($modes, $serialState, (array) ($body['lines'] ?? [])) : [];
     $id = 7000 + $n;
     $payload = [
         'document_id'          => $id,
@@ -656,10 +835,15 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
             'direction'       => $direction,
             'warehouse_id'    => $l['warehouse_id'] ?? null,
             'batch_id'        => $l['batch_id'] ?? null,
+            'unit_id'         => $l['unit_id'] ?? null,
+            'serials'         => array_map(static fn ($x) => (int) (is_array($x) ? ($x['serial_id'] ?? 0) : $x), (array) ($l['serials'] ?? [])),
             'valuation_rate'  => isset($l['rate']) ? (float) $l['rate'] : 80.0,
         ], $body['lines'] ?? []),
         'duplicate' => false,
     ];
+    if ($inSerials !== []) {
+        $serialState = stubSetSerials($serialStore, $serialState, $inSerials, 'in_stock');
+    }
 
     $documents['by_id'][(string) $id] = $payload;
     if ($sourceKey !== null) {
@@ -695,7 +879,11 @@ if (str_contains($path, '/v1/items/bulk-lookup')) {
         'default_warehouse_id' => 1,
         'item_grp_id'          => 5,
         'is_active'            => 1,
-        'units'                => [],
+        // Tracking flags as inv_items holds them (LOOKUP_COLUMNS); stub mode tracked_items
+        // {"<item_id>": {"serial": 1, "batch": 0, "units": [{"unit_id", "conversion_factor"}]}}.
+        'track_serial'         => (int) ($modes['tracked_items'][(string) $id]['serial'] ?? 0),
+        'track_batch'          => (int) ($modes['tracked_items'][(string) $id]['batch'] ?? 0),
+        'units'                => $modes['tracked_items'][(string) $id]['units'] ?? [],
     ], $ids)]);
     exit;
 }

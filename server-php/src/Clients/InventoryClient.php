@@ -153,6 +153,46 @@ final class InventoryClient extends ApiClient
         return $this->call('GET', 'v1/batches' . self::query(['item_id' => $itemId, 'limit' => 200] + $ctx->asQuery()));
     }
 
+    // -----------------------------------------------------------------------
+    // Tracking identities a goods receipt names (Inventory 3f66a41, C6). A document line names
+    // its serials as serial IDS and its batch as batch_id: a serial number sent as text is
+    // refused (422), and a batch number in metadata is never a batch. So the numbers are
+    // registered first — as the person recording the receipt: Inventory's policy grants this
+    // product's key documents, not master data.
+    // -----------------------------------------------------------------------
+
+    /** Batches of an item whose number contains $batchNo (the caller picks the exact one). */
+    public function findBatches(Context $ctx, int $itemId, string $batchNo): array
+    {
+        return $this->call('GET', 'v1/batches' . self::query(['item_id' => $itemId, 'q' => $batchNo, 'limit' => 100] + $ctx->asQuery()));
+    }
+
+    /** 201 with the batch; 409 conflict when the item already has a batch of that number. */
+    public function createBatch(Context $ctx, int $itemId, string $batchNo): array
+    {
+        return $this->call('POST', 'v1/batches', ['item_id' => $itemId, 'batch_no' => $batchNo] + $ctx->asBody(), true);
+    }
+
+    /**
+     * SerialsController::bulkCreate: 201 {created[{serial_id, serial_no}], skipped[{serial_no,
+     * reason, status?}]}. A number the item already has is skipped as already_registered, with
+     * its status; it is not an error.
+     *
+     * @param list<string> $serialNos
+     */
+    public function registerSerials(Context $ctx, int $itemId, ?int $warehouseId, ?int $batchId, array $serialNos): array
+    {
+        return $this->call('POST', 'v1/serials/bulk', array_filter([
+            'item_id' => $itemId, 'warehouse_id' => $warehouseId, 'batch_id' => $batchId, 'serial_nos' => array_values($serialNos),
+        ], static fn ($v) => $v !== null) + $ctx->asBody(), true);
+    }
+
+    /** Serials of an item whose number starts with $serialNo (the caller picks the exact one). */
+    public function findSerials(Context $ctx, int $itemId, string $serialNo): array
+    {
+        return $this->call('GET', 'v1/serials' . self::query(['item_id' => $itemId, 'q' => $serialNo, 'q_mode' => 'prefix', 'limit' => 100] + $ctx->asQuery()));
+    }
+
     public function bom(Context $ctx, int $bomId): array
     {
         return $this->call('GET', 'v1/bill-of-materials/' . $bomId . self::query($ctx->asQuery()));

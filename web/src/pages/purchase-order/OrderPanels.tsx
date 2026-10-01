@@ -144,7 +144,7 @@ export function ReceiveGoodsPanel({
               <Field label="Why was it rejected?"><Input value={l.rejection_reason} onChange={(e) => set(l.line_id, { rejection_reason: e.target.value })} /></Field>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(14rem, 1fr))', gap: '0.55rem', marginTop: '0.4rem' }}>
-              <Field label="Serial numbers" hint="One per accepted unit, separated by spaces or commas.">
+              <Field label="Serial numbers" hint="For an item Inventory tracks by serial: one per accepted unit in the item's base unit (a box of 10 needs 10), separated by spaces or commas. Each is registered in Inventory with the receipt; a unit already in stock cannot arrive again.">
                 <Input value={l.serials} onChange={(e) => set(l.line_id, { serials: e.target.value })} />
               </Field>
               <Field label="Inspection note"><Input value={l.inspection_note} onChange={(e) => set(l.line_id, { inspection_note: e.target.value })} /></Field>

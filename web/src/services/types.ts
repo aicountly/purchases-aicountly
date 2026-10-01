@@ -209,7 +209,11 @@ export interface ReceiptLine {
   rejection_reason: string | null
   warehouse_id: number | null
   batch_no: string | null
+  /** The batch as Inventory registered it (Inventory takes a batch by id, never by number). */
+  batch_id?: number | null
   serials: string[]
+  /** The serial numbers' ids in Inventory's register, in the order of `serials`. */
+  serial_ids?: number[]
   inspection_note: string | null
 }
 

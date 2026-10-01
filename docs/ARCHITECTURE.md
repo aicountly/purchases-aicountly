@@ -96,6 +96,15 @@ Freight captured on the GRN is not sent (an inward challan carries no valuation 
 its own): charges are capitalised from the bill, where Books allocates bill sundries
 onto the goods.
 
+**Serials and batches (`ReceiptTracking`, Inventory C6).** Inventory takes a line's serials as
+serial ids and its batch as `batch_id`; text serials are refused. Serial numbers typed at the
+gate are checked first (the item must track serials; one per base unit, the line's unit
+converted by the item's factor; each once), then — before the receipt's body is first stored —
+registered with `POST v1/serials/bulk` and batches with `POST v1/batches` (an existing batch or
+number is looked up; a unit already in stock is refused), as the person recording the receipt,
+since Inventory grants this product's key documents, not masters. The ids are kept on the
+receipt's lines, so every retry sends the same ones.
+
 **Goods received and not billed, given back (`ReceiptReturnService`, Inventory C10).**
 A GRN no bill has settled is undone through Inventory's own endpoints, on this
 product's key, on the receipt it posted: **Reverse** (recorded by mistake — the order

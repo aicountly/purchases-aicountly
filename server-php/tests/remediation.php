@@ -2203,6 +2203,7 @@ check('a bill over a GRN reversed in Inventory directly is refused before Books,
 
 check('who may give goods back, and what cannot be split', function () use ($ctx, $owner) {
     reset();
+    stubMode(['tracked_items' => ['201' => ['serial' => 1]]]);
     ['line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 4, ['serials' => ['SN-1', 'SN-2', 'SN-3', 'SN-4']]);
     profile('user-storekeeper', 'Stores', ['receipt.request', 'po.view']);
     $storekeeper = person('user-storekeeper', 0);
@@ -2211,6 +2212,101 @@ check('who may give goods back, and what cannot be split', function () use ($ctx
     refused(fn () => $returns->returnUnbilled((int) $receipt['request_id'], ['reason' => 'one faulty', 'lines' => [['line_id' => $lineId, 'qty' => 1]]]), 'serial', 'part of a serial-numbered line is refused rather than guessed');
     same(0, count(stubRequests('/revise')), 'nothing was sent');
     same('ACCEPTED', receiptRow((int) $receipt['request_id'])['status'], 'and the receipt is untouched');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU2/C6: a receipt names serials and batches by the ids Inventory registered them under\n";
+
+/** @return array<string, mixed> Inventory's serial register as the stub holds it */
+function serialRegister(): array
+{
+    $file = sys_get_temp_dir() . '/stub-serials.json';
+
+    return is_file($file) ? (json_decode((string) file_get_contents($file), true) ?: []) + ['serials' => [], 'batches' => []] : ['serials' => [], 'batches' => []];
+}
+
+/** @return list<array<string, mixed>> the GRNs Purchase posted */
+function grnPosts(): array
+{
+    return array_values(array_filter(stubRequests('/v1/inventory-documents/post'), static fn ($r) => ($r['body']['document_type'] ?? '') === 'INWARD_CHALLAN'));
+}
+
+check('Inventory refuses serial numbers sent as text (the stub answers as Inventory 3f66a41 does)', function () use ($ctx) {
+    reset();
+    $answer = (new Clients\InventoryClient())->withService('ops')->postDocument($ctx, [
+        'document_type' => 'INWARD_CHALLAN', 'source_app' => 'purchases', 'source_document_type' => 'purchases.receipt', 'source_document_id' => 1,
+        'lines' => [['item_id' => 201, 'qty' => 1, 'serials' => ['SN-7']]],
+    ], 'c6-probe-1');
+    same([422, false], [(int) $answer['status'], $answer['ok']], 'a serial number in place of its id is refused');
+    truthy(str_contains((string) $answer['error'], 'serials must be serial ids'), 'with Inventory\'s words');
+});
+
+check('serial numbers are checked against the item, registered as the person, and sent as ids — one per base unit, never twice into stock', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['tracked_items' => ['201' => ['serial' => 1, 'units' => [['unit_id' => 2, 'conversion_factor' => 10]]]]]);
+    $po = orderOf($ctx, $owner);
+    $poId = (int) $po['po_id'];
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $receipts = new ReceiptService($ctx, $owner);
+    $with = static fn (float $qty, array $serials, array $extra = []) => ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => $qty, 'serials' => $serials] + $extra]];
+
+    refused(fn () => $receipts->request($poId, $with(3, ['SN-1', 'SN-2'])), 'name 3 serial number(s); 2 given', 'one serial per unit');
+    refused(fn () => $receipts->request($poId, $with(1, ['SN-1'], ['unit_id' => 2])), 'is 10 unit(s)', 'per BASE unit: a box of 10 needs 10');
+    refused(fn () => $receipts->request($poId, $with(2, ['SN-1', 'SN-1'])), 'named twice', 'each unit once');
+    same([0, 0], [(int) Db::scalar('SELECT COUNT(*) FROM purchase_receipt_requests'), count(stubRequests('/v1/serials/bulk'))], 'refused before anything is recorded or registered');
+
+    $receipts->request($poId, $with(3, ['SN-1', 'SN-2', 'SN-3']));
+    $registered = stubRequests('/v1/serials/bulk');
+    same(1, count($registered), 'the numbers are registered once');
+    same([201, 3, ['SN-1', 'SN-2', 'SN-3']], [(int) $registered[0]['body']['item_id'], (int) $registered[0]['body']['warehouse_id'], $registered[0]['body']['serial_nos']], 'for the item, in the warehouse they arrive in');
+    truthy(str_starts_with((string) ($registered[0]['headers']['authorization'] ?? ''), 'Bearer ') && !isset($registered[0]['headers']['x-service-key']), 'as the person: Purchase\'s key may not write Inventory\'s masters');
+    $ids = array_map(static fn ($r) => (int) $r['serial_id'], array_values(serialRegister()['serials']));
+    same($ids, grnPosts()[0]['body']['lines'][0]['serials'] ?? null, 'the GRN names the units by the ids Inventory gave them');
+    same($ids, Db::jsonColumn(Db::scalar('SELECT requested_lines FROM purchase_receipt_requests ORDER BY request_id LIMIT 1'))[0]['serial_ids'] ?? null, 'kept on the receipt, so a retry sends the same ids');
+    same(['in_stock', 'in_stock', 'in_stock'], array_column(array_values(serialRegister()['serials']), 'status'), 'the units are in stock');
+
+    $again = refused(fn () => $receipts->request($poId, $with(1, ['SN-2'])), 'already in stock', 'a unit already in stock cannot arrive again');
+    same(422, $again['status'], 'refused');
+    same(1, count(grnPosts()), 'before a GRN is sent');
+    $stuck = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'FAILED'");
+    $receipts->cancel($stuck, ['reason' => 'Wrong serial keyed.']);
+    same('CANCELLED', Db::scalar('SELECT status FROM purchase_receipt_requests WHERE request_id = :id', ['id' => $stuck]), 'and the receipt can be withdrawn');
+
+    // A lost answer while registering: Retry finds what the first attempt registered.
+    stubFail('/v1/serials/bulk', 504, true);
+    same(502, refused(fn () => $receipts->request($poId, $with(2, ['SN-4', 'SN-5'])), 'Retry', 'no answer from Inventory')['status'], 'retryable');
+    stubRecover();
+    $failed = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'FAILED' ORDER BY request_id DESC LIMIT 1");
+    $receipts->retry($failed);
+    same(5, count(serialRegister()['serials']), 'each number registered once');
+    same(2, count(grnPosts()), 'and the delivery received once');
+    $posts = grnPosts();
+    same(2, count(array_unique(end($posts)['body']['lines'][0]['serials'])), 'naming two distinct units');
+
+    // A GRN reversed here sends its units back out of stock; they can be received again.
+    $first = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'ACCEPTED' ORDER BY request_id LIMIT 1");
+    (new Domain\ReceiptReturnService($ctx, $owner))->reverse($first, ['reason' => 'Recorded against the wrong order.']);
+    $receipts->request($poId, $with(3, ['SN-1', 'SN-2', 'SN-3']));
+    $posts = grnPosts();
+    same($ids, end($posts)['body']['lines'][0]['serials'] ?? null, 'the same units, under the same ids');
+});
+
+check('serial numbers on an item that does not track them are refused; a batch goes as the batch it is, registered once', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $poId = (int) $po['po_id'];
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $receipts = new ReceiptService($ctx, $owner);
+    refused(fn () => $receipts->request($poId, ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 1, 'serials' => ['SN-1']]]]), 'does not track serial numbers', 'an untracked item carries no serials');
+
+    $receipts->request($poId, ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 10, 'batch_no' => 'B-77']]]);
+    $receipts->request($poId, ['received_at' => '2026-09-19', 'lines' => [['line_id' => $lineId, 'qty' => 5, 'batch_no' => 'B-77']]]);
+    $batches = serialRegister()['batches'];
+    same(1, count($batches), 'one batch in Inventory');
+    $batchId = (int) array_values($batches)[0]['batch_id'];
+    same([$batchId, $batchId], array_map(static fn ($r) => (int) ($r['body']['lines'][0]['batch_id'] ?? 0), grnPosts()), 'both GRNs name it by its id');
+    same([null, null], array_map(static fn ($r) => $r['body']['lines'][0]['metadata']['batch_no'] ?? null, grnPosts()), 'not as a number in metadata');
+    same(['POST', 'POST', 'GET'], array_column(stubRequests('/v1/batches'), 'method'), 'the second receipt found the batch the first created (409, then a lookup)');
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";
