@@ -22,10 +22,16 @@ use Aicountly\Api\Env;
  *   - namespace Aicountly\Api\Ai, product `purchases`, configuration read through
  *     Env (the server .env), like everything else in this API;
  *   - SIGNED-IN USERS ONLY. Purchases has no background AI job — no cron, no
- *     webhook, no public visitor — so there is deliberately no service-key path.
+ *     webhook, no public visitor — so there is deliberately no service-only path.
  *     A call without the user's ses_key is refused here and never leaves the
  *     server. With the session, Pulse checks the user and the company itself and
  *     attributes the usage to that person;
+ *   - Purchases' OWN gateway key, PULSE_SERVICE_KEY, goes as X-Pulse-Service-Key
+ *     BESIDE the session, never instead of it: Pulse takes the product from that
+ *     key and, after its time-boxed transition, refuses a session alone (401
+ *     product_key_required; AI_GATEWAY.md §1, §13). Minted per Pulse deployment by
+ *     an operator; never logged or returned. The shared CONSOLE_SERVICE_KEY is
+ *     never sent;
  *   - the Pulse origin is derived from this host the same way ApiClient derives
  *     the sibling products' (sandbox hosts, localhost and the CLI use sandbox);
  *   - like every outbound call this product makes, it names itself in
@@ -36,6 +42,7 @@ use Aicountly\Api\Env;
  * Configuration (server-php/.env):
  *   PULSE_API_ORIGIN   https://pulse.aicountly.com (sandbox: https://pulse.gh.aicountly.com).
  *                      Normally unset — derived from this host. A trailing /api is ignored.
+ *   PULSE_SERVICE_KEY  Purchases' own gateway key for that Pulse deployment.
  *
  * Never throws, never logs content. Every method returns
  *   ['ok' => bool, 'status' => int, 'code' => ?string, 'message' => ?string, 'retryable' => bool, 'data' => ?array]
@@ -217,7 +224,13 @@ final class PulseAiClient
      */
     private function identity(): array
     {
-        return ['X-Pulse-Product: ' . $this->product, CrossServiceCallContext::HEADER . ': ' . $this->product];
+        $headers = ['X-Pulse-Product: ' . $this->product, CrossServiceCallContext::HEADER . ': ' . $this->product];
+        $key = trim(Env::get('PULSE_SERVICE_KEY'));
+        if ($key !== '') {
+            $headers[] = 'X-Pulse-Service-Key: ' . $key;
+        }
+
+        return $headers;
     }
 
     /** The Authorization header for the signed-in user, or null when there is none. */
