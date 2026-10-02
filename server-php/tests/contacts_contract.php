@@ -124,7 +124,17 @@ check('the composed URL reaches Contacts\' company route (no /api/api)', functio
     $url = (new ContactsClient())->urlFor($cmp, '/by-reference');
     same(1, substr_count($url, '/api/'), 'one /api in ' . $url);
     $raw = contacts('GET', "api/companies/{$cmp}/contacts/by-reference?product=books&ref_type=ledger_account&ref=1", (string) getenv('SES_A'));
-    same(404, $raw['status'], 'the old /api/api address is a bare 404 at real Contacts');
+    same(404, $raw['status'], 'the old /api/api address is a 404 at real Contacts');
+});
+
+check('a wrong Contacts address is a set-up fault (502 contacts_route_missing), never "no contact" — real Contacts envelopes that 404', function () use ($ctx, $ownerA, $ledger) {
+    putenv('CONTACTS_API_BASE=' . rtrim((string) getenv('CONTACTS_CONTRACT_BASE'), '/') . '/api');
+    try {
+        $r = refused(fn () => (new SupplierContactService($ctx, $ownerA))->contactFor($ledger), 'contacts_route_missing', 'doubled /api');
+    } finally {
+        putenv('CONTACTS_API_BASE=' . getenv('CONTACTS_CONTRACT_BASE'));
+    }
+    same(502, $r['status'], 'a set-up fault on our side');
 });
 
 check('an unlinked ledger is "no contact" — by-reference is a list, empty', function () use ($ctx, $ownerA, $ledger) {

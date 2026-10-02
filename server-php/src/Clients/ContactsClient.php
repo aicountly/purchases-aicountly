@@ -137,7 +137,7 @@ final class ContactsClient extends ApiClient
             $query['page'] = max(1, (int) $query['page']);
         }
 
-        return $this->call('GET', self::company($cmpId) . self::query($query));
+        return $this->listCall(self::company($cmpId) . self::query($query));
     }
 
     /**
@@ -152,7 +152,7 @@ final class ContactsClient extends ApiClient
         if (!in_array($key, self::LOOKUP_KEYS, true)) {
             throw new \InvalidArgumentException('Contacts lookup takes email, phone or tax_id.');
         }
-        $res = $this->call('GET', self::company($cmpId) . '/lookup' . self::query([$key => $value]));
+        $res = $this->listCall(self::company($cmpId) . '/lookup' . self::query([$key => $value]));
         $matches = [];
         if ($res['outcome'] === 'ok') {
             $data = $res['data'];
@@ -220,7 +220,7 @@ final class ContactsClient extends ApiClient
     /** The contacts Contacts links to this Books ledger account (a list; at most one for an identity ref). */
     public function byLedgerAccount(int $cmpId, int $accId): array
     {
-        return $this->call('GET', self::company($cmpId) . '/by-reference' . self::query(['product' => 'books', 'ref_type' => 'ledger_account', 'ref' => (string) $accId]));
+        return $this->listCall(self::company($cmpId) . '/by-reference' . self::query(['product' => 'books', 'ref_type' => 'ledger_account', 'ref' => (string) $accId]));
     }
 
     /**
@@ -247,6 +247,22 @@ final class ContactsClient extends ApiClient
     }
 
     // ── internals ────────────────────────────────────────────────────────────────────────
+
+    /**
+     * A GET of a LIST route (company list, lookup, by-reference). "Nothing matches" is an empty
+     * list there, never a 404 — so any 404, bare or Contacts' enveloped "No such endpoint or
+     * record." (what a real Contacts answers for an address it does not serve, e.g. /api/api/…),
+     * is the address being wrong: route_missing, never "no contact".
+     */
+    private function listCall(string $path): array
+    {
+        $res = $this->call('GET', $path);
+        if ($res['outcome'] === 'not_found') {
+            $res['outcome'] = 'route_missing';
+        }
+
+        return $res;
+    }
 
     private static function company(int $cmpId): string
     {
