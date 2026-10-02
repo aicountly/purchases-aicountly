@@ -68,7 +68,9 @@ final class PurchaseOrderService
                 'quote_id'               => self::id($input['quote_id'] ?? null),
                 'agreement_id'           => self::id($input['agreement_id'] ?? null),
                 'supplier_account_id'    => $supplierId,
-                'contact_id'             => self::text($input['contact_id'] ?? null),
+                // The supplier's linked Contacts contact, as Purchases last read it from Contacts —
+                // never a client-asserted id (G14#10).
+                'contact_id'             => Db::scalar('SELECT contact_id FROM purchase_supplier_profiles WHERE cmp_id = :cmp AND supplier_account_id = :supplier', ['cmp' => $this->ctx->cmpId, 'supplier' => $supplierId]),
                 'supplier_name_snapshot' => self::text($input['supplier_name'] ?? null),
                 'status'                 => 'DRAFT',
                 'delivery_warehouse_id'  => self::id($input['delivery_warehouse_id'] ?? null) ?? self::id($settings['default_warehouse_id'] ?? null),

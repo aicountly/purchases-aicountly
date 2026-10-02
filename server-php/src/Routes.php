@@ -152,6 +152,7 @@ final class Routes
         $router->get('v1/suppliers/contact-candidates', [SuppliersController::class, 'contactCandidates']);
         $router->get('v1/suppliers/{id}/contact', [SuppliersController::class, 'contact']);
         $router->post('v1/suppliers/{id}/contact', [SuppliersController::class, 'linkContact']);
+        $router->delete('v1/suppliers/{id}/contact', [SuppliersController::class, 'unlinkContact']);
         $router->post('v1/suppliers', [SuppliersController::class, 'upsert']);
         $router->post('v1/suppliers/{id}/status', [SuppliersController::class, 'setStatus']);
         $router->get('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);

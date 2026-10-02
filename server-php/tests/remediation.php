@@ -1020,34 +1020,124 @@ function profile(string $uuid, string $name, array $permissions): void
     Db::run('INSERT INTO purchase_permission_assignments (cmp_id, user_uuid, profile_id) VALUES (88, :u, :p)', ['u' => $uuid, 'p' => $id]);
 }
 
-check('a supplier\'s contact is the company contact Contacts links to its ledger, and linking it is idempotent', function () use ($ctx, $owner) {
+/** Change a contact in the Contacts stand-in (archive it, merge it away). */
+function stubContact(string $id, array $patch): void
+{
+    $file = sys_get_temp_dir() . '/stub-contacts.json';
+    $state = json_decode((string) file_get_contents($file), true);
+    $state['contacts'][$id] = $patch + $state['contacts'][$id];
+    file_put_contents($file, json_encode($state));
+}
+
+const DECCAN = '0b0e8c7e-1111-4a4a-9c9c-000000000001';
+const KONKAN = '0b0e8c7e-2222-4a4a-9c9c-000000000002';
+
+check('every Contacts call is one /api below the configured base — never /api/api', function () {
+    same(true, Clients\ContactsClient::pathsAreRelative(), 'no adapter path starts with api/');
+    $saved = getenv('CONTACTS_API_BASE');
+    foreach (['https://contacts.aicountly.com', 'https://contacts.aicountly.com/api', 'https://contacts.gh.aicountly.com/api/'] as $base) {
+        putenv('CONTACTS_API_BASE=' . $base);
+        $_ENV['CONTACTS_API_BASE'] = $base;
+        $url = (new Clients\ContactsClient())->urlFor(501, '/by-reference');
+        same(1, substr_count($url, '/api/'), $base . ' composes one /api: ' . $url);
+        same(true, str_contains($url, '/api/companies/501/contacts/by-reference'), 'the company route Contacts serves');
+    }
+    putenv('CONTACTS_API_BASE=' . $saved);
+    $_ENV['CONTACTS_API_BASE'] = $saved;
+});
+
+check('a supplier\'s contact is the company contact Contacts links to its ledger', function () use ($ctx, $owner) {
     reset();
     $contacts = new Domain\SupplierContactService($ctx, $owner);
     same(false, $contacts->contactFor(601)['linked'], 'no link yet');
-    $candidates = $contacts->candidates('deccan');
-    same(1, count($candidates), 'company contacts are searched');
+    $candidates = $contacts->candidates('deccan')['data'];
+    same(1, count($candidates), 'company contacts are searched by name');
+    same(false, isset($candidates[0]['emails']), 'a candidate carries hints, not the contact details');
+    same('o•••@deccansteel.example', $candidates[0]['email_hint'], 'the e-mail is masked until linked');
+    same(DECCAN, $contacts->candidates('27AAPFU0939F1ZV')['data'][0]['id'] ?? null, 'a GSTIN is looked up exactly');
+    same('tax_id', $contacts->candidates('27aapfu0939f1zv')['meta']['searched_by'], 'through the company lookup');
 
-    $linked = $contacts->link(601, ['contact_id' => $candidates[0]['id']]);
+    $linked = $contacts->link(601, ['contact_id' => DECCAN]);
     same(true, $linked['linked'], 'linked in Contacts');
+    same('active', $linked['state'], 'and live');
     same(['orders@deccansteel.example'], $linked['contact']['emails'], 'read live from Contacts');
-    $contacts->link(601, ['contact_id' => $candidates[0]['id']]);
+    same(DECCAN, Db::scalar('SELECT contact_id FROM purchase_supplier_profiles WHERE cmp_id = 88 AND supplier_account_id = 601'), 'the profile caches the link Contacts holds');
+    $contacts->link(601, ['contact_id' => DECCAN]);
     $keys = array_values(array_unique(array_map(static fn ($r) => $r['headers']['idempotency-key'] ?? '', array_filter(stubRequests('/references'), static fn ($r) => $r['method'] === 'POST'))));
-    same(1, count($keys), 'the same link asked twice carries one key');
+    same(2, count($keys), 'each attempt carries its own key; the second is still one link');
 
-    $other = $contacts->candidates('konkan')[0]['id'];
-    refused(fn () => $contacts->link(601, ['contact_id' => $other]), 'supplier_contact_conflict', 'Contacts already links this ledger elsewhere');
+    refused(fn () => $contacts->link(601, ['contact_id' => KONKAN]), 'supplier_contact_conflict', 'Contacts already links this ledger elsewhere');
     same(0, count(stubRequests('/api/contacts')), 'a user\'s personal contacts were never asked for');
-
-    same(0, (int) Db::scalar("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'purchase_supplier_profiles' AND column_name IN ('email', 'phone', 'contact_name')"), 'and nothing of the contact is copied here');
+    same(0, count(stubRequests('/api/api/')), 'and no call went to /api/api');
+    same(0, (int) Db::scalar("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'purchase_supplier_profiles' AND column_name IN ('email', 'phone', 'contact_name')"), 'nothing of the contact is copied here');
 });
 
-check('a Contacts without company contacts is reported, never replaced by personal ones', function () use ($ctx, $owner) {
+check('re-linking after the reference was removed links again — no stale replay, no false audit', function () use ($ctx, $owner) {
+    reset();
+    $contacts = new Domain\SupplierContactService($ctx, $owner);
+    $contacts->link(601, ['contact_id' => DECCAN]);
+    same(false, $contacts->unlink(601)['linked'], 'the link is removed in Contacts');
+    same(null, Db::scalar('SELECT contact_id FROM purchase_supplier_profiles WHERE cmp_id = 88 AND supplier_account_id = 601'), 'and the cache follows');
+    $again = $contacts->link(601, ['contact_id' => DECCAN]);
+    same(true, $again['linked'], 'linked again for real, not a replayed answer');
+    same(2, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'supplier.contact_linked'"), 'two real links audited');
+    same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'supplier.contact_unlinked'"), 'and the unlink');
+});
+
+check('an archived or merged contact is never shown or linked as live', function () use ($ctx, $owner) {
+    reset();
+    $contacts = new Domain\SupplierContactService($ctx, $owner);
+    $contacts->link(601, ['contact_id' => DECCAN]);
+    stubContact(DECCAN, ['archivedAt' => '2026-10-01 10:00:00', 'state' => 'archived']);
+    $card = $contacts->contactFor(601);
+    same(true, $card['linked'], 'Contacts still links the ledger');
+    same('archived', $card['state'], 'but the card says archived');
+    same(true, str_contains((string) $card['message'], 'archived'), 'and says what to do');
+    same(null, Db::scalar('SELECT contact_id FROM purchase_supplier_profiles WHERE cmp_id = 88 AND supplier_account_id = 601'), 'an archived contact is not cached as the supplier\'s contact');
+    $r = refused(fn () => $contacts->link(602, ['contact_id' => DECCAN]), 'contact_archived', 'an archived contact cannot be linked');
+    same(409, $r['status'], 'a refusal, not an outage');
+
+    stubContact(KONKAN, ['archivedAt' => '2026-10-01 10:00:00', 'state' => 'merged', 'mergedIntoId' => DECCAN]);
+    $merged = refused(fn () => $contacts->link(602, ['contact_id' => KONKAN]), 'contact_merged', 'a merged contact cannot be linked');
+    same(409, $merged['status'], 'refused with the survivor to link instead');
+});
+
+check('what Contacts could not answer is said as such — never "not deployed", never "no contact"', function () use ($ctx, $owner) {
     reset();
     stubMode(['contacts_undeployed' => true]);
-    $refusal = refused(fn () => (new Domain\SupplierContactService($ctx, $owner))->contactFor(601), 'contacts_unavailable', 'undeployed Contacts');
+    $missing = refused(fn () => (new Domain\SupplierContactService($ctx, $owner))->contactFor(601), 'contacts_route_missing', 'a bare 404 is a wrong address');
+    stubMode(['contacts_scope_off' => true]);
+    $scope = refused(fn () => (new Domain\SupplierContactService($ctx, $owner))->contactFor(601), 'contacts_company_scope_unavailable', 'Contacts says company contacts are off');
     stubMode([]);
-    same(503, $refusal['status'], 'unavailable, retryable');
+    stubFail('/contacts/by-reference', 503);
+    $down = refused(fn () => (new Domain\SupplierContactService($ctx, $owner))->contactFor(601), 'contacts_unavailable', 'Contacts down');
+    stubFail('/contacts/by-reference', 401);
+    $session = refused(fn () => (new Domain\SupplierContactService($ctx, $owner))->contactFor(601), 'contacts_session_unconfirmed', 'a Contacts 401 is not a sign-out');
+    stubRecover();
+    same(502, $missing['status'], 'our set-up fault');
+    same(503, $scope['status'], 'Contacts\' own answer');
+    same(503, $down['status'], 'unavailable, retryable');
+    same(503, $session['status'], 'never relayed as 401');
     same(0, count(stubRequests('/api/contacts')), 'no personal fallback');
+});
+
+check('the contact picker is a supplier.manage tool; a profile save cannot plant a contact id', function () use ($ctx) {
+    reset();
+    profile('user-viewer', 'Viewer', ['supplier.view']);
+    $viewer = person('user-viewer', null);
+    refused(fn () => (new Domain\SupplierContactService($ctx, $viewer))->candidates('deccan'), 'forbidden', 'a viewer cannot browse the company contact book from here');
+    same(false, (new Domain\SupplierContactService($ctx, $viewer))->contactFor(601)['linked'], 'but sees the supplier\'s card');
+
+    Db::run("INSERT INTO purchase_supplier_profiles (cmp_id, supplier_account_id, qualification_status, contact_id) VALUES (88, 777, 'draft', :c)", ['c' => DECCAN]);
+    $body = new \ReflectionProperty(Http::class, 'body');
+    $body->setValue(null, ['supplier_account_id' => 777, 'contact_id' => KONKAN, 'notes' => 'x']);
+    try {
+        [$status] = endpoint([Controllers\SuppliersController::class, 'upsert'], person());
+    } finally {
+        $body->setValue(null, null);
+    }
+    same(200, $status, 'the profile is saved');
+    same(DECCAN, Db::scalar('SELECT contact_id FROM purchase_supplier_profiles WHERE cmp_id = 88 AND supplier_account_id = 777'), 'the body\'s contact_id is ignored; the cached link stays');
 });
 
 check('the approvals inbox shows only what the caller approves, and values only to those who may see the document', function () {

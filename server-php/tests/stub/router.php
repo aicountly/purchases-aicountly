@@ -233,53 +233,120 @@ if (str_contains($path, '/validatesession')) {
 // books/ledger_account reference is Contacts' identity link, one contact per ledger per company.
 // Mode contacts_undeployed answers these routes the way a Contacts without the release does.
 if (preg_match('#^/api/companies/(\d+)/contacts#', $path, $cm) === 1) {
+    // Shapes copied from the real Contacts handlers (CompanyContactsController, CompanyReferenceService,
+    // CompanyContactLifecycleController) — the authoritative check is tests/contacts_contract.php,
+    // which runs the same calls against a real Contacts.
     if (!empty($modes['contacts_undeployed'])) {
+        // A wrong address: real Contacts answers an unknown route with a bare 404.
         http_response_code(404);
-        echo '<html>404 Page Not Found</html>';
+        echo '""';
+        exit;
+    }
+    if (!empty($modes['contacts_scope_off'])) {
+        http_response_code(503);
+        echo json_encode(['status' => 0, 'message' => 'Company contacts are not enabled on this server yet.', 'error' => ['code' => 'company_scope_unavailable', 'message' => 'Company contacts are not enabled on this server yet.']]);
         exit;
     }
     $contactStore = sys_get_temp_dir() . '/stub-contacts.json';
     $cstate = is_file($contactStore) ? (json_decode((string) file_get_contents($contactStore), true) ?: []) : [];
     $cstate += ['contacts' => [
-        '0b0e8c7e-1111-4a4a-9c9c-000000000001' => ['id' => '0b0e8c7e-1111-4a4a-9c9c-000000000001', 'displayName' => 'Anita Rao', 'organizationName' => 'Deccan Steel Traders', 'emails' => [['value' => 'orders@deccansteel.example']], 'phones' => [['value' => '+919800000001']], 'taxIds' => [['type' => 'GSTIN', 'value' => '27AAPFU0939F1ZV']], 'cmpId' => (int) $cm[1], 'visibility' => 'company'],
-        '0b0e8c7e-2222-4a4a-9c9c-000000000002' => ['id' => '0b0e8c7e-2222-4a4a-9c9c-000000000002', 'displayName' => 'Ravi Kulkarni', 'organizationName' => 'Konkan Metals', 'emails' => [['value' => 'ravi@konkan.example']], 'phones' => [], 'taxIds' => [], 'cmpId' => (int) $cm[1], 'visibility' => 'company'],
+        '0b0e8c7e-1111-4a4a-9c9c-000000000001' => ['id' => '0b0e8c7e-1111-4a4a-9c9c-000000000001', 'displayName' => 'Anita Rao', 'organizationName' => 'Deccan Steel Traders', 'emails' => [['value' => 'orders@deccansteel.example']], 'phones' => [['value' => '+919800000001']], 'taxIds' => [['type' => 'GSTIN', 'value' => '27AAPFU0939F1ZV']], 'cmpId' => (int) $cm[1], 'visibility' => 'company', 'archivedAt' => null, 'state' => 'active', 'mergedIntoId' => null],
+        '0b0e8c7e-2222-4a4a-9c9c-000000000002' => ['id' => '0b0e8c7e-2222-4a4a-9c9c-000000000002', 'displayName' => 'Ravi Kulkarni', 'organizationName' => 'Konkan Metals', 'emails' => [['value' => 'ravi@konkan.example']], 'phones' => [], 'taxIds' => [], 'cmpId' => (int) $cm[1], 'visibility' => 'company', 'archivedAt' => null, 'state' => 'active', 'mergedIntoId' => null],
     ], 'references' => [], 'keys' => []];
     $rest = substr($path, strlen($cm[0]));
+    $save = static function () use ($contactStore, &$cstate): void {
+        file_put_contents($contactStore, json_encode($cstate));
+    };
+    $refRow = static fn (string $key, array $r) => ['id' => $r['id'], 'contactId' => $r['contactId'], 'cmpId' => (int) $cm[1], 'product' => explode('/', $key)[0], 'refType' => explode('/', $key)[1], 'ref' => explode('/', $key)[2], 'caption' => ''];
 
     if ($rest === '/by-reference' && $method === 'GET') {
         $ref = ($_GET['product'] ?? '') . '/' . ($_GET['ref_type'] ?? '') . '/' . ($_GET['ref'] ?? '');
-        $holder = $cstate['references'][$ref] ?? null;
-        echo json_encode(['status' => 1, 'data' => $holder === null ? [] : [$cstate['contacts'][$holder]], 'identity' => true]);
+        $row = $cstate['references'][$ref] ?? null;
+        echo json_encode(['status' => 1, 'data' => $row === null ? [] : [$cstate['contacts'][$row['contactId']]], 'references' => $row === null ? [] : [$refRow($ref, $row)], 'identity' => true]);
+        exit;
+    }
+    if ($rest === '/lookup' && $method === 'GET') {
+        $hits = array_values(array_filter($cstate['contacts'], static function ($c) {
+            if (!empty($c['archivedAt'])) {
+                return false;
+            }
+            if (isset($_GET['tax_id'])) {
+                return in_array(strtoupper((string) $_GET['tax_id']), array_map(static fn ($t) => $t['value'], $c['taxIds']), true);
+            }
+            if (isset($_GET['email'])) {
+                return in_array(strtolower((string) $_GET['email']), array_map(static fn ($e) => $e['value'], $c['emails']), true);
+            }
+
+            return false;
+        }));
+        echo json_encode(['status' => 1, 'data' => $hits]);
         exit;
     }
     if ($rest === '' && $method === 'GET') {
         $q = strtolower((string) ($_GET['q'] ?? ''));
-        echo json_encode(['status' => 1, 'data' => array_values(array_filter($cstate['contacts'], static fn ($c) => $q === '' || str_contains(strtolower($c['displayName'] . ' ' . $c['organizationName']), $q)))]);
+        $hits = array_values(array_filter($cstate['contacts'], static fn ($c) => empty($c['archivedAt']) && ($q === '' || str_contains(strtolower($c['displayName'] . ' ' . $c['organizationName']), $q))));
+        echo json_encode(['status' => 1, 'data' => $hits, 'meta' => ['page' => 1, 'per_page' => (int) ($_GET['per_page'] ?? 50), 'total' => count($hits), 'total_pages' => 1]]);
+        exit;
+    }
+    if (preg_match('#^/([0-9a-f-]{36})/references/([0-9a-f-]{36})$#', $rest, $rm) === 1 && $method === 'DELETE') {
+        foreach ($cstate['references'] as $key => $row) {
+            if ($row['id'] === $rm[2] && $row['contactId'] === $rm[1]) {
+                unset($cstate['references'][$key]);
+                $save();
+                http_response_code(204);
+                exit;
+            }
+        }
+        http_response_code(404);
+        echo json_encode(['status' => 0, 'message' => 'Reference not found.', 'error' => ['code' => 'not_found', 'message' => 'Reference not found.']]);
         exit;
     }
     if (preg_match('#^/([0-9a-f-]{36})/references$#', $rest, $rm) === 1 && $method === 'POST') {
+        // Contacts keeps a keyed answer and replays it for the same Idempotency-Key, whatever has
+        // happened to the reference since — which is why a caller must not reuse a key across attempts.
         $ikey = $headers['idempotency-key'] ?? '';
         if ($ikey !== '' && isset($cstate['keys'][$ikey])) {
             header('Idempotent-Replayed: true');
+            http_response_code(201);
             echo json_encode($cstate['keys'][$ikey]);
             exit;
         }
-        $ref = ($body['product'] ?? '') . '/' . ($body['ref_type'] ?? $body['refType'] ?? '') . '/' . ($body['ref'] ?? '');
-        $holder = $cstate['references'][$ref] ?? null;
-        if ($holder !== null && $holder !== $rm[1]) {
+        $contact = $cstate['contacts'][$rm[1]] ?? null;
+        if ($contact !== null && !empty($contact['archivedAt'])) {
             http_response_code(409);
-            echo json_encode(['status' => 0, 'message' => 'That reference belongs to another contact.', 'error' => ['code' => 'reference_conflict', 'message' => 'That reference belongs to another contact.', 'details' => ['contactId' => $holder]], 'contactId' => $holder]);
+            echo json_encode(['status' => 0, 'message' => 'This contact is archived; link the active contact instead.', 'error' => ['code' => 'contact_archived', 'message' => 'This contact is archived; link the active contact instead.']]);
             exit;
         }
-        $created = $holder === null;
-        $cstate['references'][$ref] = $rm[1];
-        $answer = ['status' => 1, 'created' => $created, 'data' => ['product' => $body['product'] ?? null, 'refType' => $body['ref_type'] ?? null, 'ref' => $body['ref'] ?? null, 'contactId' => $rm[1]]];
+        $ref = ($body['product'] ?? '') . '/' . ($body['ref_type'] ?? $body['refType'] ?? '') . '/' . ($body['ref'] ?? '');
+        $row = $cstate['references'][$ref] ?? null;
+        if ($row !== null && $row['contactId'] !== $rm[1]) {
+            http_response_code(409);
+            echo json_encode(['status' => 0, 'message' => 'That reference belongs to another contact.', 'error' => ['code' => 'reference_conflict', 'message' => 'That reference belongs to another contact.', 'details' => ['contactId' => $row['contactId']]], 'contactId' => $row['contactId']]);
+            exit;
+        }
+        $created = $row === null;
+        $row ??= ['id' => sprintf('5ef0%04x-0000-4000-8000-%012d', random_int(0, 65535), count($cstate['references']) + 1), 'contactId' => $rm[1]];
+        $cstate['references'][$ref] = $row;
+        $answer = ['status' => 1, 'created' => $created, 'data' => $refRow($ref, $row)];
         if ($ikey !== '') {
             $cstate['keys'][$ikey] = $answer;
         }
-        file_put_contents($contactStore, json_encode($cstate));
+        $save();
         http_response_code($created ? 201 : 200);
         echo json_encode($answer);
+        exit;
+    }
+    if (preg_match('#^/([0-9a-f-]{36})/resolve$#', $rest, $rm) === 1 && $method === 'GET') {
+        $contact = $cstate['contacts'][$rm[1]] ?? null;
+        if ($contact === null) {
+            http_response_code(404);
+            echo json_encode(['status' => 0, 'message' => 'Contact not found.', 'error' => ['code' => 'not_found', 'message' => 'Contact not found.']]);
+            exit;
+        }
+        $data = !empty($contact['mergedIntoId'])
+            ? ['id' => $rm[1], 'state' => 'merged', 'survivorId' => $contact['mergedIntoId'], 'survivorState' => 'active']
+            : ['id' => $rm[1], 'state' => empty($contact['archivedAt']) ? 'active' : 'archived', 'survivorId' => $rm[1], 'contact' => $contact];
+        echo json_encode(['status' => 1, 'data' => $data]);
         exit;
     }
     if (preg_match('#^/([0-9a-f-]{36})$#', $rest, $rm) === 1 && $method === 'GET') {
@@ -292,6 +359,9 @@ if (preg_match('#^/api/companies/(\d+)/contacts#', $path, $cm) === 1) {
         echo json_encode(['status' => 1, 'data' => $contact]);
         exit;
     }
+    http_response_code(404);
+    echo '""';
+    exit;
 }
 if (preg_match('#^/api/contacts#', $path) === 1) {
     // A personal-contacts request from a product is a bug: those are the user's own.

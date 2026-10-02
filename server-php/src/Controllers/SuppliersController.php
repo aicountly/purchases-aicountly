@@ -48,7 +48,9 @@ final class SuppliersController extends Controller
         );
 
         $fields = [
-            'contact_id'            => self::text($body['contact_id'] ?? null),
+            // contact_id is NOT taken from the body: it is a cache of the link Contacts holds,
+            // written only by SupplierContactService (G14#10). Kept as it is.
+            'contact_id'            => $existing['contact_id'] ?? null,
             'is_preferred'          => (bool) ($body['is_preferred'] ?? ($existing['is_preferred'] ?? false)),
             'approved_categories'   => is_array($body['approved_categories'] ?? null) ? $body['approved_categories'] : Db::jsonColumn($existing['approved_categories'] ?? null),
             'operational_lead_days' => isset($body['operational_lead_days']) ? (int) $body['operational_lead_days'] : ($existing['operational_lead_days'] ?? null),
@@ -269,9 +271,21 @@ final class SuppliersController extends Controller
         Http::data((new SupplierContactService($ctx, $auth))->link((int) $supplierId, Http::body()));
     }
 
+    /** Removes the link in Contacts (Contacts decides whether this person may). */
+    public static function unlinkContact(string $supplierId): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new SupplierContactService($ctx, $auth))->unlink((int) $supplierId));
+    }
+
     public static function contactCandidates(): void
     {
         [$auth, $ctx] = self::enter();
-        Http::data((new SupplierContactService($ctx, $auth))->candidates((string) (Http::param('q') ?? '')));
+        $result = (new SupplierContactService($ctx, $auth))->candidates(
+            (string) (Http::param('q') ?? ''),
+            Http::intParam('page', 1) ?? 1,
+            Http::intParam('per_page', 20) ?? 20,
+        );
+        Http::json(200, $result);
     }
 }

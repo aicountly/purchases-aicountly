@@ -29,7 +29,7 @@ BOOKS_API_BASE=http://127.0.0.1:$STUB_PORT
 INVENTORY_API_BASE=http://127.0.0.1:$STUB_PORT
 MANAGE_API_BASE=http://127.0.0.1:$STUB_PORT
 PULSE_API_ORIGIN=http://127.0.0.1:$STUB_PORT
-CONTACTS_API_BASE=http://127.0.0.1:$STUB_PORT
+CONTACTS_API_BASE=http://127.0.0.1:$STUB_PORT/api
 BOOKS_SERVICE_KEY=test-books-key
 INVENTORY_SERVICE_KEY=test-inventory-key
 ENVEOF
@@ -53,4 +53,6 @@ status=0
 php "$ROOT/tests/integration.php" || status=$?
 php "$ROOT/tests/ai_gateway.php" || status=$?
 php "$ROOT/tests/remediation.php" || status=$?
+# Against a REAL Contacts when CONTACTS_CONTRACT_BASE is set (the e2e harness); skips otherwise.
+php "$ROOT/tests/contacts_contract.php" || status=$?
 exit $status
