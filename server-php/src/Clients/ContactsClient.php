@@ -15,7 +15,13 @@ use Aicountly\Api\Env;
  * reference — books / ledger_account / <acc_id> — one contact per ledger per company.
  *
  * ONLY the company routes (`/api/companies/{cmp_id}/contacts…`). A user's personal contacts are
- * private to them and are never read or written from here. Every call is made as the signed-in
+ * private to them and are never read or written from here.
+ *
+ * Contacts is deployed under `/api/` and its routes are `companies/{cmp}/contacts…` (CodeIgniter
+ * sees the path without the prefix). ApiClient::apiRoot() already supplies `/api` for a deployed
+ * base, so a path here starts at `companies/` — written `api/companies/…` it became
+ * `/api/api/companies/…` on every real host, a 404, and the supplier contact seam was dead
+ * everywhere but on a localhost base, which is served at the root. Every call is made as the signed-in
  * user (their session); Contacts checks their membership of the company with Manage itself.
  * Nothing read here is stored: names, emails and numbers are read when shown.
  *
@@ -61,24 +67,24 @@ final class ContactsClient extends ApiClient
     /** Company contacts matching a search (never personal ones). */
     public function companyContacts(int $cmpId, string $term, int $perPage = 20): array
     {
-        return $this->request('GET', 'api/companies/' . $cmpId . '/contacts' . self::query(['q' => $term, 'per_page' => max(1, min(100, $perPage))]), null, ['Authorization' => $this->authorization]);
+        return $this->request('GET', 'companies/' . $cmpId . '/contacts' . self::query(['q' => $term, 'per_page' => max(1, min(100, $perPage))]), null, ['Authorization' => $this->authorization]);
     }
 
     public function companyContact(int $cmpId, string $contactId): array
     {
-        return $this->request('GET', 'api/companies/' . $cmpId . '/contacts/' . rawurlencode($contactId), null, ['Authorization' => $this->authorization]);
+        return $this->request('GET', 'companies/' . $cmpId . '/contacts/' . rawurlencode($contactId), null, ['Authorization' => $this->authorization]);
     }
 
     /** The contact Contacts has linked to this Books ledger account, if any. */
     public function byLedgerAccount(int $cmpId, int $accId): array
     {
-        return $this->request('GET', 'api/companies/' . $cmpId . '/contacts/by-reference' . self::query(['product' => 'books', 'ref_type' => 'ledger_account', 'ref' => (string) $accId]), null, ['Authorization' => $this->authorization]);
+        return $this->request('GET', 'companies/' . $cmpId . '/contacts/by-reference' . self::query(['product' => 'books', 'ref_type' => 'ledger_account', 'ref' => (string) $accId]), null, ['Authorization' => $this->authorization]);
     }
 
     /** Link a company contact to a Books ledger account — Contacts' identity reference. */
     public function linkLedgerAccount(int $cmpId, string $contactId, int $accId, string $idempotencyKey): array
     {
-        return $this->request('POST', 'api/companies/' . $cmpId . '/contacts/' . rawurlencode($contactId) . '/references', [
+        return $this->request('POST', 'companies/' . $cmpId . '/contacts/' . rawurlencode($contactId) . '/references', [
             'product'  => 'books',
             'ref_type' => 'ledger_account',
             'ref'      => (string) $accId,

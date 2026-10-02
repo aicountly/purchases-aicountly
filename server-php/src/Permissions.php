@@ -76,15 +76,26 @@ final class Permissions
 
     public static function assert(Context $ctx, Auth $auth, string $permission): void
     {
-        if (!self::allows($ctx, $auth, $permission)) {
-            Http::forbidden('You do not have permission to ' . self::describe($permission) . '.');
+        if (self::allows($ctx, $auth, $permission)) {
+            return;
         }
+        if ($auth->isService()) {
+            // Said to a developer of another product, so it names the knob.
+            Http::forbidden(
+                'The ' . $auth->sourceApp . ' service key is not allowed to ' . self::describe($permission) . '. '
+                . 'Product keys are read-only in Purchases unless SERVICE_KEY_PERMISSIONS grants more, and never approve, administer or post to Smart Books.',
+            );
+        }
+        Http::forbidden('You do not have permission to ' . self::describe($permission) . '.');
     }
 
     public static function allows(Context $ctx, Auth $auth, string $permission): bool
     {
+        // A trusted product backend acts for a human its own side already authorised — but
+        // only within what this deployment lets that PRODUCT do here (ServiceKeys): read-only
+        // unless SERVICE_KEY_PERMISSIONS says otherwise, and never the ServiceKeys::NEVER set.
         if ($auth->isService()) {
-            return true;
+            return in_array($permission, ServiceKeys::permissions($auth->sourceApp), true);
         }
         if ($auth->ownsCompany($ctx->cmpId)) {
             return true;
@@ -96,12 +107,15 @@ final class Permissions
     /** @return list<string> */
     public static function granted(Context $ctx, Auth $auth): array
     {
-        $key = $ctx->cmpId . ':' . $auth->uuid;
+        $key = $ctx->cmpId . ':' . $auth->kind . ':' . $auth->sourceApp . ':' . $auth->uuid;
         if (isset(self::$cache[$key])) {
             return self::$cache[$key];
         }
 
-        if ($auth->isService() || $auth->ownsCompany($ctx->cmpId)) {
+        if ($auth->isService()) {
+            return self::$cache[$key] = ServiceKeys::permissions($auth->sourceApp);
+        }
+        if ($auth->ownsCompany($ctx->cmpId)) {
             return self::$cache[$key] = self::all();
         }
 
@@ -148,7 +162,7 @@ final class Permissions
             return;
         }
 
-        unset(self::$cache[$ctx->cmpId . ':' . $auth->uuid]);
+        unset(self::$cache[$ctx->cmpId . ':' . $auth->kind . ':' . $auth->sourceApp . ':' . $auth->uuid]);
     }
 
     /**
@@ -203,7 +217,10 @@ final class Permissions
      */
     public static function grantable(Context $ctx, Auth $auth): array
     {
-        if ($auth->isService() || $auth->ownsCompany($ctx->cmpId)) {
+        if ($auth->isService()) {
+            return []; // a product key grants nobody anything (access.manage is never a key's)
+        }
+        if ($auth->ownsCompany($ctx->cmpId)) {
             return self::all();
         }
 

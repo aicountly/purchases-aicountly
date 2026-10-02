@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../services/api'
 import type { BillRequest, CatalogSupplier, PurchaseOrder } from '../services/types'
 import { useApi } from '../hooks/useApi'
+import { useWarehouses } from '../hooks/useWarehouses'
 import { useUrlFilter, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
@@ -108,6 +109,7 @@ export function BillDetail() {
   const [reviseDate, setReviseDate] = useState('')
   const [revisePosting, setRevisePosting] = useState('')
   const [reviseNote, setReviseNote] = useState('')
+  const [reviseGstin, setReviseGstin] = useState('')
   const [cancelReason, setCancelReason] = useState('')
 
   const { data, loading, reload } = useApi(
@@ -210,6 +212,9 @@ export function BillDetail() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.6rem' }}>
               <Field label="Supplier invoice date"><Input type="date" value={reviseDate} onChange={(e) => setReviseDate(e.target.value)} /></Field>
               <Field label="Posting date"><Input type="date" value={revisePosting} onChange={(e) => setRevisePosting(e.target.value)} /></Field>
+              <Field label="Supplier GSTIN on the invoice" hint="Only if it differs from their ledger in Smart Books.">
+                <Input value={reviseGstin} maxLength={15} onChange={(e) => setReviseGstin(e.target.value.toUpperCase())} />
+              </Field>
             </div>
             <Field label="What changed"><Input value={reviseNote} onChange={(e) => setReviseNote(e.target.value)} /></Field>
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
@@ -218,7 +223,7 @@ export function BillDetail() {
                 tone="primary"
                 disabled={busy}
                 onClick={async () => {
-                  await act(`v1/bills/${id}/revise`, { supplier_invoice_date: reviseDate || undefined, posting_date: revisePosting || undefined, note: reviseNote || undefined })
+                  await act(`v1/bills/${id}/revise`, { supplier_invoice_date: reviseDate || undefined, posting_date: revisePosting || undefined, supplier_gstin: reviseGstin.trim() || undefined, note: reviseNote || undefined })
                   setPanel('none')
                 }}
               >
@@ -352,12 +357,14 @@ interface DirectLine {
   item_label: string | null
   purchase_acc_id: number | null
   ledger_label: string | null
+  /** Where an item line's goods go: the bill receives them into stock itself. '' = the default from Settings. */
+  warehouse_id: string
   qty: string
   rate: string
 }
 
 function blankLine(kind: 'service' | 'item'): DirectLine {
-  return { key: Math.random().toString(36).slice(2), kind, description: '', item_id: null, item_label: null, purchase_acc_id: null, ledger_label: null, qty: '1', rate: '' }
+  return { key: Math.random().toString(36).slice(2), kind, description: '', item_id: null, item_label: null, purchase_acc_id: null, ledger_label: null, warehouse_id: '', qty: '1', rate: '' }
 }
 
 /**
@@ -373,6 +380,8 @@ export function BillEditor() {
   const { scope } = usePurchases()
 
   const [invoiceNo, setInvoiceNo] = useState('')
+  // The GSTIN printed on the invoice, only when it is not the one on the supplier's ledger.
+  const [supplierGstin, setSupplierGstin] = useState('')
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [dueDate, setDueDate] = useState('')
   const [postingDate, setPostingDate] = useState('')
@@ -383,6 +392,8 @@ export function BillEditor() {
   const [error, setError] = useState<string | null>(null)
   const [supplier, setSupplier] = useState<CatalogSupplier | null>(null)
   const [direct, setDirect] = useState<DirectLine[]>(() => [blankLine('service')])
+  // A bill without an order receives its goods itself, so each item line says where they go.
+  const warehouses = useWarehouses(!poId)
 
   const order = useApi(
     (signal) => api.one<PurchaseOrder>(`v1/purchase-orders/${poId}`, undefined, signal),
@@ -412,6 +423,7 @@ export function BillEditor() {
     supplier_invoice_date: invoiceDate,
     due_date: dueDate || undefined,
     posting_date: postingDate || undefined,
+    supplier_gstin: supplierGstin.trim() || undefined,
   }
 
   async function save() {
@@ -441,7 +453,7 @@ export function BillEditor() {
               .map((l) =>
                 l.kind === 'service'
                   ? { is_service: true, description: l.description.trim() || 'Service', purchase_acc_id: l.purchase_acc_id ?? undefined, qty: Number(l.qty), rate: Number(l.rate) }
-                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, qty: Number(l.qty), rate: Number(l.rate) },
+                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : undefined, qty: Number(l.qty), rate: Number(l.rate) },
               ),
           }
       const response = await api.post<BillRequest>('v1/bills', body)
@@ -484,6 +496,9 @@ export function BillEditor() {
           {!po && <SupplierPicker onPick={setSupplier} selectedLabel={supplier?.acc_name ?? null} />}
           <Field label="Supplier invoice number" hint="The same invoice cannot be booked twice — here, in Billing or in Smart Books.">
             <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} />
+          </Field>
+          <Field label="Supplier GSTIN on the invoice (optional)" hint="Only when it differs from the one on their ledger in Smart Books. Its state decides how the GST is split.">
+            <Input value={supplierGstin} maxLength={15} onChange={(e) => setSupplierGstin(e.target.value.toUpperCase())} />
           </Field>
           <Field label="Invoice date" hint="As printed on the supplier's invoice."><Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} /></Field>
           <Field label="Due date (optional)"><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
@@ -549,6 +564,12 @@ export function BillEditor() {
                 ) : (
                   <>
                     <ItemPicker onPick={(item) => setLine(l.key, { item_id: item.item_id, item_label: item.item_name })} selectedLabel={l.item_label} />
+                    <Field label="Warehouse" hint="Where the goods go into stock.">
+                      <Select value={l.warehouse_id} onChange={(e) => setLine(l.key, { warehouse_id: e.target.value })}>
+                        <option value="">Default from Settings</option>
+                        {warehouses.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+                      </Select>
+                    </Field>
                     <Field label="Description (optional)"><Input value={l.description} onChange={(e) => setLine(l.key, { description: e.target.value })} /></Field>
                   </>
                 )}
@@ -559,7 +580,8 @@ export function BillEditor() {
             ))}
           </div>
           <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.75rem', marginBottom: 0 }}>
-            Services move no stock. Items bought without an order are received into stock by the bill itself.
+            Services move no stock. Items bought without an order are received into stock by the bill itself, into the warehouse
+            each line names (or the default warehouse from Settings).
           </p>
         </Card>
       )}

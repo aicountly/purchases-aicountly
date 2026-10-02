@@ -1,0 +1,78 @@
+name: CI
+
+# Purchases had no test workflow: the two deploys were the only workflows and neither ran a test.
+# This runs the documented checks (docs/DEVELOPMENT.md "Checks"): server-php/tests/run.sh —
+# integration tests on a real PostgreSQL with the local stub for Books, Inventory, Manage and
+# AI Pulse, then the AI gateway and remediation tests — and the web typecheck + build. The
+# browser checks (test:ui, test:remediation) need a running stack and are not run here.
+#
+# Runs on every pull request and every push to main, and on demand. Deploys stay manual
+# (workflow_dispatch only) and call this same workflow first through workflow_call, so a
+# deploy cannot ship a commit whose suite is red. This workflow only tests and builds: it
+# never deploys, uploads to a host or calls a live service — the integration suite talks to
+# a throwaway PostgreSQL service container and a local stub (tests/stub) only.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  php:
+    name: server-php (syntax + integration suite on PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: purchases_test
+          POSTGRES_PASSWORD: purchases_test
+          POSTGRES_DB: purchases_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'   # the app needs 8.1+ (readonly properties) and pdo_pgsql
+          coverage: none
+          extensions: pdo_pgsql, pgsql, curl, mbstring
+
+      - name: PHP syntax check
+        run: find server-php -name '*.php' -not -path '*/vendor/*' -print0 | xargs -0 -n1 php -l
+
+      # The documented suite: migrates the throwaway database, starts the local stub and the
+      # real front controller with `php -S`, and runs tests/integration.php against them.
+      - name: Integration suite (server-php/tests/run.sh)
+        run: bash server-php/tests/run.sh
+
+  web:
+    name: web (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'   # as the deploy workflows
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run build

@@ -45,9 +45,12 @@ $control = is_file($controlFile) ? (json_decode((string) file_get_contents($cont
 $failAfter = !empty($control['path']) && str_contains($path, (string) $control['path']) && !empty($control['after']);
 if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter) {
     http_response_code((int) ($control['status'] ?? 500));
+    // `message` lets a test answer with the receiver's own words (Books' refusal of a key it
+    // cannot store, say), so what Purchase records is what the real refusal would leave.
+    $forcedMessage = (string) ($control['message'] ?? 'Forced failure for test');
     echo json_encode([
-        'error'   => ['code' => (string) ($control['code'] ?? 'stub_forced'), 'message' => 'Forced failure for test'],
-        'message' => 'Forced failure for test',
+        'error'   => ['code' => (string) ($control['code'] ?? 'stub_forced'), 'message' => $forcedMessage],
+        'message' => $forcedMessage,
     ]);
     exit;
 }
@@ -69,6 +72,31 @@ if ($failAfter) {
  *                           ill-composed voucher had — so the read-back check must see it
  */
 $modes = is_file(sys_get_temp_dir() . '/stub-mode.json') ? (json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-mode.json'), true) ?: []) : [];
+
+/**
+ * The width each product keeps a caller's Idempotency-Key in, enforced the way each does it,
+ * BEFORE anything else — as the real services check it first:
+ *
+ *   Books      books_idempotency_keys / books_voucher_drafts are VARCHAR(64): a longer key is
+ *              400 idempotency_key_too_long (IdempotencyKeyService::tooLong / tooLongBody),
+ *              answered before anything is written. This stub used to take any length, which is
+ *              how every Purchase debit note (66+ characters) passed here and was refused by Books.
+ *   Inventory  BaseController::idempotencyKey() silently cuts the key to 128.
+ *
+ * Books' routes reach the stub at the root (a localhost base has no /api); Inventory's are v1/.
+ */
+$stubKey = (string) ($headers['idempotency-key'] ?? '');
+if ($stubKey !== '' && preg_match('#^/(api/)?(vouchers|masters|receipt-vouchers|payment-vouchers|gst)(/|$)#', $path) === 1 && strlen(trim($stubKey)) > 64) {
+    http_response_code(400);
+    echo json_encode([
+        'error'   => ['code' => 'idempotency_key_too_long', 'message' => 'Idempotency-Key must be at most 64 characters.', 'details' => ['max_length' => 64]],
+        'message' => 'Idempotency-Key must be at most 64 characters.',
+    ]);
+    exit;
+}
+if ($stubKey !== '' && str_starts_with($path, '/v1/')) {
+    $headers['idempotency-key'] = substr(trim($stubKey), 0, 128);
+}
 
 /**
  * Replay by idempotency key, exactly as Books and Inventory do. Two calls with
@@ -229,10 +257,13 @@ if (str_contains($path, '/validatesession')) {
 // --- Manage ---------------------------------------------------------------
 // --- Contacts (company contacts, the in-flight company-scope release) ---------
 //
-// Only /api/companies/{cmp}/contacts…: a user's personal contacts are never asked for. The
+// Only {base}/companies/{cmp}/contacts…: a user's personal contacts are never asked for. The
 // books/ledger_account reference is Contacts' identity link, one contact per ledger per company.
 // Mode contacts_undeployed answers these routes the way a Contacts without the release does.
-if (preg_match('#^/api/companies/(\d+)/contacts#', $path, $cm) === 1) {
+// Contacts is deployed under /api/ with routes `companies/…`, so a deployed base answers
+// /api/companies/…; a localhost base is served at the root. /api/api/companies/… — the
+// doubled prefix — is no route at all, as in Contacts.
+if (preg_match('#^(?:/api)?/companies/(\d+)/contacts#', $path, $cm) === 1) {
     if (!empty($modes['contacts_undeployed'])) {
         http_response_code(404);
         echo '<html>404 Page Not Found</html>';
@@ -293,7 +324,7 @@ if (preg_match('#^/api/companies/(\d+)/contacts#', $path, $cm) === 1) {
         exit;
     }
 }
-if (preg_match('#^/api/contacts#', $path) === 1) {
+if (preg_match('#^(?:/api)?/contacts#', $path) === 1) {
     // A personal-contacts request from a product is a bug: those are the user's own.
     http_response_code(418);
     echo json_encode(['message' => 'personal contacts requested by a product']);
@@ -397,6 +428,180 @@ if (str_contains($path, '/v1/reservations') && $method === 'POST') {
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
     exit;
 }
+/*
+ * Batches and serials (Inventory BatchesController / SerialsController), with ServiceCallerPolicy as
+ * it stands: a product's key reads masters but writes none (purchases: inward/delivery challans
+ * only), so registering a serial number or a batch needs the person's own session. Serials are
+ * registered 'expected'; an inward document that posts them makes them in_stock (SerialGuard).
+ */
+$serialStore = sys_get_temp_dir() . '/stub-serials.json';
+$serialState = is_file($serialStore) ? (json_decode((string) file_get_contents($serialStore), true) ?: []) : [];
+$serialState += ['serials' => [], 'batches' => []];
+$isServiceCall = trim((string) ($headers['x-service-key'] ?? '')) !== '';
+
+function stubTracked(array $modes, int $itemId): array {
+    return (array) ($modes['tracked_items'][(string) $itemId] ?? []);
+}
+
+if (preg_match('#/v1/(batches|serials/bulk)$#', $path, $mm) === 1 && $method === 'POST') {
+    // Inventory 2880977: the purchases key may register (create) serials and batches; an Inventory
+    // before it refused the key for any master write (stub mode inventory_pre_register_policy).
+    if ($isServiceCall && !empty($modes['inventory_pre_register_policy'])) {
+        http_response_code(403);
+        $perm = $mm[1] === 'batches' ? 'masters.batches.write' : 'masters.serials.write';
+        echo json_encode(['error' => ['code' => 'forbidden', 'message' => 'Service caller purchases may not ' . $perm], 'message' => 'forbidden']);
+        exit;
+    }
+    $itemId = (int) ($body['item_id'] ?? 0);
+    if ($mm[1] === 'batches') {
+        $no = substr(trim((string) ($body['batch_no'] ?? '')), 0, 64);
+        if ($no === '') {
+            http_response_code(422);
+            echo json_encode(['error' => ['code' => 'validation_failed', 'message' => 'batch_no is required'], 'message' => 'batch_no is required']);
+            exit;
+        }
+        foreach ($serialState['batches'] as $batch) {
+            if ((int) $batch['item_id'] === $itemId && $batch['batch_no'] === $no) {
+                http_response_code(409);
+                echo json_encode(['error' => ['code' => 'conflict', 'message' => 'Batch "' . $no . '" already exists for this item'], 'message' => 'conflict']);
+                exit;
+            }
+        }
+        $id = 61000 + count($serialState['batches']) + 1;
+        $serialState['batches'][(string) $id] = ['batch_id' => $id, 'item_id' => $itemId, 'batch_no' => $no, 'status' => 'active'];
+        file_put_contents($serialStore, json_encode($serialState));
+        http_response_code(201);
+        echo json_encode(['data' => $serialState['batches'][(string) $id]]);
+        exit;
+    }
+    if ((int) (stubTracked($modes, $itemId)['serial'] ?? 0) !== 1) {
+        http_response_code(422);
+        echo json_encode(['error' => ['code' => 'validation_failed', 'message' => 'Item "Stub Item ' . $itemId . '" does not track serial numbers (track_serial)'], 'message' => 'not serial-tracked']);
+        exit;
+    }
+    $created = [];
+    $skipped = [];
+    $wanted = [];
+    foreach ((array) ($body['serial_nos'] ?? []) as $raw) {
+        $no = is_array($raw) ? trim((string) ($raw['serial_no'] ?? '')) : trim((string) $raw);
+        if ($no === '') {
+            $skipped[] = ['serial_no' => $no, 'reason' => 'empty'];
+            continue;
+        }
+        if (isset($wanted[$no])) {
+            $skipped[] = ['serial_no' => $no, 'reason' => 'duplicate_in_request'];
+            continue;
+        }
+        $wanted[$no] = true;
+        $existing = null;
+        foreach ($serialState['serials'] as $serial) {
+            if ((int) $serial['item_id'] === $itemId && $serial['serial_no'] === $no) {
+                $existing = $serial;
+            }
+        }
+        if ($existing !== null) {
+            $skipped[] = ['serial_no' => $no, 'reason' => 'already_registered', 'status' => $existing['status']];
+            continue;
+        }
+        $id = 51000 + count($serialState['serials']) + 1;
+        $serialState['serials'][(string) $id] = ['serial_id' => $id, 'item_id' => $itemId, 'serial_no' => $no, 'status' => 'expected',
+            'warehouse_id' => isset($body['warehouse_id']) ? (int) $body['warehouse_id'] : null, 'batch_id' => isset($body['batch_id']) ? (int) $body['batch_id'] : null];
+        $created[] = ['serial_id' => $id, 'serial_no' => $no];
+    }
+    file_put_contents($serialStore, json_encode($serialState));
+    http_response_code(201);
+    echo json_encode(['data' => ['item_id' => $itemId, 'created' => $created, 'skipped' => $skipped, 'created_count' => count($created), 'skipped_count' => count($skipped)]]);
+    exit;
+}
+if (preg_match('#/v1/(batches|serials)$#', $path, $mm) === 1 && $method === 'GET') {
+    $itemId = (int) ($_GET['item_id'] ?? 0);
+    $q = mb_strtolower(trim((string) ($_GET['q'] ?? '')));
+    $rows = [];
+    foreach ($serialState[$mm[1]] as $row) {
+        $no = mb_strtolower((string) ($mm[1] === 'batches' ? $row['batch_no'] : $row['serial_no']));
+        if (($itemId === 0 || (int) $row['item_id'] === $itemId) && ($q === '' || str_contains($no, $q))) {
+            $rows[] = $row;
+        }
+    }
+    echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows)]]);
+    exit;
+}
+
+/**
+ * DocumentService::serialIds + SerialGuard (Inventory 3f66a41, C6), for an inward line: serials are
+ * ids (an id or {serial_id}) — a serial NUMBER is 422 — each this item's, named once, none already
+ * in stock; a serial-tracked item names one per base unit, or none (policy validate; strict
+ * refuses). Answers the 422 Inventory would, or the ids to bring into stock.
+ *
+ * @return list<int>
+ */
+function stubSerialGuard(array $modes, array $serialState, array $lines): array {
+    $all = [];
+    foreach ($lines as $idx => $line) {
+        $ids = [];
+        foreach ((array) ($line['serials'] ?? []) as $s) {
+            $raw = is_array($s) ? ($s['serial_id'] ?? null) : $s;
+            if (!(is_int($raw) || (is_string($raw) && ctype_digit($raw)))) {
+                stubValidation('Line ' . ($idx + 1) . ': serials must be serial ids (an id or {serial_id}); register serial numbers first and send their ids');
+            }
+            $ids[] = (int) $raw;
+        }
+        $itemId = (int) ($line['item_id'] ?? 0);
+        $tracked = stubTracked($modes, $itemId);
+        if ($ids === []) {
+            if ((int) ($tracked['serial'] ?? 0) === 1 && ($modes['serial_policy'] ?? 'validate') === 'strict') {
+                stubValidation('Line #' . ($idx + 1) . ': item #' . $itemId . ' is serial-tracked, so the line must name its serial numbers (one per unit).', 'serials_required');
+            }
+            continue;
+        }
+        if (count($ids) !== count(array_unique($ids))) {
+            stubValidation('Line #' . ($idx + 1) . ' names the same serial more than once');
+        }
+        foreach ($ids as $id) {
+            $row = $serialState['serials'][(string) $id] ?? null;
+            if ($row === null || (int) $row['item_id'] !== $itemId) {
+                stubValidation('Line #' . ($idx + 1) . ': serial #' . $id . ' is not a serial of item #' . $itemId . ' in this company');
+            }
+            if (in_array($row['status'], ['in_stock', 'reserved'], true)) {
+                stubValidation('Line #' . ($idx + 1) . ': serial #' . $id . ' is already in stock, so it cannot be received again');
+            }
+        }
+        if ((int) ($tracked['serial'] ?? 0) === 1) {
+            $factor = 1.0;
+            foreach ((array) ($tracked['units'] ?? []) as $u) {
+                if ((int) ($u['unit_id'] ?? 0) === (int) ($line['unit_id'] ?? 0)) {
+                    $factor = (float) $u['conversion_factor'];
+                }
+            }
+            $base = (float) ($line['qty'] ?? 0) * $factor;
+            if (abs($base - count($ids)) > 0.0001) {
+                stubValidation(sprintf('Line #%d: item #%d is serial-tracked; %s unit(s) need %s serial(s), %d named', $idx + 1, $itemId, $base, $base, count($ids)));
+            }
+        }
+        $all = array_merge($all, $ids);
+    }
+    return $all;
+}
+
+function stubValidation(string $message, string $code = 'validation_failed'): void {
+    http_response_code(422);
+    echo json_encode(['error' => ['code' => $code, 'message' => $message], 'message' => $message]);
+    exit;
+}
+
+/** @param list<int> $ids */
+function stubSetSerials(string $serialStore, array $serialState, array $ids, string $status, bool $write = true): array {
+    foreach ($ids as $id) {
+        if (isset($serialState['serials'][(string) $id])) {
+            $serialState['serials'][(string) $id]['status'] = $status;
+        }
+    }
+    if ($write) {
+        file_put_contents($serialStore, json_encode($serialState));
+    }
+    return $serialState;
+}
+
 /**
  * Posted documents, as Inventory keeps them: by id, and indexed by source.
  *
@@ -430,6 +635,38 @@ if (str_contains($path, '/v1/inventory-documents/by-source')) {
     echo json_encode(['data' => $documents['by_id'][(string) $id]]);
     exit;
 }
+/**
+ * What a Books voucher has settled of an Inventory receipt: the challan_settlements of every live
+ * voucher the stub holds (a bill posted from Purchase, or one a test files as entered in Smart
+ * Books). Inventory refuses to reverse or revise a receipt any of which is settled
+ * (DocumentPostingService::reverse → 409 invalid_state "...already settled by later documents...").
+ */
+function stubSettledQty(int $documentId): float {
+    $file = sys_get_temp_dir() . '/stub-vouchers.json';
+    $held = is_file($file) ? (json_decode((string) file_get_contents($file), true) ?: []) : [];
+    $qty = 0.0;
+    foreach ($held as $voucher) {
+        if (!empty($voucher['cancelled'])) {
+            continue;
+        }
+        foreach ((array) ($voucher['challan_settlements'] ?? []) as $settlement) {
+            if ((int) ($settlement['source_document_id'] ?? 0) === $documentId) {
+                $qty += (float) ($settlement['qty'] ?? 0);
+            }
+        }
+    }
+    return $qty;
+}
+
+function stubRefuseSettled(int $documentId): void {
+    if (stubSettledQty($documentId) > 0.00005) {
+        http_response_code(409);
+        $message = 'Document has pending quantities that were already settled by later documents; reverse those first';
+        echo json_encode(['error' => ['code' => 'invalid_state', 'message' => $message, 'details' => ['document_id' => $documentId]], 'message' => $message]);
+        exit;
+    }
+}
+
 if (preg_match('#/v1/inventory-documents/(\d+)/reverse$#', $path, $rm) === 1 && $method === 'POST') {
     $doc = $documents['by_id'][$rm[1]] ?? null;
     if ($doc === null) {
@@ -437,6 +674,14 @@ if (preg_match('#/v1/inventory-documents/(\d+)/reverse$#', $path, $rm) === 1 && 
         echo json_encode(['error' => ['code' => 'not_found', 'message' => 'No such document'], 'message' => 'not found']);
         exit;
     }
+    // DocumentPostingService::reverse: a reversed document answers as already done.
+    if (($doc['status'] ?? '') === 'REVERSED') {
+        $doc['duplicate'] = true;
+        echo json_encode(['data' => remember($store, $seen, $key, $doc), 'duplicate' => true]);
+        exit;
+    }
+    stubRefuseSettled((int) $rm[1]);
+    $serialState = stubSetSerials($serialStore, $serialState, array_merge([], ...array_map(static fn ($l) => (array) ($l['serials'] ?? []), (array) ($doc['lines'] ?? []))), 'expected');
     $doc['status'] = 'REVERSED';
     $documents['by_id'][$rm[1]] = $doc;
     $sk = stubSourceKey($doc);
@@ -445,6 +690,81 @@ if (preg_match('#/v1/inventory-documents/(\d+)/reverse$#', $path, $rm) === 1 && 
     }
     file_put_contents($documentStore, json_encode($documents));
     echo json_encode(['data' => remember($store, $seen, $key, $doc)]);
+    exit;
+}
+/*
+ * DocumentsController::revise / DocumentPostingService::revise (Inventory 702c177, C10): the old
+ * document reversed (its reverse leg superseded) and the payload posted as its replacement, in one
+ * transaction — 201 with the replacement, carrying replaced_document_id. Nothing but the type is
+ * copied from the old document. Already reversed: the replacement it was given, 200 duplicate, or
+ * 409 invalid_state when it was reversed outright. Settled by a bill: 409 invalid_state.
+ */
+if (preg_match('#/v1/inventory-documents/(\d+)/revise$#', $path, $vm) === 1 && $method === 'POST') {
+    $old = $documents['by_id'][$vm[1]] ?? null;
+    if ($old === null) {
+        http_response_code(404);
+        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'No such document'], 'message' => 'not found']);
+        exit;
+    }
+    if (($old['status'] ?? '') === 'REVERSED') {
+        foreach ($documents['by_id'] as $candidate) {
+            if ((int) ($candidate['replaced_document_id'] ?? 0) === (int) $vm[1]) {
+                $candidate['duplicate'] = true;
+                echo json_encode(['data' => remember($store, $seen, $key, $candidate), 'duplicate' => true]);
+                exit;
+            }
+        }
+        http_response_code(409);
+        echo json_encode(['error' => ['code' => 'invalid_state', 'message' => 'This document has been reversed, so there is nothing left to revise. Create a new document instead.'], 'message' => 'reversed']);
+        exit;
+    }
+    stubRefuseSettled((int) $vm[1]);
+    // The reverse leg first — its serials leave stock — then the replacement is posted.
+    $released = stubSetSerials($serialStore, $serialState, array_merge([], ...array_map(static fn ($l) => (array) ($l['serials'] ?? []), (array) ($old['lines'] ?? []))), 'expected', false);
+    $inSerials = stubSerialGuard($modes, $released, (array) ($body['lines'] ?? []));
+    $serialState = stubSetSerials($serialStore, $released, $inSerials, 'in_stock');
+    $old['status'] = 'REVERSED';
+    $documents['by_id'][$vm[1]] = $old;
+    $type = strtoupper((string) ($body['document_type'] ?? $old['document_type'] ?? ''));
+    $id = 7000 + $n;
+    $replacement = [
+        'document_id'          => $id,
+        'document_uuid'        => 'invdoc-' . $n,
+        'document_no'          => ($type === 'INWARD_CHALLAN' ? 'GRN/' : 'DOC/') . str_pad((string) $n, 4, '0', STR_PAD_LEFT),
+        'document_type'        => $type,
+        'stock_effect'         => $body['stock_effect'] ?? null,
+        'document_date'        => $body['document_date'] ?? null,
+        'status'               => 'POSTED',
+        'party_ref'            => $body['party_ref'] ?? null,
+        'source_app'           => $body['source_app'] ?? null,
+        'source_document_type' => $body['source_document_type'] ?? null,
+        'source_document_id'   => isset($body['source_document_id']) ? (int) $body['source_document_id'] : null,
+        'source_document_uuid' => $body['source_document_uuid'] ?? null,
+        'source_document_no'   => $body['source_document_no'] ?? null,
+        'metadata'             => array_merge((array) ($body['metadata'] ?? []), ['revises_document_id' => (int) $vm[1], 'revision_reason' => (string) ($body['reason'] ?? '')]),
+        'lines' => array_map(static fn ($l) => [
+            'source_line_ref' => isset($l['source_line_ref']) ? (int) $l['source_line_ref'] : null,
+            'item_id'         => $l['item_id'] ?? null,
+            'qty'             => $l['qty'] ?? 0,
+            'direction'       => 'in',
+            'warehouse_id'    => $l['warehouse_id'] ?? null,
+            'unit_id'         => $l['unit_id'] ?? null,
+            'batch_id'        => $l['batch_id'] ?? null,
+            'serials'         => array_map(static fn ($x) => (int) (is_array($x) ? ($x['serial_id'] ?? 0) : $x), (array) ($l['serials'] ?? [])),
+            'valuation_rate'  => isset($l['rate']) ? (float) $l['rate'] : 80.0,
+        ], $body['lines'] ?? []),
+        'replaced_document_id' => (int) $vm[1],
+        'replaced_status'      => 'REVERSED',
+        'duplicate'            => false,
+    ];
+    $documents['by_id'][(string) $id] = $replacement;
+    $sk = stubSourceKey($replacement);
+    if ($sk !== null) {
+        $documents['by_source'][$sk] = $id;
+    }
+    file_put_contents($documentStore, json_encode($documents));
+    http_response_code(201);
+    echo json_encode(['data' => remember($store, $seen, $key, $replacement), 'duplicate' => false]);
     exit;
 }
 if (preg_match('#/v1/inventory-documents/(\d+)$#', $path, $gm) === 1 && $method === 'GET') {
@@ -495,6 +815,7 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
 
     $type = strtoupper((string) $body['document_type']);
     $direction = in_array($type, ['INWARD_CHALLAN', 'PURCHASE_RECEIPT', 'SALES_RETURN', 'OPENING_STOCK', 'WRITE_IN', 'MATERIAL_RECEIPT'], true) ? 'in' : 'out';
+    $inSerials = $direction === 'in' ? stubSerialGuard($modes, $serialState, (array) ($body['lines'] ?? [])) : [];
     $id = 7000 + $n;
     $payload = [
         'document_id'          => $id,
@@ -516,10 +837,15 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
             'direction'       => $direction,
             'warehouse_id'    => $l['warehouse_id'] ?? null,
             'batch_id'        => $l['batch_id'] ?? null,
+            'unit_id'         => $l['unit_id'] ?? null,
+            'serials'         => array_map(static fn ($x) => (int) (is_array($x) ? ($x['serial_id'] ?? 0) : $x), (array) ($l['serials'] ?? [])),
             'valuation_rate'  => isset($l['rate']) ? (float) $l['rate'] : 80.0,
         ], $body['lines'] ?? []),
         'duplicate' => false,
     ];
+    if ($inSerials !== []) {
+        $serialState = stubSetSerials($serialStore, $serialState, $inSerials, 'in_stock');
+    }
 
     $documents['by_id'][(string) $id] = $payload;
     if ($sourceKey !== null) {
@@ -534,15 +860,37 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
     exit;
 }
 
+/*
+ * Inventory's ItemsController::bulkLookup: it reads `item_ids` (and `item_skus`) — anything else,
+ * `ids` included, is ignored and answered with an empty list — and each row is an inv_items row
+ * with its unit's symbol (LOOKUP_COLUMNS) plus the item's units. No item_code, uom or group name:
+ * the group is an id, named by v1/item-groups.
+ */
 if (str_contains($path, '/v1/items/bulk-lookup')) {
-    $ids = $body['ids'] ?? [];
+    $ids = array_values(array_unique(array_filter(array_map('intval', (array) ($body['item_ids'] ?? [])), static fn ($i) => $i > 0)));
     echo json_encode(['data' => array_map(static fn ($id) => [
-        'item_id'   => (int) $id,
-        'item_name' => 'Stub Item ' . $id,
-        'item_code' => 'SKU-' . $id,
-        'uom'       => 'Nos',
-        'group_name' => 'Stub Group',
+        'item_id'              => $id,
+        'item_uuid'            => 'item-' . $id,
+        'item_name'            => 'Stub Item ' . $id,
+        'item_alias'           => null,
+        'item_sku'             => 'SKU-' . $id,
+        'hsn_sac'              => '7214',
+        'unit_id'              => 1,
+        'unit_symbol'          => 'Nos',
+        'books_tax_cat_id'     => 18,
+        'default_warehouse_id' => 1,
+        'item_grp_id'          => 5,
+        'is_active'            => 1,
+        // Tracking flags as inv_items holds them (LOOKUP_COLUMNS); stub mode tracked_items
+        // {"<item_id>": {"serial": 1, "batch": 0, "units": [{"unit_id", "conversion_factor"}]}}.
+        'track_serial'         => (int) ($modes['tracked_items'][(string) $id]['serial'] ?? 0),
+        'track_batch'          => (int) ($modes['tracked_items'][(string) $id]['batch'] ?? 0),
+        'units'                => $modes['tracked_items'][(string) $id]['units'] ?? [],
     ], $ids)]);
+    exit;
+}
+if (str_contains($path, '/v1/item-groups') && $method === 'GET') {
+    echo json_encode(['data' => [['item_grp_id' => 5, 'grp_name' => 'Stub Group', 'parent_grp_id' => null, 'is_primary' => 1, 'item_count' => 2]], 'meta' => ['total' => 1]]);
     exit;
 }
 if (str_contains($path, '/v1/reports/replenishment')) {
@@ -589,28 +937,62 @@ if (preg_match('#/masters/accounts$#', $path) === 1 && $method === 'GET') {
     echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows)]]);
     exit;
 }
-if (str_contains($path, '/masters/accounts/')) {
-    echo json_encode(['data' => ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30]]);
+/*
+ * One ledger, as Books' AccountsController::show answers it: the account row (a.*), with the GST
+ * identity a purchase's place of supply is read from — gstin, gst_reg_type, state_code,
+ * country_code, is_non_resident. Supplier 601 is registered in Maharashtra (27); a test changes a
+ * ledger by writing stub-accounts.json ({acc_id: {field: value}}).
+ */
+if (preg_match('#/masters/accounts/(\d+)$#', $path, $am) === 1 && $method === 'GET') {
+    $overrides = is_file(sys_get_temp_dir() . '/stub-accounts.json') ? (json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-accounts.json'), true) ?: []) : [];
+    $accId = (int) $am[1];
+    $row = ['acc_id' => $accId, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30,
+        'gstin' => '27AAPFU0939F1ZV', 'gst_reg_type' => 'regular', 'state_code' => '27', 'country_code' => 'IN', 'is_non_resident' => 0];
+    if (isset($overrides[(string) $accId]) && $overrides[(string) $accId] === null) {
+        http_response_code(404);
+        echo json_encode(['status' => 404, 'error' => 404, 'messages' => ['error' => 'Account not found']]);
+        exit;
+    }
+    echo json_encode(['data' => array_merge($row, (array) ($overrides[(string) $accId] ?? []))]);
     exit;
 }
 /**
  * bill-by-bill, exactly as Books behaves: acc_id is REQUIRED and the endpoint
  * answers 400 without one. Purchases once called it without an acc_id, so the
  * stub enforcing this is what stops that regression coming back.
+ *
+ * The rows are Books' rows (ReportService::billByBill → BillAllocationService::listOutstanding):
+ * books_bills b.* — original_amount and pending_amount as NUMERIC strings, dr_cr, the source
+ * voucher's number — plus Books' ON ACCOUNT reconciliation row. There is no `amount`. A bill with
+ * nothing pending is left out unless show_settled is the string '1'.
  */
 if (str_contains($path, '/reports/bill-by-bill')) {
     $accId = (int) ($_GET['acc_id'] ?? 0);
     if ($accId <= 0) {
         http_response_code(400);
-        echo json_encode(['error' => ['code' => 'bad_request', 'message' => 'acc_id required'], 'message' => 'acc_id required']);
+        echo json_encode(['status' => 400, 'error' => 400, 'messages' => ['error' => 'acc_id required'], 'message' => 'acc_id required']);
         exit;
     }
-    echo json_encode(['data' => ['acc_id' => $accId, 'rows' => [
-        ['bill_ref' => 'INV/0001', 'bill_date' => '2026-08-01', 'due_date' => '2026-08-31', 'pending_amount' => 120000.5, 'amount' => 200000.0],
-        ['bill_ref' => 'INV/0002', 'bill_date' => '2026-08-10', 'due_date' => null,         'pending_amount' => 45000.25, 'amount' => 45000.25],
-        ['bill_ref' => 'INV/0003', 'bill_date' => '2026-08-15', 'due_date' => '2099-01-01', 'pending_amount' => 10000.0,  'amount' => 10000.0],
-        ['bill_ref' => 'INV/0004', 'bill_date' => '2026-08-20', 'due_date' => '2026-09-01', 'pending_amount' => 0.0,      'amount' => 5000.0],
-    ]]]);
+    $bill = static fn (int $id, string $ref, string $date, ?string $due, string $original, string $pending, int $flagOnAccount = 0) => [
+        'bill_id' => $id, 'cmp_id' => (int) ($_GET['cmp_id'] ?? 0), 'fy_id' => (int) ($_GET['fy_id'] ?? 0), 'acc_id' => $accId,
+        'bill_ref' => $ref, 'bill_date' => $date, 'due_date' => $due, 'original_amount' => $original, 'pending_amount' => $pending,
+        'dr_cr' => 2, 'source_vch_txn_id' => $flagOnAccount ? null : 4100 + $id, 'source_vch_number' => $flagOnAccount ? null : 'PUR/' . (100 + $id),
+        'source_vch_type_id' => $flagOnAccount ? null : 11, 'is_on_account' => $flagOnAccount, 'is_undefined_reference' => 0,
+        'overdue_days' => 0, 'age_bucket' => 'not_due',
+    ];
+    $rows = [
+        $bill(1, 'INV/0001', '2026-08-01', '2026-08-31', '200000.0000', '120000.5000'),
+        $bill(2, 'INV/0002', '2026-08-10', null, '45000.2500', '45000.2500'),
+        $bill(3, 'INV/0003', '2026-08-15', '2099-01-01', '10000.0000', '10000.0000'),
+        $bill(4, 'INV/0004', '2026-08-20', '2026-09-01', '5000.0000', '0.0000'),
+        $bill(5, 'ON ACCOUNT', '2026-04-01', null, '0.0000', '0.0000', 1),
+    ];
+    if (($_GET['show_settled'] ?? null) !== '1') {
+        $rows = array_values(array_filter($rows, static fn (array $r) => (float) $r['pending_amount'] > 0));
+    }
+    echo json_encode(['data' => ['report' => 'bill_by_bill', 'acc_id' => $accId, 'rows' => $rows,
+        'totals' => ['pending' => array_sum(array_map(static fn ($r) => (float) $r['pending_amount'], $rows)), 'overdue' => 0],
+        'reconciliation' => ['is_reconciled' => true]]]);
     exit;
 }
 
@@ -719,6 +1101,20 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Unknown stock_effect "' . $effect . '" for this voucher type; nothing was posted.']]);
         exit;
     }
+    // VoucherPostingService::assertMaterialCentresOnInventoryLines: an item line of a purchase,
+    // sale or note needs its material centre (mc_id) unless its goods come from a challan
+    // (from_challan) or, on a purchase, arrive later on an inward challan (defer_inward).
+    if (in_array($type, [11, 18, 2, 3], true) && $effect !== 'from_challan' && !($type === 11 && $effect === 'defer_inward')) {
+        $lineNum = 0;
+        foreach ($voucherPayload['inventory_lines'] ?? [] as $inv) {
+            $lineNum++;
+            if ((int) ($inv['item_id'] ?? 0) > 0 && (float) ($inv['qty'] ?? 0) > 0 && (int) ($inv['mc_id'] ?? 0) <= 0) {
+                http_response_code(422);
+                echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Material centre is required on item line ' . $lineNum]]);
+                exit;
+            }
+        }
+    }
     if ($effect === 'from_physical_challan' && empty($voucherPayload['challan_settlements'])) {
         http_response_code(422);
         echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Name the goods receipts this invoice settles (challan_settlements).']]);
@@ -743,6 +1139,22 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
             }
         }
     }
+    // Books' CommercialVoucherComposer::guardGstSplit (books 7c10e6eb, C1): for a product posting
+    // through the API (X-Saas-Origin other than books) a GST-rated line whose CGST/SGST-or-IGST split
+    // is unknown — no party.pos_state_code — is a 422 and nothing is posted. Every categorised line
+    // counts as GST-rated here. Mode books_before_c1 answers as Books did before it: posted, no GST.
+    $posState = trim((string) ($voucherPayload['party']['pos_state_code'] ?? ''));
+    $categorised = array_filter(array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []), static fn ($l) => !empty($l['tax_cat_id']) && abs((float) ($l['amount'] ?? 0)) >= 0.00005);
+    $origin = strtolower(trim((string) ($headers['x-saas-origin'] ?? '')));
+    if (empty($modes['books_before_c1']) && $origin !== '' && $origin !== 'books' && $categorised !== [] && $posState === '') {
+        http_response_code(422);
+        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => sprintf(
+            '%d line(s) carry GST, but the place of supply is not known, so Books cannot tell whether to charge CGST + SGST or IGST. '
+            . 'Nothing was posted (it would have posted with no GST). Send party.pos_state_code (the state the goods or services are supplied to), or set the party\'s state.',
+            count($categorised),
+        )]]);
+        exit;
+    }
     foreach ($voucherPayload['service_lines'] ?? [] as $svc) {
         if ((int) ($svc['purchase_acc_id'] ?? $svc['sales_acc_id'] ?? $svc['line_acc_id'] ?? 0) <= 0) {
             http_response_code(422);
@@ -760,15 +1172,33 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
     ];
 
     // What Books composes: the supplier credited with the total, the goods and services
-    // debited. No tax in the stub (no rates bound), so the total is the taxable value.
+    // debited. No tax by default (no rates bound), so the total is the taxable value. With the
+    // opt-in mode books_gst_state (the branch's state code) every categorised line is taxed at
+    // 18%, split as Books splits it: CGST + SGST when the place of supply is that state, IGST
+    // when it is another, nothing when it is unknown (Books' behaviour before LB-2).
     $taxable = 0.0;
+    $cgst = $sgst = $igst = 0.0;
+    $branchState = (string) ($modes['books_gst_state'] ?? '');
     foreach (array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []) as $l) {
         $taxable += (float) ($l['amount'] ?? 0);
+        if ($branchState !== '' && !empty($l['tax_cat_id']) && $posState !== '') {
+            $gst = round((float) ($l['amount'] ?? 0) * 0.18, 4);
+            if ($posState === $branchState) {
+                $cgst += $gst / 2;
+                $sgst += $gst / 2;
+            } else {
+                $igst += $gst;
+            }
+        }
     }
+    $grandTotal = round($taxable + $cgst + $sgst + $igst, 4);
     $partyAcc = (int) ($voucherPayload['party']['acc_id'] ?? 0);
     $partySide = in_array($type, [11, 2], true) ? 2 : 1;
-    $lines = [['acc_id' => $partyAcc, 'dr_cr' => $partySide, 'amount' => round($taxable, 4)]];
+    $lines = [['acc_id' => $partyAcc, 'dr_cr' => $partySide, 'amount' => $grandTotal]];
     $lines[] = ['acc_id' => $type === 11 ? 9001 : 9002, 'dr_cr' => $partySide === 2 ? 1 : 2, 'amount' => round($taxable, 4)];
+    if ($grandTotal > round($taxable, 4)) {
+        $lines[] = ['acc_id' => 9100, 'dr_cr' => $partySide === 2 ? 1 : 2, 'amount' => round($grandTotal - $taxable, 4)];
+    }
     $bill = is_array($voucherPayload['bill'] ?? null) ? $voucherPayload['bill'] : [];
     if (!empty($modes['books_mangle'])) {
         $bill['bill_ref'] = '';
@@ -788,7 +1218,9 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         ],
         'lines'       => $lines,
         'inventory_lines' => array_values($stockLines),
-        'tax_summary' => ['taxable_value' => round($taxable, 4), 'cgst' => 0, 'sgst' => 0, 'igst' => 0, 'grand_total' => round($taxable, 4)],
+        'tax_summary' => ['taxable_value' => round($taxable, 4), 'cgst' => round($cgst, 4), 'sgst' => round($sgst, 4), 'igst' => round($igst, 4), 'grand_total' => $grandTotal],
+        'pos_state_code' => $posState === '' ? null : $posState,
+        'supply_nature' => $voucherPayload['supply_nature'] ?? null,
         'stock'       => $stock,
         'challan_settlements' => $voucherPayload['challan_settlements'] ?? [],
         'source_document_id'  => $voucherPayload['source_document_id'] ?? null,
@@ -796,14 +1228,73 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
     file_put_contents($voucherStore, json_encode($vouchers));
 
     $payload = ['vch_txn_id' => $id, 'vch_uuid' => 'vch-' . $n, 'vch_number' => $number, 'vch_no' => $number, 'status' => 'posted', 'stock' => $stock];
+    if (isset($drafts[$dm[1]])) {
+        $drafts[$dm[1]]['status'] = 'posted';
+        $drafts[$dm[1]]['vch_txn_id'] = $id;
+        file_put_contents($draftStore, json_encode($drafts));
+    }
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
     exit;
 }
 if (str_contains($path, '/vouchers/drafts') && $method === 'POST') {
     $payload = ['draft_id' => 3000 + $n, 'status' => 'DRAFT'];
-    $drafts[(string) (3000 + $n)] = ['vch_type_id' => (int) ($body['vch_type_id'] ?? 0), 'payload' => $body['payload'] ?? []];
+    $drafts[(string) (3000 + $n)] = [
+        'vch_type_id' => (int) ($body['vch_type_id'] ?? 0), 'payload' => $body['payload'] ?? [], 'status' => 'draft',
+        'cmp_id' => (int) ($body['cmp_id'] ?? 0), 'fy_id' => (int) ($body['fy_id'] ?? 0),
+    ];
     file_put_contents($draftStore, json_encode($drafts));
     echo json_encode(['data' => remember($store, $seen, $key, $payload)]);
+    exit;
+}
+/*
+ * GET vouchers/drafts — Books' DraftsController::index: drafts of this company and year, one
+ * status (default 'draft'), optionally one type, newest first, at most `limit` (1–100), each
+ * with the payload it was saved from.
+ */
+if (preg_match('#/vouchers/drafts$#', $path) === 1 && $method === 'GET') {
+    $status = trim((string) ($_GET['status'] ?? 'draft'));
+    $type = (int) ($_GET['vch_type_id'] ?? 0);
+    $limit = max(1, min(100, (int) ($_GET['limit'] ?? 50)));
+    $rows = [];
+    foreach (array_reverse($drafts, true) as $draftId => $d) {
+        if (($type > 0 && (int) $d['vch_type_id'] !== $type) || ($status !== '' && ($d['status'] ?? 'draft') !== $status)) {
+            continue;
+        }
+        if ((int) ($d['fy_id'] ?? 0) > 0 && (int) ($_GET['fy_id'] ?? 0) > 0 && (int) $d['fy_id'] !== (int) $_GET['fy_id']) {
+            continue;
+        }
+        $rows[] = ['draft_id' => (int) $draftId, 'vch_type_id' => (int) $d['vch_type_id'], 'status' => $d['status'] ?? 'draft', 'created_at' => '', 'updated_at' => '', 'payload' => $d['payload'] ?? []];
+        if (count($rows) >= $limit) {
+            break;
+        }
+    }
+    echo json_encode(['data' => $rows]);
+    exit;
+}
+/*
+ * GET registers — Books' RegistersController::index, the part a reference search reads: posted
+ * vouchers of a type whose number or bill reference CONTAINS bill_ref, case-insensitive (it is a
+ * LIKE), each row the voucher header with its party and bill_ref attached.
+ */
+if (preg_match('#/registers$#', $path) === 1 && $method === 'GET') {
+    $type = (int) ($_GET['vch_type_id'] ?? 0);
+    $ref = strtolower(trim((string) ($_GET['bill_ref'] ?? '')));
+    $rows = [];
+    foreach ($vouchers as $v) {
+        if (!empty($v['cancelled']) || ($type > 0 && (int) ($v['vch_type_id'] ?? 0) !== $type)) {
+            continue;
+        }
+        $billRef = (string) ($v['bill']['bill_ref'] ?? '');
+        if ($ref !== '' && !str_contains(strtolower((string) ($v['vch_number'] ?? '')), $ref) && !str_contains(strtolower($billRef), $ref)) {
+            continue;
+        }
+        $rows[] = [
+            'vch_txn_id' => (int) $v['vch_txn_id'], 'vch_type_id' => (int) $v['vch_type_id'], 'vch_number' => $v['vch_number'],
+            'vch_date' => $v['vch_date'] ?? null, 'party_acc_id' => (int) ($v['party']['acc_id'] ?? 0), 'status' => 'posted',
+            'bill_ref' => $billRef,
+        ];
+    }
+    echo json_encode(['data' => $rows, 'meta' => ['voucher_count' => count($rows)]]);
     exit;
 }
 if (preg_match('#/vouchers/(\d+)$#', $path, $vm) === 1 && $method === 'GET') {

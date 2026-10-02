@@ -6,6 +6,7 @@ namespace Aicountly\Api\Controllers;
 
 use Aicountly\Api\Domain\PurchaseOrderService;
 use Aicountly\Api\Domain\ReceiptLedger;
+use Aicountly\Api\Domain\ReceiptReturnService;
 use Aicountly\Api\Domain\ReceiptService;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
@@ -126,6 +127,34 @@ final class PurchaseOrdersController extends Controller
     {
         [$auth, $ctx] = self::enter();
         Http::data((new ReceiptService($ctx, $auth))->cancel((int) $id, Http::body()));
+    }
+
+    /** Undo a GRN recorded by mistake, that no bill has settled: Inventory reverses it. */
+    public static function reverseReceipt(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ReceiptReturnService($ctx, $auth))->reverse((int) $id, Http::body()));
+    }
+
+    /** Give back goods received and not billed — all of a GRN, or some of it. */
+    public static function returnReceipt(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ReceiptReturnService($ctx, $auth))->returnUnbilled((int) $id, Http::body()));
+    }
+
+    /** Send again a return or reversal whose answer was lost, on its own key. */
+    public static function retryReceiptReturn(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ReceiptReturnService($ctx, $auth))->retry((int) $id));
+    }
+
+    /** Abandon a return or reversal Inventory has not acted on. */
+    public static function withdrawReceiptReturn(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new ReceiptReturnService($ctx, $auth))->withdraw((int) $id, Http::body()));
     }
 
     public static function cancel(string $id): void
