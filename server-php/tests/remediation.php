@@ -2414,6 +2414,17 @@ check('serial numbers on an item that does not track them are refused; a batch g
     same(['POST', 'POST', 'GET'], array_column(stubRequests('/v1/batches'), 'method'), 'the second receipt found the batch the first created (409, then a lookup)');
 });
 
+check('the supplier picker asks Books for creditors the way Books reads it — anchor_code and pages, not filters it ignores (G02-01)', function () {
+    reset();
+    $before = count(stubRequests('/masters/accounts'));
+    [$status, $body] = endpoint([Controllers\CatalogController::class, 'suppliers'], person(), ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0', 'q' => '', 'limit' => '20', 'offset' => '40']);
+    same(200, $status, 'answered');
+    same([501, 502], array_map(static fn ($r) => (int) $r['acc_id'], (array) ($body['data'] ?? [])), 'creditors only, from Books\' own anchor');
+    $asked = array_slice(stubRequests('/masters/accounts'), $before)[0]['query'] ?? [];
+    same(['SUNDRY_CREDITORS', '3', '20', 'name_asc'], [$asked['anchor_code'] ?? null, (string) ($asked['page'] ?? ''), (string) ($asked['per_page'] ?? ''), $asked['sort'] ?? null], 'anchor, page 3 of 20, sorted');
+    truthy(!isset($asked['party_type']) && !isset($asked['nature']) && !isset($asked['limit']) && !isset($asked['offset']), 'nothing Books would ignore');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

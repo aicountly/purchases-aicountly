@@ -995,10 +995,8 @@ if (preg_match('#/masters/accounts$#', $path) === 1 && $method === 'GET') {
         ['acc_id' => 7301, 'acc_name' => 'Repairs and Maintenance', 'grp_name' => 'Indirect Expenses', 'grp_anchor_code' => 'INDIRECT_EXPENSES'],
         ['acc_id' => 7401, 'acc_name' => 'Domestic Sales', 'grp_name' => 'Sales Accounts', 'grp_anchor_code' => 'SALES_ACCOUNTS'],
     ];
+    // Books reads anchor_code and ignores filters it does not know (party_type, nature, …).
     $anchors = array_filter(array_map('trim', explode(',', (string) ($_GET['anchor_code'] ?? ''))));
-    if (($_GET['nature'] ?? '') === 'sundry_creditors') {
-        $anchors[] = 'SUNDRY_CREDITORS';
-    }
     $term = strtolower(trim((string) ($_GET['q'] ?? '')));
     $rows = array_values(array_filter($accounts, static fn (array $a): bool =>
         ($anchors === [] || in_array($a['grp_anchor_code'], $anchors, true))

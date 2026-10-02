@@ -79,12 +79,17 @@ final class CatalogController extends Controller
     public static function suppliers(): void
     {
         [$auth, $ctx] = self::enter();
+        // Books' masters/accounts reads q, anchor_code (child groups included), sort, page and
+        // per_page (at most 500) — and ignores anything else. party_type / nature / limit /
+        // offset were ignored, so the picker got the first page of EVERY ledger (G02-01).
+        $limit = max(1, min(500, Http::intParam('limit', 50) ?? 50));
+        $offset = max(0, Http::intParam('offset', 0) ?? 0);
         $result = (new BooksClient())->withSession($auth->sesKey())->accounts($ctx, [
-            'q'          => Http::param('q'),
-            'limit'      => Http::intParam('limit', 50),
-            'offset'     => Http::intParam('offset', 0),
-            'party_type' => 'creditor',
-            'nature'     => 'sundry_creditors',
+            'q'           => Http::param('q'),
+            'anchor_code' => 'SUNDRY_CREDITORS',
+            'sort'        => 'name_asc',
+            'page'        => intdiv($offset, $limit) + 1,
+            'per_page'    => $limit,
         ]);
 
         if (!$result['ok']) {
