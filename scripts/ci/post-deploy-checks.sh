@@ -54,6 +54,17 @@ else
   check page "Purchases web (${target})" "${base}/" '<title>Purchases · Aicountly</title>'
 fi
 
+# Must never be served: what the deploy leaves under the document root that is a secret, a log,
+# SQL, tests, scripts or dependency manifests. Read-only GETs of the first 64 KB, never of a .php
+# file under tests/, bin/ or scripts/ (a GET would run it); a failure logs the status, type and
+# size of what was served, never its content. /.git/HEAD may instead get the SPA's own page.
+for path in /api/.env /api/.env.example /api/error_log \
+  /api/database/migrations/001_purchase_core.sql /api/tests/run.sh /api/bin/; do
+  check absent "Purchases ${path} must not be served (${target})" "${base}${path}"
+done
+check absent "Purchases /.git/HEAD must not be served (${target})" "${base}/.git/HEAD" \
+  '<title>Purchases · Aicountly</title>'
+
 if [ "$failed" -gt 0 ]; then
   echo "${failed} post-deploy check(s) failed for Purchases ${target}."
   exit 1
