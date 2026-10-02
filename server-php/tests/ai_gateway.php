@@ -203,7 +203,7 @@ check('the summary sentence goes to AI Pulse as the signed-in user, for this com
     assertSame('https://pulse.test/api/ai/v1/generate', $request['url'], 'to the gateway\'s generate endpoint');
     assertSame('purchases', $pulse->header(0, 'X-Pulse-Product'), 'as the Purchases product');
     assertSame('Bearer ses-abc', $pulse->header(0, 'Authorization'), 'with the user\'s own session');
-    assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'and never a service key');
+    assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'no gateway key configured here, so none is sent');
     assertSame(null, $pulse->header(0, 'Idempotency-Key'), 'a read-only call, not replayed');
     assertSame('purchases', $pulse->header(0, 'X-Saas-Origin'), 'naming itself as every outbound call here does');
     assertSame('application/json', $pulse->header(0, 'Content-Type'), 'JSON');
@@ -250,8 +250,8 @@ check('the model picks from our list or from nothing', function () {
     assertSame(null, AiClient::classify(scope(), user(), 'late stuff', INTENTS)['intent'], '"none" is no answer');
 });
 
-check('with no signed-in user nothing leaves this server, and no service key is ever used', function () {
-    putenv('PULSE_SERVICE_KEY=must-not-be-sent');
+check('with no signed-in user nothing leaves this server; the gateway key only ever goes beside a session', function () {
+    putenv('PULSE_SERVICE_KEY=must-not-be-sent');   // ...without a user
     putenv('CONSOLE_SERVICE_KEY=must-not-be-sent-either');
     try {
         $pulse = (new FakePulse([pulseText('unused'), pulseText('unused')]))->install();
@@ -273,7 +273,9 @@ check('with no signed-in user nothing leaves this server, and no service key is 
         assertSame([], $pulse->requests, 'not one request was sent');
 
         $client->text('insight.ask_summary', 'x', 'y', [], 'ses-abc');
-        assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'a keyed environment still sends the user, not the key');
+        assertSame('Bearer ses-abc', $pulse->header(0, 'Authorization'), 'a keyed environment still sends the user');
+        assertSame('must-not-be-sent', $pulse->header(0, 'X-Pulse-Service-Key'), 'with Purchases\' own gateway key beside the session (AI_GATEWAY.md §1)');
+        assertTrue(!str_contains(implode("\n", $pulse->requests[0]['headers']), 'must-not-be-sent-either'), 'never the shared CONSOLE_SERVICE_KEY');
     } finally {
         putenv('PULSE_SERVICE_KEY');
         putenv('CONSOLE_SERVICE_KEY');
@@ -418,7 +420,7 @@ check('availability is asked of AI Pulse once per request, as the user', functio
     assertSame(['GET', 'https://pulse.test/api/ai/v1/status', null], [$request['method'], $request['url'], $request['body']], 'a GET of the status endpoint');
     assertSame('purchases', $pulse->header(0, 'X-Pulse-Product'), 'as Purchases');
     assertSame('Bearer ses-abc', $pulse->header(0, 'Authorization'), 'with the user\'s session');
-    assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'never a service key');
+    assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'no gateway key configured here, so none is sent');
     assertSame([6.0, 2.0], [$request['timeout'], $request['connect_timeout']], 'on the optional budget a screen can afford');
 });
 
