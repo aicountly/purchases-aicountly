@@ -49,7 +49,10 @@ build always talks to `my.aicountly.com`.
 an AI Pulse with no model bound, so AI Insights shows its rules-only state; sign
 in with the auth token `preview-auth-token.ai-on` (below) to see it with a model
 bound. Unset, a local API asks the sandbox AI Pulse, which will not accept a
-preview session.
+preview session. The stub accepts a session without a gateway key, as Pulse does
+until 2026-11-15; `tests/run.sh` sets `PULSE_SERVICE_KEY` in its `.env` and starts
+the stub with `STUB_PULSE_SERVICE_KEY` so that, like Pulse after that date, it
+refuses a call that does not carry Purchases' own key.
 
 ```bash
 php bin/migrate.php

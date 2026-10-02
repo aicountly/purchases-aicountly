@@ -21,11 +21,20 @@ use Aicountly\Api\Env;
  * Adapted for Purchases:
  *   - namespace Aicountly\Api\Ai, product `purchases`, configuration read through
  *     Env (the server .env), like everything else in this API;
+ *   - THIS PRODUCT'S OWN GATEWAY KEY goes on every call. PULSE_SERVICE_KEY, minted on
+ *     the Pulse host for product `purchases`, is how Pulse knows who is calling
+ *     (X-Pulse-Service-Key); it travels beside X-Pulse-Product and the user's session,
+ *     never instead of them. While it is unset only the session is sent, which Pulse
+ *     accepts only until 2026-11-15 00:00 UTC and then answers 401 product_key_required.
+ *     The estate CONSOLE_SERVICE_KEY is not a fallback. A key that cannot go into a
+ *     header (CR, LF, NUL or any other control character) is refused here as
+ *     `not_configured` and never sent. The key is never logged, returned or put in a
+ *     message;
  *   - SIGNED-IN USERS ONLY. Purchases has no background AI job — no cron, no
- *     webhook, no public visitor — so there is deliberately no service-key path.
- *     A call without the user's ses_key is refused here and never leaves the
- *     server. With the session, Pulse checks the user and the company itself and
- *     attributes the usage to that person;
+ *     webhook, no public visitor — so a call without the user's ses_key is refused
+ *     here and never leaves the server, with a gateway key or without one. With the
+ *     session, Pulse checks the user and the company itself (cmp_id is required on every
+ *     call that runs AI) and attributes the usage to that person;
  *   - the Pulse origin is derived from this host the same way ApiClient derives
  *     the sibling products' (sandbox hosts, localhost and the CLI use sandbox);
  *   - like every outbound call this product makes, it names itself in
@@ -34,6 +43,9 @@ use Aicountly\Api\Env;
  *   - only what Purchases uses: generate(), text() and status().
  *
  * Configuration (server-php/.env):
+ *   PULSE_SERVICE_KEY  Purchases' own AI gateway key (`php spark pulse:gateway-key mint purchases`
+ *                      on the Pulse host; production and sandbox each have their own). Sent on
+ *                      every call. Unset: only the session is sent (until 2026-11-15).
  *   PULSE_API_ORIGIN   https://pulse.aicountly.com (sandbox: https://pulse.gh.aicountly.com).
  *                      Normally unset — derived from this host. A trailing /api is ignored.
  *
@@ -103,21 +115,22 @@ final class PulseAiClient
     }
 
     /**
-     * Is AI available to Purchases right now (for a status line)? Asked as the signed-in user.
+     * Is AI available to Purchases right now (for a status line)? Asked as the signed-in user,
+     * with the product's gateway key like every other call. Pulse needs no cmp_id here.
      *
      * @return array{ok: bool, status: int, code: ?string, message: ?string, retryable: bool, data: ?array}
      */
     public function status(?string $userSesKey): array
     {
-        $caller = self::caller($userSesKey);
-        if ($caller === null) {
-            return self::signedInOnly();
+        $refused = self::refusal($userSesKey);
+        if ($refused !== null) {
+            return $refused;
         }
 
         return self::decode(($this->transport)([
             'method'          => 'GET',
             'url'             => $this->origin() . '/api/ai/v1/status',
-            'headers'         => ['Accept: application/json', ...$this->identity(), $caller],
+            'headers'         => ['Accept: application/json', ...$this->callerHeaders($userSesKey)],
             'body'            => null,
             'timeout'         => self::STATUS_TIMEOUT_SECONDS,
             'connect_timeout' => self::STATUS_CONNECT_SECONDS,
@@ -158,9 +171,9 @@ final class PulseAiClient
      */
     private function post(string $path, array $body, ?string $userSesKey): array
     {
-        $caller = self::caller($userSesKey);
-        if ($caller === null) {
-            return self::signedInOnly();
+        $refused = self::refusal($userSesKey);
+        if ($refused !== null) {
+            return $refused;
         }
 
         $encoded = json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -171,7 +184,7 @@ final class PulseAiClient
         return self::decode(($this->transport)([
             'method'          => 'POST',
             'url'             => $this->origin() . $path,
-            'headers'         => ['Content-Type: application/json', 'Accept: application/json', ...$this->identity(), $caller],
+            'headers'         => ['Content-Type: application/json', 'Accept: application/json', ...$this->callerHeaders($userSesKey)],
             'body'            => $encoded,
             'timeout'         => $this->timeoutSeconds,
             'connect_timeout' => self::CONNECT_TIMEOUT_SECONDS,
@@ -210,28 +223,71 @@ final class PulseAiClient
     }
 
     /**
-     * Which product is calling: X-Pulse-Product for Pulse, and X-Saas-Origin as
-     * every outbound call from this product carries it.
+     * Who is calling, on every call — the mirror of the reference client's callerHeaders():
+     * the product (X-Pulse-Product for Pulse, and X-Saas-Origin as every outbound call from
+     * this product carries it), then its own gateway key when one is configured, then the
+     * signed-in user's session. Only reached once refusal() has let the call through, so the
+     * session is there and the key, when set, is fit for a header.
      *
      * @return list<string>
      */
-    private function identity(): array
+    private function callerHeaders(?string $userSesKey): array
     {
-        return ['X-Pulse-Product: ' . $this->product, CrossServiceCallContext::HEADER . ': ' . $this->product];
+        $headers = ['X-Pulse-Product: ' . $this->product, CrossServiceCallContext::HEADER . ': ' . $this->product];
+
+        $key = self::serviceKey();
+        if ($key !== null && $key !== '') {
+            $headers[] = 'X-Pulse-Service-Key: ' . $key;
+        }
+        $headers[] = 'Authorization: Bearer ' . trim((string) $userSesKey);
+
+        return $headers;
     }
 
-    /** The Authorization header for the signed-in user, or null when there is none. */
-    private static function caller(?string $userSesKey): ?string
+    /**
+     * Why this call may not leave the server — as a result — or null when it may. Decided
+     * before anything is built, so a refused call never reaches the transport.
+     *
+     * @return ?array{ok: bool, status: int, code: ?string, message: ?string, retryable: bool, data: ?array}
+     */
+    private static function refusal(?string $userSesKey): ?array
     {
-        $userSesKey = trim((string) $userSesKey);
+        if (trim((string) $userSesKey) === '') {
+            return self::signedInOnly();
+        }
 
-        return $userSesKey === '' ? null : 'Authorization: Bearer ' . $userSesKey;
+        return self::serviceKey() === null ? self::keyUnusable() : null;
+    }
+
+    /**
+     * This product's own gateway key (PULSE_SERVICE_KEY): '' while none is set, the key when
+     * it can be sent, null when what is set cannot be.
+     *
+     * Only spaces and tabs around it are ignored. A key with a CR, LF, NUL or any other control
+     * character in it — a pasted newline, a corrupted file — would split or truncate the header
+     * it is sent in, so it is refused rather than repaired or sent.
+     */
+    private static function serviceKey(): ?string
+    {
+        $key = trim(Env::get('PULSE_SERVICE_KEY'), " \t");
+
+        return preg_match('/[\x00-\x1F\x7F]/', $key) === 1 ? null : $key;
     }
 
     /** @return array{ok: bool, status: int, code: ?string, message: ?string, retryable: bool, data: ?array} */
     private static function signedInOnly(): array
     {
         return self::result(false, 0, 'unauthenticated', 'Purchases asks AI Pulse only on behalf of a signed-in user.', false);
+    }
+
+    /**
+     * Said without the key, and without any part of it.
+     *
+     * @return array{ok: bool, status: int, code: ?string, message: ?string, retryable: bool, data: ?array}
+     */
+    private static function keyUnusable(): array
+    {
+        return self::result(false, 0, 'not_configured', 'The AI Pulse gateway key set for Purchases cannot be sent: it must be one line without control characters.', false);
     }
 
     /**

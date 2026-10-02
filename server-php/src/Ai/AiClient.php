@@ -24,11 +24,13 @@ use Aicountly\Api\Context;
  * Three rules, and they are the reason this class exists at all rather than the
  * calls being made from wherever they are needed:
  *
- *  1. NO KEY LIVES HERE. The only credential that leaves this server is the
- *     user's own session, sent to AI Pulse exactly as it is sent to Books and
- *     Inventory, so Pulse checks the person and the company itself. There is no
- *     AI key to reach the browser or a log; a failed call logs its feature, its
- *     outcome and Pulse's task id, never the prompt, the data or the answer.
+ *  1. NO MODEL KEY LIVES HERE. What leaves this server is the user's own
+ *     session, sent to AI Pulse exactly as it is sent to Books and Inventory, so
+ *     Pulse checks the person and the company itself, and with it this product's
+ *     own gateway key (PULSE_SERVICE_KEY), which only tells Pulse that Purchases
+ *     is the caller. Neither reaches the browser, a log or a message; a failed
+ *     call logs its feature, its outcome and Pulse's task id, never the prompt,
+ *     the data, the answer or a key.
  *
  *  2. THE MODEL NEVER WRITES A QUERY. It is given rows that have already been
  *     fetched, by approved parameterised queries, under the signed-in user's
@@ -64,7 +66,7 @@ final class AiClient
     private const UNAVAILABLE_CODES = [
         'unauthenticated', 'company_access_denied', 'ai_unavailable', 'gateway_disabled',
         'budget_exhausted', 'rate_limited', 'auth_unavailable', 'company_check_unavailable',
-        'database_unavailable', 'timeout', 'pulse_unreachable',
+        'database_unavailable', 'timeout', 'pulse_unreachable', 'not_configured',
     ];
 
     /**
@@ -312,8 +314,8 @@ final class AiClient
             'timeout', 'pulse_unreachable' => 'AI Pulse did not answer in time.',
             'unauthenticated' => 'AI Pulse could not confirm this sign-in.',
             'company_access_denied' => 'AI Pulse could not confirm your access to this company.',
-            'auth_unavailable', 'company_check_unavailable', 'database_unavailable', 'internal_error', 'bad_response'
-                => 'AI Pulse is not available right now.',
+            'auth_unavailable', 'company_check_unavailable', 'database_unavailable', 'internal_error', 'bad_response',
+            'not_configured' => 'AI Pulse is not available right now.',
             default => 'AI Pulse refused the request (HTTP ' . $res['status'] . ').',
         };
     }
@@ -331,6 +333,8 @@ final class AiClient
             'budget_exhausted', 'rate_limited' => 'AI Pulse limits AI use per company and per product; the limits are in AI Pulse → Admin → Settings.',
             'timeout', 'pulse_unreachable' => 'This server could not reach AI Pulse at ' . self::client()->origin()
                 . '. Check PULSE_API_ORIGIN in the server environment, and that this host can make outbound HTTPS calls.',
+            'not_configured' => 'PULSE_SERVICE_KEY in the server environment cannot be sent: it must be one line without control characters. '
+                . 'Set Purchases\' own AI Pulse gateway key again (php spark pulse:gateway-key mint purchases, on the Pulse host).',
             default => 'AI Pulse answered HTTP ' . $res['status'] . ' (' . (string) $res['code'] . ').',
         };
     }
