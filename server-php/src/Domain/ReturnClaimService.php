@@ -6,6 +6,7 @@ namespace Aicountly\Api\Domain;
 
 use Aicountly\Api\Audit;
 use Aicountly\Api\Auth;
+use Aicountly\Api\Clients\BooksClient;
 use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Context;
 use Aicountly\Api\Db;
@@ -102,6 +103,7 @@ final class ReturnClaimService
             if ($kind === 'physical') {
                 $lines = $this->admitReturnLines($poId, $lines, null);
             }
+            $lines = $this->withBilledTax($poId, $lines);
 
             $no = NumberSeries::next($this->ctx, 'return');
             $returnId = (int) Db::insert('purchase_returns', [
@@ -137,6 +139,8 @@ final class ReturnClaimService
                     'rate'         => $line['rate'],
                     'line_amount'  => $line['line_amount'],
                     'reason_code'  => $line['reason_code'],
+                    'tax_cat_id'   => $line['tax_cat_id'],
+                    'hsn_sac'      => $line['hsn_sac'],
                 ], 'line_id');
             }
 
@@ -381,7 +385,7 @@ final class ReturnClaimService
      * challan — the one movement of the goods. Financial: a ledger line, no stock, only by
      * someone who may make a financial adjustment.
      */
-    public function requestDebitNote(int $returnId): array
+    public function requestDebitNote(int $returnId, array $input = []): array
     {
         Permissions::assert($this->ctx, $this->auth, 'return.approve');
 
@@ -401,8 +405,20 @@ final class ReturnClaimService
                 : 'This return is ' . strtolower((string) $return['status']) . '; a debit note cannot be raised for it.');
         }
 
-        $payload = $this->debitNotePayload($return, $financial);
-        $voucher = (new DebitNotePoster($this->ctx, $this->auth))->post(self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $payload, 'return ' . $return['return_no']);
+        // Posted in the return's own year and branch — its date is in that year — whatever the
+        // screen is on; confirmed with Manage when it differs.
+        $scope = Context::of((int) $return['cmp_id'], (int) $return['fy_id'], (int) $return['bo_id']);
+        if ($scope->fyId !== $this->ctx->fyId || $scope->boId !== $this->ctx->boId) {
+            $scope->assertAllowed($this->auth);
+        }
+        $revision = $this->debitNoteRevision($returnId, self::truthy($input['resend'] ?? false), self::text($input['note'] ?? null));
+        // Where the supplier supplies from, from their Books ledger — only for a request not yet
+        // sent; one already sent replays its stored body.
+        $supply = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $revision) === null
+            ? PlaceOfSupply::forSupplier((new BooksClient())->withSession($this->auth->sesKey()), $scope, (int) $return['supplier_account_id'])
+            : null;
+        $payload = $this->debitNotePayload($return, $financial, $supply);
+        $voucher = (new DebitNotePoster($this->ctx, $this->auth))->post(self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $payload, 'return ' . $return['return_no'], $revision, null, $scope);
 
         Db::transaction(function () use ($returnId, $voucher, $financial) {
             $locked = $this->lockReturn($returnId);
@@ -444,6 +460,103 @@ final class ReturnClaimService
         }
 
         return $this->findReturn($returnId);
+    }
+
+    /**
+     * Which revision of the return's debit note this request is.
+     *
+     * The same one, normally: a retry is the same request on the same key. A debit note Smart
+     * Books REFUSED is a dead end on its key — the refusal is the answer to that body — so once
+     * what it refused is put right (the supplier's state on their ledger, say), it is sent again
+     * as a new revision: the refused one is withdrawn as superseded, and the next is built from
+     * the return as it stands now, under a key of its own. Only from a refusal: a request whose
+     * outcome is unknown is retried, never re-sent, or it could post twice.
+     */
+    private function debitNoteRevision(int $returnId, bool $resend, ?string $note): int
+    {
+        $latest = IntegrationCommand::latest($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId);
+        if ($latest === null) {
+            return 0;
+        }
+        $revision = (int) $latest['revision'];
+        if ($latest['status'] === IntegrationCommand::CANCELLED && ($latest['resolved_by'] ?? null) === 'superseded') {
+            return $revision + 1; // superseded, and the next revision not sent yet
+        }
+        if (!$resend) {
+            return $revision;
+        }
+        if ($latest['status'] !== IntegrationCommand::BLOCKED) {
+            Http::conflict('Only a debit note Smart Books refused is sent again. This one is ' . strtolower((string) $latest['status']) . ': retry it as it stands.');
+        }
+        if (!IntegrationCommand::withdraw((int) $latest['command_id'], 'Sent again as revision ' . ($revision + 1) . ($note !== null ? ': ' . $note : '.'), 'superseded')) {
+            $again = IntegrationCommand::latest($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId);
+            if (($again['resolved_by'] ?? null) !== 'superseded' || (int) $again['revision'] !== $revision) {
+                Http::conflict('This debit note changed while it was being sent again. Refresh and look before trying again.');
+            }
+        } else {
+            Audit::record($this->ctx, $this->auth, 'return.debit_note_resent', 'purchase_return', $returnId, [
+                'revision' => $revision, 'refusal' => $latest['last_error'],
+            ], ['revision' => $revision + 1], $note ?? '');
+        }
+
+        return $revision + 1;
+    }
+
+    /**
+     * The tax each line goes back under: what it was BILLED under — the latest posted bill's line
+     * for the same order line — unless the line names its own; the order line's as a last
+     * resort. A debit note that reversed at the item's default category reversed a different
+     * GST from the one the bill charged.
+     *
+     * @param list<array<string, mixed>> $lines
+     * @return list<array<string, mixed>>
+     */
+    private function withBilledTax(?int $poId, array $lines): array
+    {
+        if ($poId === null) {
+            return $lines;
+        }
+        $billed = $this->billedLines($poId);
+        $poLines = [];
+        foreach (Db::all('SELECT line_id, tax_cat_id, hsn_sac FROM purchase_order_lines WHERE po_id = :po AND cmp_id = :cmp', ['po' => $poId, 'cmp' => $this->ctx->cmpId]) as $row) {
+            $poLines[(int) $row['line_id']] = $row;
+        }
+        foreach ($lines as $i => $line) {
+            $poLineId = $line['po_line_id'];
+            if ($poLineId === null) {
+                continue;
+            }
+            $source = $billed[$poLineId] ?? $poLines[$poLineId] ?? [];
+            $lines[$i]['tax_cat_id'] ??= self::id($source['tax_cat_id'] ?? null);
+            $lines[$i]['hsn_sac'] ??= self::text(isset($source['hsn_sac']) ? (string) $source['hsn_sac'] : null);
+        }
+
+        return $lines;
+    }
+
+    /**
+     * The line each order line was last billed on, by order line: rate, discount, tax.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function billedLines(int $poId): array
+    {
+        $out = [];
+        foreach (Db::all(
+            "SELECT requested_lines FROM purchase_bill_requests
+              WHERE po_id = :po AND cmp_id = :cmp AND status = 'POSTED'
+              ORDER BY posted_at DESC NULLS LAST, request_id DESC",
+            ['po' => $poId, 'cmp' => $this->ctx->cmpId],
+        ) as $bill) {
+            foreach (Db::jsonColumn($bill['requested_lines']) as $line) {
+                $poLineId = (int) ($line['po_line_id'] ?? 0);
+                if ($poLineId > 0 && !isset($out[$poLineId])) {
+                    $out[$poLineId] = $line;
+                }
+            }
+        }
+
+        return $out;
     }
 
     /** @return array<string, mixed> */
@@ -693,6 +806,7 @@ final class ReturnClaimService
             }
         }
 
+        $billed = $poId === null ? [] : $this->billedLines($poId);
         $asked = [];
         foreach ($lines as $i => $line) {
             if ($poId !== null) {
@@ -707,7 +821,12 @@ final class ReturnClaimService
                 $lines[$i]['unit_id'] ??= $poLine['unit_id'] === null ? null : (int) $poLine['unit_id'];
                 $lines[$i]['warehouse_id'] ??= $poLine['warehouse_id'] === null ? null : (int) $poLine['warehouse_id'];
                 if ((float) $line['rate'] <= 0) {
-                    $lines[$i]['rate'] = ReceiptService::netRate($poLine);
+                    // What the supplier billed for these goods — the payable the debit note
+                    // reduces — net of the bill's discount; the order's net rate when not billed.
+                    $bill = $billed[(int) $poLine['line_id']] ?? null;
+                    $lines[$i]['rate'] = $bill !== null
+                        ? round((float) ($bill['rate'] ?? 0) * (1 - (float) ($bill['discount_pc'] ?? 0) / 100), 4)
+                        : ReceiptService::netRate($poLine);
                     $lines[$i]['line_amount'] = round((float) $line['return_qty'] * $lines[$i]['rate'], 4);
                 }
                 $asked[(int) $poLine['line_id']] = ($asked[(int) $poLine['line_id']] ?? 0.0) + (float) $line['return_qty'];
@@ -792,11 +911,16 @@ final class ReturnClaimService
      * @param array<string, mixed> $return
      * @return array<string, mixed>
      */
-    private function debitNotePayload(array $return, bool $financial): array
+    private function debitNotePayload(array $return, bool $financial, ?array $supply = null): array
     {
         $payload = [
             'vch_date'     => (string) $return['return_date'],
-            'party'        => ['acc_id' => (int) $return['supplier_account_id']],
+            // Where the supplier supplies from (PlaceOfSupply): the GST it reverses is split the
+            // way the purchase's was.
+            'party'        => array_filter([
+                'acc_id'         => (int) $return['supplier_account_id'],
+                'pos_state_code' => $supply['pos_state_code'] ?? null,
+            ], static fn ($v) => $v !== null),
             // The debit note's own reference on the supplier's account: the return number.
             'bill'         => ['bill_ref' => (string) $return['return_no'], 'bill_date' => (string) $return['return_date'], 'dr_cr' => 1],
             'narration'    => ($financial ? 'Debit note (no goods returned) — ' . ($return['adjustment_reason'] ?? '') : 'Debit note against purchase return ') . ' ' . $return['return_no'],
@@ -808,15 +932,22 @@ final class ReturnClaimService
             'source_document_id'   => (int) $return['return_id'],
             'source_document_uuid' => (string) $return['return_uuid'],
         ];
+        if (($supply['supply_nature'] ?? null) !== null) {
+            $payload['supply_nature'] = $supply['supply_nature'];
+        }
 
         if ($financial) {
-            $payload['service_lines'] = array_values(array_map(static fn (array $line) => [
+            // An adjustment reverses tax only under the category it names (or the one its
+            // order line was billed under); without one it is booked untaxed, as before.
+            $payload['service_lines'] = array_values(array_map(static fn (array $line) => array_filter([
                 'description'     => $line['reason_code'] ?? 'Adjustment',
                 'purchase_acc_id' => (int) $return['adjustment_acc_id'],
                 'qty'             => (float) $line['return_qty'],
                 'rate'            => (float) $line['rate'],
                 'amount'          => (float) $line['line_amount'],
-            ], $return['lines']));
+                'tax_cat_id'      => isset($line['tax_cat_id']) ? (int) $line['tax_cat_id'] : null,
+                'hsn_sac'         => $line['hsn_sac'] ?? null,
+            ], static fn ($v) => $v !== null), $return['lines']));
 
             return $payload;
         }
@@ -839,7 +970,7 @@ final class ReturnClaimService
             'qty'                => (float) $line['return_qty'],
             'mc_id'              => $line['warehouse_id'] === null ? null : (int) $line['warehouse_id'],
         ], static fn ($v) => $v !== null), $stockLines);
-        $payload['inventory_lines'] = array_values(array_map(static fn (array $line) => [
+        $payload['inventory_lines'] = array_values(array_map(static fn (array $line) => array_filter([
             'source_line_ref' => (string) $line['line_id'],
             'item_id'         => (int) $line['item_id'],
             'unit_id'         => $line['unit_id'] === null ? null : (int) $line['unit_id'],
@@ -850,7 +981,11 @@ final class ReturnClaimService
             'qty'             => (float) $line['return_qty'],
             'rate'            => (float) $line['rate'],
             'amount'          => (float) $line['line_amount'],
-        ], $stockLines));
+            // The category the goods were billed under, so the GST reversed is the GST charged —
+            // not the item master's default, which a bill line may have changed.
+            'tax_cat_id'      => isset($line['tax_cat_id']) ? (int) $line['tax_cat_id'] : null,
+            'hsn_sac'         => $line['hsn_sac'] ?? null,
+        ], static fn ($v) => $v !== null), $stockLines));
 
         return $payload;
     }
@@ -931,7 +1066,7 @@ final class ReturnClaimService
     private function storedLines(int $returnId): array
     {
         return array_map(static function (array $l): array {
-            foreach (['po_line_id', 'item_id', 'unit_id', 'warehouse_id', 'batch_id'] as $k) {
+            foreach (['po_line_id', 'item_id', 'unit_id', 'warehouse_id', 'batch_id', 'tax_cat_id'] as $k) {
                 $l[$k] = $l[$k] === null ? null : (int) $l[$k];
             }
 
@@ -972,6 +1107,8 @@ final class ReturnClaimService
                 'rate'         => $rate,
                 'line_amount'  => round($qty * $rate, 4),
                 'reason_code'  => self::text($line['reason_code'] ?? $line['description'] ?? null),
+                'tax_cat_id'   => self::id($line['tax_cat_id'] ?? null),
+                'hsn_sac'      => self::text($line['hsn_sac'] ?? null),
             ];
         }
 

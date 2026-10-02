@@ -102,6 +102,8 @@ on every request.
 Deployment is **manual only**. Nothing deploys on push or merge — both
 workflows trigger exclusively via `workflow_dispatch`.
 
+**CI and the pre-deploy gate.** [`ci.yml`](.github/workflows/ci.yml) — `server-php/tests/run.sh` (integration, AI gateway and remediation tests on a throwaway PostgreSQL with the local stub) plus the web typecheck and build — runs automatically on every pull request and every push to `main`, and on demand; it only tests and never deploys. Both deploy workflows stay manual (`workflow_dispatch` only) and run that full suite first: their first job calls `ci.yml` on the commit being deployed and the deploy job `needs:` it, so a red suite stops the deploy.
+
 To deploy: **Actions** → pick a workflow → **Run workflow** → pick a branch →
 **Run**.
 

@@ -36,6 +36,10 @@ final class InsightRules
         $commitment = (array) ($facts['commitment'] ?? []);
         $approvals = (int) ($facts['my_approvals'] ?? 0);
         $pipeline = (array) ($facts['pipeline'] ?? []);
+        // What the reader may see. Absent means no: a rule never states money, or names
+        // exceptions, to somebody the caller did not vouch for.
+        $valuesVisible = (bool) ($facts['values_visible'] ?? false);
+        $canMatch = (bool) ($facts['can_match'] ?? false);
 
         // 1. Money already stuck between products. Nothing else on this screen
         //    is as urgent as a document neither product agrees exists.
@@ -59,8 +63,8 @@ final class InsightRules
             );
         }
 
-        // 2. Open match exceptions, ranked by the money in dispute.
-        $exceptions = Db::first(
+        // 2. Open match exceptions, ranked by the money in dispute — for those who see the match.
+        $exceptions = !$canMatch ? [] : Db::first(
             "SELECT COUNT(*) AS n, COALESCE(SUM(ABS(COALESCE(variance_value, 0))), 0)::text AS variance
              FROM purchase_match_exceptions WHERE cmp_id = :cmp AND status = 'OPEN'",
             ['cmp' => $ctx->cmpId],
@@ -111,8 +115,8 @@ final class InsightRules
                 $delayedCount > 5 ? 'danger' : 'warning',
                 $delayedCount . ' order' . ($delayedCount === 1 ? '' : 's') . ' past the promised date',
                 ($delayed['lines'] ?? 0) . ' line' . (((int) ($delayed['lines'] ?? 0)) === 1 ? '' : 's')
-                    . ' are still short. Committed value on open orders is '
-                    . Format::money(Decimal::of($commitment['value'] ?? '0'), $currency) . '.',
+                    . ' are still short.'
+                    . ($valuesVisible ? ' Committed value on open orders is ' . Format::money(Decimal::of($commitment['value'] ?? '0'), $currency) . '.' : ''),
                 null,
                 $delayedCount,
                 'Chase deliveries',
@@ -153,9 +157,9 @@ final class InsightRules
                 'stalled-demand',
                 'warning',
                 $stalledCount . ' approved requisition' . ($stalledCount === 1 ? '' : 's') . ' not yet ordered',
-                'Approved more than a fortnight ago and still not turned into a purchase order. Estimated value '
-                    . Format::money(Decimal::of($stalled['value'] ?? '0'), $currency) . ' — an estimate for routing, not a price.',
-                Decimal::parse($stalled['value'] ?? null),
+                'Approved more than a fortnight ago and still not turned into a purchase order.'
+                    . ($valuesVisible ? ' Estimated value ' . Format::money(Decimal::of($stalled['value'] ?? '0'), $currency) . ' — an estimate for routing, not a price.' : ''),
+                $valuesVisible ? Decimal::parse($stalled['value'] ?? null) : null,
                 $stalledCount,
                 'Open requisitions',
                 '/requisitions',

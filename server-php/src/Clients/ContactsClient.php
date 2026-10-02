@@ -206,6 +206,17 @@ final class ContactsClient extends ApiClient
         return self::resolution($read, self::stateOf($read['data']), self::survivorOf($read['data']), $read['data'], 'contact');
     }
 
+    /** Name search kept under its earlier name (callers and tests written before the adapter). */
+    public function companyContacts(int $cmpId, string $term, int $perPage = 20): array
+    {
+        return $this->search($cmpId, ['q' => $term, 'per_page' => $perPage]);
+    }
+
+    public function companyContact(int $cmpId, string $contactId): array
+    {
+        return $this->contact($cmpId, $contactId);
+    }
+
     /** The contacts Contacts links to this Books ledger account (a list; at most one for an identity ref). */
     public function byLedgerAccount(int $cmpId, int $accId): array
     {

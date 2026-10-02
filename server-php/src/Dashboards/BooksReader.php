@@ -127,7 +127,7 @@ final class BooksReader
                 // Books is the authority for what is still open; nothing is
                 // recomputed here from an invoice total and a payment.
                 'pending_amount'      => $pending,
-                'original_amount'     => Decimal::parse($row['amount'] ?? $row['bill_amount'] ?? null),
+                'original_amount'     => self::originalAmount($row),
                 'days_overdue'        => $due === null ? null : self::daysBetween($due, $asOn),
                 'has_due_date'        => $due !== null,
             ];
@@ -150,10 +150,14 @@ final class BooksReader
      */
     public function supplierLedger(int $supplierAccountId, string $from, string $to): array
     {
+        // show_settled=1, or Books leaves out every bill with nothing pending (ReportsController::
+        // billByBill reads it only as the string '1') — and a reconciliation without them reports
+        // every paid invoice as "not in Books".
         $result = $this->client()->billByBill($this->ctx, [
-            'acc_id' => $supplierAccountId,
-            'from'   => $from,
-            'to'     => $to,
+            'acc_id'       => $supplierAccountId,
+            'from'         => $from,
+            'to'           => $to,
+            'show_settled' => '1',
         ]);
 
         if (!($result['ok'] ?? false)) {
@@ -165,24 +169,55 @@ final class BooksReader
 
         $out = [];
         foreach ((array) $rows as $row) {
-            if (!is_array($row)) {
+            if (!is_array($row) || self::isReconciliationRow($row)) {
                 continue;
             }
 
-            $original = Decimal::parse($row['amount'] ?? $row['bill_amount'] ?? null);
             $pending = Decimal::of($row['pending_amount'] ?? $row['balance'] ?? $row['outstanding'] ?? null);
 
             $out[] = [
                 'bill_ref'        => self::stringOrNull($row['bill_ref'] ?? $row['reference'] ?? $row['vch_no'] ?? null),
                 'bill_date'       => self::dateOrNull($row['bill_date'] ?? $row['vch_date'] ?? null),
                 'due_date'        => self::dateOrNull($row['due_date'] ?? null),
-                'original_amount' => $original,
+                'original_amount' => self::originalAmount($row),
                 'pending_amount'  => $pending,
                 'settled'         => Decimal::isZero($pending),
+                // Which side of the supplier's account: 2 = their bill (payable), 1 = a debit note
+                // or an advance against them. Books' books_bills.dr_cr.
+                'dr_cr'           => isset($row['dr_cr']) ? (int) $row['dr_cr'] : null,
             ];
         }
 
         return ['ok' => true, 'error' => null, 'rows' => $out];
+    }
+
+    /**
+     * The bill's own amount. Books' bill-by-bill rows are books_bills rows: `original_amount`
+     * and `pending_amount` — there is no `amount` or `bill_amount`, and reading only those made
+     * every bill's amount null, so a statement line never agreed with anything.
+     *
+     * @param array<string, mixed> $row
+     */
+    private static function originalAmount(array $row): ?string
+    {
+        return Decimal::parse($row['original_amount'] ?? $row['amount'] ?? $row['bill_amount'] ?? null);
+    }
+
+    /**
+     * Books' ON ACCOUNT and Undefined Reference rows: what a party's ledger holds that no bill
+     * explains, kept beside the bills so the two reconcile. Not documents — a statement line can
+     * never be one of them.
+     *
+     * @param array<string, mixed> $row
+     */
+    private static function isReconciliationRow(array $row): bool
+    {
+        if (!empty($row['is_on_account']) || !empty($row['is_undefined_reference'])) {
+            return true;
+        }
+        $ref = strtolower(trim((string) ($row['bill_ref'] ?? '')));
+
+        return $ref === 'on account' || $ref === 'undefined reference';
     }
 
     /**

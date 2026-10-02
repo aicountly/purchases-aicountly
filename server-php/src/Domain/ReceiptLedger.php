@@ -19,7 +19,9 @@ use Aicountly\Api\Db;
  *
  * A reversed or cancelled GRN counts for nothing — and where this product still counts a
  * receipt that Inventory no longer does, that is reported as a discrepancy rather than
- * quietly believed on either side.
+ * quietly believed on either side. A GRN reversed from here (ReceiptReturnService) is not
+ * read at all: both sides agree it counts for nothing. One partly returned is read under the
+ * replacement document Inventory made for the quantity kept.
  */
 final class ReceiptLedger
 {
@@ -45,7 +47,7 @@ final class ReceiptLedger
             "SELECT request_id, receipt_no, receipt_uuid, status, applied_at, applied_lines, requested_lines,
                     inventory_document_id, inventory_document_uuid, inventory_document_no, source_document_type
                FROM purchase_receipt_requests
-              WHERE po_id = :po AND cmp_id = :cmp AND status <> 'CANCELLED'
+              WHERE po_id = :po AND cmp_id = :cmp AND status NOT IN ('CANCELLED', 'REVERSED')
               ORDER BY request_id",
             ['po' => $poId, 'cmp' => $this->ctx->cmpId],
         );

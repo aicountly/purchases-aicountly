@@ -34,9 +34,11 @@ final class DebitNotePoster
      *        that records the outcome must be told first, not after
      * @return array{vch_txn_id: int, vch_uuid: ?string, vch_number: ?string, resolved_by: string}
      */
-    public function post(string $commandType, string $entityType, int $entityId, array $payload, string $what, int $revision = 0, ?callable $onFailure = null): array
+    public function post(string $commandType, string $entityType, int $entityId, array $payload, string $what, int $revision = 0, ?callable $onFailure = null, ?Context $scope = null): array
     {
-        $command = IntegrationCommand::ensure($this->ctx, 'books', $commandType, $entityType, $entityId, $payload, ['what' => $what], $revision);
+        // The scope the note is posted in: the document's own year and branch when the caller
+        // names it (a return), the request's otherwise. Stored on the command and replayed.
+        $command = IntegrationCommand::ensure($scope ?? $this->ctx, 'books', $commandType, $entityType, $entityId, $payload, ['what' => $what], $revision);
         $scope = Context::of((int) $command['cmp_id'], (int) $command['fy_id'], (int) $command['bo_id']);
         $books = (new BooksClient())->withSession($this->auth->sesKey());
         $attempt = IntegrationCommand::attempt(
@@ -79,8 +81,12 @@ final class DebitNotePoster
             ];
         }
 
-        $message = (string) ($attempt['message'] ?? 'Smart Books did not accept the debit note.');
         $refused = in_array($attempt['outcome'], ['blocked', 'already_blocked', 'withdrawn'], true);
+        $message = (string) ($attempt['message'] ?? 'Smart Books did not accept the debit note.');
+        if ($refused) {
+            $sent = is_array($attempt['command']['request_payload'] ?? null) ? $attempt['command']['request_payload'] : $payload;
+            $message = PlaceOfSupply::explainRefusal($message, $sent, 'Send it again');
+        }
         if ($onFailure !== null && $attempt['outcome'] !== 'in_progress') {
             $onFailure($refused ? 'BLOCKED' : ($attempt['outcome'] === 'uncertain' ? 'UNCERTAIN' : 'FAILED'), $message);
         }
