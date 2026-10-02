@@ -211,16 +211,26 @@ binds to it, enforces the AI budgets, and reports usage to Console under product
 
 Every call carries the **signed-in user's own session** — the Bearer this API
 received — and the company, financial year and branch in scope, so Pulse checks
-the person and the company itself and the usage is attributed to them.
-Purchases has no background AI job, so it holds no Pulse service key; a sibling
-product calling `v1/insights/ask` with a service key gets the rules answer.
+the person and the company itself and the usage is attributed to them. Pulse
+knows the caller by **Purchases' own gateway key** (`PULSE_SERVICE_KEY`, minted on
+the Pulse host with `php spark pulse:gateway-key mint purchases`, production and
+sandbox separately), sent as `X-Pulse-Service-Key` on every call beside the
+session. Until it is set only the session goes, which Pulse accepts only until
+2026-11-15; after that, without the key, Pulse answers 401 `product_key_required`
+and AI Insights is rules-only. A key with a line break in it is refused here and
+never sent. Purchases has no background AI job, so a call is never made without
+a signed-in user — a sibling product calling `v1/insights/ask` with a service key
+gets the rules answer. Pulse requires `cmp_id` on every user call that runs AI
+(422 `company_required`); both features send the company in scope, and the
+status probe needs none.
 
 Three rules:
 
-1. **No key here.** The only credential that leaves the server is the user's
-   own session, sent to AI Pulse as it is sent to Books and Inventory — there is
-   no AI key for the browser or a log to leak. A failed call logs its feature,
-   its outcome and Pulse's task id; never the prompt, the data or the answer.
+1. **No model key here.** What leaves the server is the user's own session, sent
+   to AI Pulse as it is sent to Books and Inventory, and with it Purchases' own
+   gateway key, which only says which product is calling — there is no model key
+   for the browser or a log to leak. A failed call logs its feature, its outcome
+   and Pulse's task id; never the prompt, the data, the answer or a key.
 2. **The model never writes a query.** `Ai\AskEngine` holds a fixed catalogue of
    questions, each naming the permission it needs and the parameterised query
    behind it. The model only picks which question was meant and writes the

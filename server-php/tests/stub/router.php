@@ -173,6 +173,15 @@ if (str_contains($path, '/seskey')) {
 // docs/AI_GATEWAY.md documents, and checks what Pulse checks before anything
 // else: a product header, and a signed-in user's session.
 //
+// The caller is identified the way Pulse identifies it once its transition ends
+// (§1, §13): the product's own gateway key, X-Pulse-Service-Key, beside the user's
+// session. tests/run.sh starts this stub with STUB_PULSE_SERVICE_KEY set to the key it
+// puts in the API's .env, and then a call without that key is 401 product_key_required
+// and a wrong one 401 invalid_service_key — so a client that stopped sending the key
+// would fail the suite. Without it (the local preview, where nobody minted a key) a
+// session alone is accepted, as during the transition, and status() says so with
+// caller.via = legacy_session instead of product_key.
+//
 // By default it is a Pulse with NO model bound in Console — the state these
 // tests were written against when "no model configured" meant no key in this
 // product's own .env. A bearer carrying `.ai-on` gets a Pulse whose economy tier
@@ -189,6 +198,17 @@ if (str_starts_with($path, '/api/ai/v1/')) {
     if (preg_match('/^[a-z][a-z0-9_]{1,31}$/', $product) !== 1) {
         $pulseError(400, 'product_required', 'Send X-Pulse-Product: <product>.');
     }
+    $presentedKey = trim((string) ($headers['x-pulse-service-key'] ?? ''));
+    $expectedKey = (string) getenv('STUB_PULSE_SERVICE_KEY');
+    if ($expectedKey !== '') {
+        if ($presentedKey === '') {
+            $pulseError(401, 'product_key_required', 'Send the product\'s own gateway key (X-Pulse-Service-Key).');
+        }
+        if (!hash_equals($expectedKey, $presentedKey)) {
+            $pulseError(401, 'invalid_service_key', 'The service key was not accepted.');
+        }
+    }
+    $via = $presentedKey !== '' ? 'product_key' : 'legacy_session';
     if (!str_starts_with($bearer, 'Bearer ') || trim(substr($bearer, 7)) === '') {
         $pulseError(401, 'unauthenticated', 'Send the user\'s session key (Authorization: Bearer …).');
     }
@@ -200,7 +220,7 @@ if (str_starts_with($path, '/api/ai/v1/')) {
             'available' => $bound,
             'reason'    => $bound ? null : 'module_not_bound',
             'tiers'     => ['economy' => $bound, 'strong' => false],
-            'caller'    => ['product' => $product, 'auth' => 'user'],
+            'caller'    => ['product' => $product, 'auth' => 'user', 'via' => $via],
         ]]);
         exit;
     }

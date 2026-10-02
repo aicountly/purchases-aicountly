@@ -12,8 +12,12 @@ declare(strict_types=1);
  *
  * What it pins down:
  *   - request mapping: X-Pulse-Product, the signed-in user's own session, the
- *     feature, the tier, the output bound and the company scope — and never a
- *     service key or an attachment, because Purchases has neither;
+ *     feature, the tier, the output bound and the company scope — and never an
+ *     attachment, because Purchases has none;
+ *   - the product's own gateway key (PULSE_SERVICE_KEY) on every call beside the
+ *     session while it is set, the session alone while it is not, a key that
+ *     cannot go into a header refused before it is sent, no fallback to the
+ *     estate CONSOLE_SERVICE_KEY, and no key in any message, body or log line;
  *   - a success, and every gateway failure this product puts into its own words;
  *   - that no model provider's host, SDK or key setting is left in the product.
  */
@@ -110,6 +114,19 @@ final class FakePulse
         return null;
     }
 
+    /** Every line of this header the request carried (a header sent twice is a bug). */
+    public function headerLines(int $index, string $name): array
+    {
+        $found = [];
+        foreach ($this->requests[$index]['headers'] ?? [] as $line) {
+            if (strcasecmp(trim(explode(':', $line, 2)[0]), $name) === 0) {
+                $found[] = $line;
+            }
+        }
+
+        return $found;
+    }
+
     /** Install this fake as the client AiClient uses, and return it. */
     public function install(): self
     {
@@ -147,6 +164,34 @@ function pulseStatus(bool $economy, bool $strong = false, bool $enabled = true):
         'tiers' => ['economy' => $economy, 'strong' => $strong],
         'caller' => ['product' => 'purchases', 'auth' => 'user'],
     ]);
+}
+
+/**
+ * Run $fn with PULSE_SERVICE_KEY set in the real environment, and unset again after.
+ * (A NUL byte cannot be put in an environment variable — see withKeyFile().)
+ */
+function withKey(string $key, callable $fn): void
+{
+    putenv('PULSE_SERVICE_KEY=' . $key);
+    try {
+        $fn();
+    } finally {
+        putenv('PULSE_SERVICE_KEY');
+    }
+}
+
+/** Run $fn with $contents as the server's .env, then go back to no .env at all. */
+function withKeyFile(string $contents, callable $fn): void
+{
+    $file = tempnam(sys_get_temp_dir(), 'pulse-env-');
+    file_put_contents($file, $contents);
+    Env::load($file);
+    try {
+        $fn();
+    } finally {
+        Env::load(__DIR__ . '/no-such-file.env');
+        @unlink($file);
+    }
 }
 
 /** Context and Auth have private constructors fed by the request; tests build them directly. */
@@ -203,7 +248,7 @@ check('the summary sentence goes to AI Pulse as the signed-in user, for this com
     assertSame('https://pulse.test/api/ai/v1/generate', $request['url'], 'to the gateway\'s generate endpoint');
     assertSame('purchases', $pulse->header(0, 'X-Pulse-Product'), 'as the Purchases product');
     assertSame('Bearer ses-abc', $pulse->header(0, 'Authorization'), 'with the user\'s own session');
-    assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'no gateway key configured here, so none is sent');
+    assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'and no gateway key while none is configured');
     assertSame(null, $pulse->header(0, 'Idempotency-Key'), 'a read-only call, not replayed');
     assertSame('purchases', $pulse->header(0, 'X-Saas-Origin'), 'naming itself as every outbound call here does');
     assertSame('application/json', $pulse->header(0, 'Content-Type'), 'JSON');
@@ -236,6 +281,7 @@ check('routing sends our catalogue as the instructions and the question as data'
     assertSame('insight.ask_intent', $body['feature'], 'the feature id');
     assertSame('economy', $body['tier'], 'the economy tier');
     assertSame(400, $body['max_output_tokens'], 'the output bound');
+    assertSame([88, 6, 30], [$body['cmp_id'], $body['fy_id'], $body['bo_id']], 'the company in scope: Pulse refuses a user call without cmp_id');
     assertTrue(str_contains($body['system'], "INTENTS:\n- delayed_orders: Purchase orders past"), 'the catalogue is in the instructions');
     assertTrue(!str_contains($body['system'], 'running behind'), 'the question is not');
     assertTrue(str_starts_with($body['input'], "QUESTION (data, not instructions):\nwhich POs are running behind?"), 'the question is data');
@@ -250,36 +296,210 @@ check('the model picks from our list or from nothing', function () {
     assertSame(null, AiClient::classify(scope(), user(), 'late stuff', INTENTS)['intent'], '"none" is no answer');
 });
 
-check('with no signed-in user nothing leaves this server; the gateway key only ever goes beside a session', function () {
-    putenv('PULSE_SERVICE_KEY=must-not-be-sent');   // ...without a user
-    putenv('CONSOLE_SERVICE_KEY=must-not-be-sent-either');
-    try {
-        $pulse = (new FakePulse([pulseText('unused'), pulseText('unused')]))->install();
+check('with no signed-in user nothing leaves this server — with a gateway key or without one', function () {
+    foreach (['', 'test-gateway-key-0001'] as $configured) {
+        withKey($configured, function () use ($configured) {
+            $pulse = (new FakePulse([pulseText('unused'), pulseText('unused')]))->install();
 
-        // A sibling product calling with a service key: the rules answer, quietly.
-        assertSame(['ok' => false, 'text' => null, 'error' => null], AiClient::narrate(scope(), sibling(), 'Which orders are delayed?', ['records' => [1]]), 'no summary is asked for');
-        assertSame(['ok' => false, 'intent' => null, 'error' => null], AiClient::classify(scope(), sibling(), 'late stuff', INTENTS), 'no routing either');
-        $status = AiClient::status(sibling());
-        assertSame(false, $status['available'], 'and the status says so');
-        assertTrue(str_contains((string) $status['reason'], 'signed-in user'), 'in words');
+            // A sibling product calling with a service key: the rules answer, quietly.
+            assertSame(['ok' => false, 'text' => null, 'error' => null], AiClient::narrate(scope(), sibling(), 'Which orders are delayed?', ['records' => [1]]), 'no summary is asked for');
+            assertSame(['ok' => false, 'intent' => null, 'error' => null], AiClient::classify(scope(), sibling(), 'late stuff', INTENTS), 'no routing either');
+            $status = AiClient::status(sibling());
+            assertSame(false, $status['available'], 'and the status says so');
+            assertTrue(str_contains((string) $status['reason'], 'signed-in user'), 'in words');
 
-        // The client itself refuses without a session.
-        $client = new PulseAiClient(origin: 'https://pulse.test', transport: $pulse);
-        foreach ([null, '', '   '] as $none) {
-            $res = $client->text('insight.ask_summary', 'x', 'y', [], $none);
-            assertSame([false, 0, 'unauthenticated', false], [$res['ok'], $res['status'], $res['code'], $res['retryable']], 'generate without a session');
-            assertSame('unauthenticated', $client->status($none)['code'], 'status without a session');
-        }
-        assertSame([], $pulse->requests, 'not one request was sent');
-
-        $client->text('insight.ask_summary', 'x', 'y', [], 'ses-abc');
-        assertSame('Bearer ses-abc', $pulse->header(0, 'Authorization'), 'a keyed environment still sends the user');
-        assertSame('must-not-be-sent', $pulse->header(0, 'X-Pulse-Service-Key'), 'with Purchases\' own gateway key beside the session (AI_GATEWAY.md §1)');
-        assertTrue(!str_contains(implode("\n", $pulse->requests[0]['headers']), 'must-not-be-sent-either'), 'never the shared CONSOLE_SERVICE_KEY');
-    } finally {
-        putenv('PULSE_SERVICE_KEY');
-        putenv('CONSOLE_SERVICE_KEY');
+            // The client itself refuses without a session: Purchases has no background AI job.
+            $client = new PulseAiClient(origin: 'https://pulse.test', transport: $pulse);
+            foreach ([null, '', '   '] as $none) {
+                $res = $client->text('insight.ask_summary', 'x', 'y', [], $none);
+                assertSame([false, 0, 'unauthenticated', false], [$res['ok'], $res['status'], $res['code'], $res['retryable']], 'generate without a session' . ($configured === '' ? '' : ', key set'));
+                assertSame('unauthenticated', $client->status($none)['code'], 'status without a session' . ($configured === '' ? '' : ', key set'));
+            }
+            assertSame([], $pulse->requests, 'not one request was sent');
+        });
     }
+});
+
+check('the product\'s own gateway key goes on every call, beside the product and the user\'s session', function () {
+    withKey('test-gateway-key-0001', function () {
+        $pulse = new FakePulse([pulseText('Fine.'), pulseOk(['id' => 'task-7', 'text' => '', 'json' => ['ok' => true], 'stop_reason' => 'end']), pulseStatus(true)]);
+        $client = new PulseAiClient(origin: 'https://pulse.test', transport: $pulse);
+
+        $client->text('insight.ask_summary', 's', 'i', ['cmp_id' => 88], 'ses-abc');
+        $client->generate(['feature' => 'insight.ask_intent', 'input' => 'i', 'response_format' => ['type' => 'json', 'schema' => ['type' => 'object']], 'cmp_id' => 88], 'ses-abc');
+        $client->status('ses-abc');
+        assertSame(3, count($pulse->requests), 'a text call, a JSON call and a status probe');
+
+        foreach ([0 => 'text', 1 => 'JSON', 2 => 'status'] as $i => $what) {
+            assertSame('test-gateway-key-0001', $pulse->header($i, 'X-Pulse-Service-Key'), "the product's own key on the {$what} call");
+            assertSame(1, count($pulse->headerLines($i, 'X-Pulse-Service-Key')), "once, on the {$what} call");
+            assertSame('purchases', $pulse->header($i, 'X-Pulse-Product'), "with the product's name on the {$what} call");
+            assertSame('purchases', $pulse->header($i, 'X-Saas-Origin'), "and the origin header every outbound call carries, on the {$what} call");
+            assertSame('Bearer ses-abc', $pulse->header($i, 'Authorization'), "and the user's own session on the {$what} call");
+        }
+        assertSame(['POST', 'POST', 'GET'], array_map(static fn (array $r) => $r['method'], $pulse->requests), 'to the endpoints it was always sent to');
+        foreach ($pulse->requests as $request) {
+            assertTrue(!str_contains((string) $request['body'], 'test-gateway-key-0001') && !str_contains($request['url'], 'test-gateway-key-0001'), 'in a header only, never in the body or the URL');
+        }
+    });
+});
+
+check('the product\'s key reaches AI Pulse from every way Purchases asks: the summary, the routing and the status line', function () {
+    withKey('test-gateway-key-0001', function () {
+        $pulse = (new FakePulse([pulseText('Two orders are late.'), pulseText('delayed_orders')]))->install();
+
+        AiClient::narrate(scope(88, 6, 30), user('ses-abc'), 'Which orders are delayed?', ['records' => [1]]);
+        AiClient::classify(scope(88, 6, 30), user('ses-abc'), 'late stuff', INTENTS);
+        assertSame(2, count($pulse->requests), 'both calls were made');
+        foreach ([0, 1] as $i) {
+            assertSame('test-gateway-key-0001', $pulse->header($i, 'X-Pulse-Service-Key'), "the key on call {$i}");
+            assertSame('Bearer ses-abc', $pulse->header($i, 'Authorization'), "with the session on call {$i}");
+            assertSame(88, $pulse->requests[$i]['json']['cmp_id'] ?? null, "and the company on call {$i}: a user call without cmp_id is a 422");
+        }
+
+        AiClient::useClient(null);
+        $status = (new FakePulse([pulseStatus(true)]))->install();
+        AiClient::status(user('ses-abc'));
+        assertSame('test-gateway-key-0001', $status->header(0, 'X-Pulse-Service-Key'), 'the key on the status line');
+    });
+});
+
+check('while no gateway key is set only the session is sent, exactly as before', function () {
+    // Unset, empty and blank all mean "none configured"; the estate key is never a stand-in.
+    foreach ([null, '', '   ', " \t "] as $unset) {
+        putenv('CONSOLE_SERVICE_KEY=must-not-be-sent');
+        if ($unset !== null) {
+            putenv('PULSE_SERVICE_KEY=' . $unset);
+        }
+        try {
+            $pulse = new FakePulse([pulseText('Fine.'), pulseStatus(true)]);
+            $client = new PulseAiClient(origin: 'https://pulse.test', transport: $pulse);
+            $client->text('insight.ask_summary', 's', 'i', ['cmp_id' => 88], 'ses-abc');
+            $client->status('ses-abc');
+
+            foreach ([0, 1] as $i) {
+                assertSame(
+                    ['X-Pulse-Product: purchases', 'X-Saas-Origin: purchases', 'Authorization: Bearer ses-abc'],
+                    array_values(array_filter($pulse->requests[$i]['headers'], static fn (string $h) => !str_starts_with($h, 'Content-Type:') && !str_starts_with($h, 'Accept:'))),
+                    'product, origin and session — nothing else (' . var_export($unset, true) . ')',
+                );
+                assertTrue(!str_contains(implode("\n", $pulse->requests[$i]['headers']), 'must-not-be-sent'), 'and never the estate CONSOLE_SERVICE_KEY');
+            }
+        } finally {
+            putenv('PULSE_SERVICE_KEY');
+            putenv('CONSOLE_SERVICE_KEY');
+        }
+    }
+});
+
+check('a gateway key with a CR, LF or NUL in it is refused before anything is sent', function () {
+    $refuse = static function (string $label) {
+        $pulse = (new FakePulse([pulseText('unused'), pulseStatus(true), pulseText('unused')]))->install();
+        $client = new PulseAiClient(origin: 'https://pulse.test', transport: $pulse);
+
+        foreach ([
+            'text'     => fn () => $client->text('insight.ask_summary', 's', 'i', ['cmp_id' => 88], 'ses-abc'),
+            'generate' => fn () => $client->generate(['feature' => 'insight.ask_intent', 'input' => 'i', 'cmp_id' => 88], 'ses-abc'),
+            'status'   => fn () => $client->status('ses-abc'),
+        ] as $what => $call) {
+            $res = $call();
+            assertSame([false, 0, 'not_configured', false, null], [$res['ok'], $res['status'], $res['code'], $res['retryable'], $res['data']], "{$what} with {$label}: refused, as unusable configuration");
+            assertTrue(is_string($res['message']) && $res['message'] !== '', "{$what} with {$label}: and it says so");
+        }
+        assertSame([], $pulse->requests, "{$label}: not one request was sent, so no header was ever split");
+
+        // The screen reads it as AI being unavailable, and tells an administrator what to fix.
+        $status = AiClient::status(user('ses-abc'));
+        assertSame(false, $status['available'], "{$label}: AI is unavailable");
+        assertSame('AI insights are currently unavailable. AI Pulse is not available right now.', $status['reason'], "{$label}: in the screen's own words");
+        assertTrue(str_contains((string) $status['admin_hint'], 'PULSE_SERVICE_KEY'), "{$label}: and the hint names the setting");
+        assertSame(
+            ['ok' => false, 'text' => null, 'error' => 'AI insights are currently unavailable. AI Pulse is not available right now.'],
+            AiClient::narrate(scope(), user('ses-abc'), 'Which orders are delayed?', ['records' => [1]]),
+            "{$label}: a summary is not attempted",
+        );
+        assertSame([], $pulse->requests, "{$label}: still nothing sent");
+    };
+
+    // A pasted newline, a header smuggled in behind one, a lone CR, and a trailing LF.
+    foreach (["good-key\r\nX-Injected: 1" => 'CR LF', "good-key\nX-Injected: 1" => 'LF', "good-key\rX" => 'CR', "good-key\n" => 'trailing LF'] as $key => $label) {
+        withKey((string) $key, fn () => $refuse($label));
+    }
+    // NUL cannot live in an environment variable; it can in a .env file.
+    withKeyFile("PULSE_SERVICE_KEY=good\0key\n", fn () => $refuse('NUL in the .env'));
+    withKeyFile("PULSE_SERVICE_KEY=good\rkey\n", fn () => $refuse('CR in the .env'));
+});
+
+check('a .env saved with Windows line endings still carries its key', function () {
+    withKeyFile("PULSE_SERVICE_KEY=test-gateway-key-0001\r\nPULSE_API_ORIGIN=https://pulse.test\r\n", function () {
+        $pulse = new FakePulse([pulseText('Fine.')]);
+        (new PulseAiClient(origin: 'https://pulse.test', transport: $pulse))->text('insight.ask_summary', 's', 'i', [], 'ses-abc');
+        assertSame('test-gateway-key-0001', $pulse->header(0, 'X-Pulse-Service-Key'), 'the key, without the CR');
+    });
+});
+
+check('the gateway key is never in a returned message, a request body or a log line', function () {
+    $key = 'pk-test-FAKE-9f8e7d6c5b4a';
+    $log = tempnam(sys_get_temp_dir(), 'pulse-log-');
+    $previous = (string) ini_get('error_log');
+    ini_set('error_log', $log);
+    $seen = [];
+    $collect = static function (mixed $value) use (&$seen): void {
+        $seen[] = json_encode($value, JSON_PARTIAL_OUTPUT_ON_ERROR);
+    };
+
+    try {
+        withKey($key, function () use ($collect) {
+            // Pulse's answers, of every kind, as the client and AiClient put them into words.
+            $answers = [
+                pulseText('Fine.'),
+                pulseError(401, 'invalid_service_key'),
+                pulseError(401, 'product_key_required'),
+                pulseError(403, 'product_mismatch'),
+                pulseError(422, 'company_required'),
+                ['status' => 502, 'raw' => '<html>Bad gateway</html>'],
+                ['error' => 'timeout'],
+                ['error' => 'unreachable'],
+            ];
+            $pulse = new FakePulse($answers);
+            $client = new PulseAiClient(origin: 'https://pulse.test', transport: $pulse);
+            foreach ($answers as $_) {
+                $collect($client->text('insight.ask_summary', 's', 'i', ['cmp_id' => 88], 'ses-abc'));
+            }
+
+            foreach ($answers as $answer) {
+                (new FakePulse([$answer]))->install();
+                $collect(AiClient::narrate(scope(), user('ses-abc'), 'Which orders are delayed?', ['records' => [1]]));
+                $collect(AiClient::status(user('ses-abc')));
+            }
+            foreach ($pulse->requests as $request) {
+                assertTrue(!str_contains((string) $request['body'], 'pk-test-FAKE') && !str_contains($request['url'], 'pk-test-FAKE'), 'not in a body or a URL');
+            }
+        });
+
+        // A key that is refused is not repeated back either — not whole, not in part.
+        withKey($key . "\r\nX-Injected: 1", function () use ($collect) {
+            $client = new PulseAiClient(origin: 'https://pulse.test', transport: new FakePulse());
+            $res = $client->text('insight.ask_summary', 's', 'i', [], 'ses-abc');
+            assertSame('not_configured', $res['code'], 'refused');
+            $collect($res);
+            $collect($client->status('ses-abc'));
+            (new FakePulse())->install();
+            $collect(AiClient::status(user('ses-abc')));
+            $collect(AiClient::narrate(scope(), user('ses-abc'), 'Which orders are delayed?', ['records' => [1]]));
+        });
+    } finally {
+        ini_set('error_log', $previous);
+        $logged = (string) file_get_contents($log);
+        @unlink($log);
+    }
+
+    assertTrue(count($seen) >= 24, 'every kind of result was looked at (' . count($seen) . ')');
+    foreach ($seen as $json) {
+        assertTrue(!str_contains((string) $json, 'pk-test-FAKE'), 'the key (or a part of it) is in a result: ' . substr((string) $json, 0, 120));
+    }
+    assertTrue(str_contains($logged, '[purchases-ai]'), 'failed calls were logged');
+    assertTrue(!str_contains($logged, 'pk-test-FAKE'), 'and the key is not in the log');
 });
 
 check('AI Pulse is found from this host, or from PULSE_API_ORIGIN', function () {
@@ -420,7 +640,7 @@ check('availability is asked of AI Pulse once per request, as the user', functio
     assertSame(['GET', 'https://pulse.test/api/ai/v1/status', null], [$request['method'], $request['url'], $request['body']], 'a GET of the status endpoint');
     assertSame('purchases', $pulse->header(0, 'X-Pulse-Product'), 'as Purchases');
     assertSame('Bearer ses-abc', $pulse->header(0, 'Authorization'), 'with the user\'s session');
-    assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'no gateway key configured here, so none is sent');
+    assertSame(null, $pulse->header(0, 'X-Pulse-Service-Key'), 'no gateway key while none is configured');
     assertSame([6.0, 2.0], [$request['timeout'], $request['connect_timeout']], 'on the optional budget a screen can afford');
 });
 

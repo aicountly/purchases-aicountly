@@ -28,6 +28,7 @@ use Aicountly\Api\Domain\SourcingService;
 use Aicountly\Api\Domain\ThreeWayMatchService;
 use Aicountly\Api\Ai\AiClient;
 use Aicountly\Api\Ai\AskEngine;
+use Aicountly\Api\Ai\PulseAiClient;
 use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\DashboardsController;
 use Aicountly\Api\Dashboards\BillsDashboard;
@@ -1936,6 +1937,8 @@ check('with no model available through AI Pulse the screen still works and says 
     assertSame(['GET', '/api/ai/v1/status'], [$asked[0]['method'], $asked[0]['path']], 'of the status endpoint');
     assertSame('purchases', $asked[0]['headers']['x-pulse-product'] ?? null, 'as Purchases');
     assertSame('Bearer ' . $auth->sesKey(), $asked[0]['headers']['authorization'] ?? null, 'with the user\'s own session');
+    assertTrue(Env::get('PULSE_SERVICE_KEY') !== '', 'tests/run.sh gives the API Purchases\' own gateway key');
+    assertSame(Env::get('PULSE_SERVICE_KEY'), $asked[0]['headers']['x-pulse-service-key'] ?? null, 'and with the product\'s own gateway key, which the stub Pulse insists on');
 });
 
 check('an opportunity carries its baseline and its assumption', function () use ($ctx, $auth) {
@@ -2288,7 +2291,7 @@ check('with a model bound in AI Pulse, the summary is written there — as this 
     assertSame(['POST', '/api/ai/v1/generate'], [$call['method'], $call['path']], 'to the generate endpoint');
     assertSame('purchases', $call['headers']['x-pulse-product'] ?? null, 'as Purchases');
     assertSame('Bearer stub-ses-key.role-1.ai-on', $call['headers']['authorization'] ?? null, 'with this user\'s own session');
-    assertTrue(!isset($call['headers']['x-pulse-service-key']), 'never with a service key');
+    assertSame(Env::get('PULSE_SERVICE_KEY'), $call['headers']['x-pulse-service-key'] ?? null, 'with Purchases\' own gateway key beside it, as the stub Pulse requires');
     assertSame('insight.ask_summary', $call['body']['feature'] ?? null, 'the feature');
     assertSame('economy', $call['body']['tier'] ?? null, 'the tier');
     assertSame([88, 6, 0], [$call['body']['cmp_id'] ?? null, $call['body']['fy_id'] ?? null, $call['body']['bo_id'] ?? null], 'the scope');
@@ -2321,6 +2324,30 @@ check('a question the keywords miss is routed by AI Pulse, to an approved questi
     assertSame('insight.ask_intent', $calls[0]['body']['feature'] ?? null, 'the routing feature');
     assertTrue(str_contains((string) ($calls[0]['body']['input'] ?? ''), 'which POs are running behind?'), 'the question is data');
     assertTrue(!str_contains((string) ($calls[0]['body']['system'] ?? ''), 'running behind'), 'not instructions');
+});
+
+check('over real HTTP, AI Pulse identifies Purchases by its own gateway key; a key it does not accept is a refusal, not an answer', function () use ($ctx) {
+    resetDatabase();
+    AiClient::useClient(null);
+    $configured = Env::get('PULSE_SERVICE_KEY');
+    assertTrue($configured !== '', 'tests/run.sh gives the API Purchases\' own gateway key');
+
+    $status = (new PulseAiClient())->status('stub-ses-key.role-1.ai-on');
+    assertSame(true, $status['ok'], 'the stub Pulse answered the status probe');
+    assertSame(['purchases', 'user', 'product_key'], [$status['data']['caller']['product'] ?? null, $status['data']['caller']['auth'] ?? null, $status['data']['caller']['via'] ?? null], 'it knew the caller by the key, not by a bare session');
+
+    // A different key in the real environment wins over the .env, as a host-level setting does.
+    putenv('PULSE_SERVICE_KEY=not-the-key-minted-for-purchases');
+    try {
+        $before = count(stubRequests());
+        $refused = (new PulseAiClient())->text('insight.ask_summary', 's', 'i', ['cmp_id' => 88], 'stub-ses-key.role-1.ai-on');
+        assertSame([false, 401, 'invalid_service_key'], [$refused['ok'], $refused['status'], $refused['code']], 'Pulse refuses a key it did not mint');
+        assertTrue(!str_contains((string) json_encode($refused), 'not-the-key-minted-for-purchases'), 'and the answer does not repeat it');
+        assertSame(1, count(pulseCalls($before)), 'one call, not retried');
+    } finally {
+        putenv('PULSE_SERVICE_KEY');
+    }
+    assertSame($configured, Env::get('PULSE_SERVICE_KEY'), 'back to the .env\'s key');
 });
 
 check('a sibling product calling with a service key gets the rules answer, and nothing reaches AI Pulse', function () use ($ctx, $auth) {
