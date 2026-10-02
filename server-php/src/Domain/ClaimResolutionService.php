@@ -80,7 +80,12 @@ final class ClaimResolutionService
             Http::validationFailed('Say what the supplier agreed to instead of money.', ['field' => 'note']);
         }
 
-        return Db::transaction(function () use ($claimId, $kind, $amount, $adjustmentAcc, $lines, $note) {
+        // The GST the debit note reverses: the category it is booked under (a rate difference on
+        // a taxed purchase reverses its GST too). Without one it is booked untaxed, as before.
+        $taxCatId = $kind === 'financial_adjustment' ? self::id($input['tax_cat_id'] ?? null) : null;
+        $hsnSac = $kind === 'financial_adjustment' ? self::text($input['hsn_sac'] ?? null) : null;
+
+        return Db::transaction(function () use ($claimId, $kind, $amount, $adjustmentAcc, $lines, $note, $taxCatId, $hsnSac) {
             $claim = $this->lockClaim($claimId);
             if (!in_array($claim['status'], ['APPROVED', 'PARTIALLY_SETTLED'], true)) {
                 Http::conflict('Approve the claim, for the amount agreed, before resolving it.');
@@ -108,6 +113,8 @@ final class ClaimResolutionService
                 'status'            => 'PROPOSED',
                 'proposed_effect'   => $this->effectOf($claim, $kind, $amount, $adjustmentAcc, $lines),
                 'adjustment_acc_id' => $adjustmentAcc,
+                'tax_cat_id'        => $taxCatId,
+                'hsn_sac'           => $hsnSac,
                 'lines'             => $lines === [] ? null : $lines,
                 'note'              => $note,
                 'proposed_by'       => $this->auth->uuid,
@@ -156,23 +163,36 @@ final class ClaimResolutionService
                 break;
 
             case 'financial_adjustment':
+                // Where the supplier supplies from, read from their Books ledger — only for a
+                // debit note not yet sent; one already sent replays its stored body.
+                $supply = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'claim_resolution', $resolutionId) === null
+                    ? PlaceOfSupply::forSupplier((new BooksClient())->withSession($this->auth->sesKey()), $this->ctx, (int) $claim['supplier_account_id'])
+                    : null;
                 $payload = [
                     'vch_date'     => gmdate('Y-m-d'),
-                    'party'        => ['acc_id' => (int) $claim['supplier_account_id']],
+                    'party'        => array_filter([
+                        'acc_id'         => (int) $claim['supplier_account_id'],
+                        'pos_state_code' => $supply['pos_state_code'] ?? null,
+                    ], static fn ($v) => $v !== null),
                     'bill'         => ['bill_ref' => $claim['claim_no'] . '/' . $resolutionId, 'bill_date' => gmdate('Y-m-d'), 'dr_cr' => 1],
                     'narration'    => 'Debit note settling supplier claim ' . $claim['claim_no'] . ' (' . str_replace('_', ' ', (string) $claim['claim_kind']) . ')',
                     'reference_no' => (string) $claim['claim_no'],
-                    'service_lines' => [[
+                    'service_lines' => [array_filter([
                         'description'     => 'Claim ' . $claim['claim_no'],
                         'purchase_acc_id' => (int) $resolution['adjustment_acc_id'],
                         'qty'             => 1,
                         'rate'            => (float) $resolution['amount'],
                         'amount'          => (float) $resolution['amount'],
-                    ]],
+                        'tax_cat_id'      => $resolution['tax_cat_id'] === null ? null : (int) $resolution['tax_cat_id'],
+                        'hsn_sac'         => $resolution['hsn_sac'] ?? null,
+                    ], static fn ($v) => $v !== null)],
                     'source_app'           => 'purchases',
                     'source_document_type' => 'purchases.claim_resolution',
                     'source_document_id'   => $resolutionId,
                 ];
+                if (($supply['supply_nature'] ?? null) !== null) {
+                    $payload['supply_nature'] = $supply['supply_nature'];
+                }
                 $voucher = (new DebitNotePoster($this->ctx, $this->auth))->post(
                     self::COMMAND_DEBIT_NOTE, 'claim_resolution', $resolutionId, $payload, 'claim ' . $claim['claim_no'], 0,
                     fn (string $status, string $message) => $this->mark($resolutionId, $status, $message),
@@ -231,6 +251,9 @@ final class ClaimResolutionService
             }
             if ($receipt['applied_at'] === null) {
                 Http::conflict('That goods receipt has not been recorded in Inventory yet; link it once it has.');
+            }
+            if (in_array($receipt['status'], ['REVERSED', 'RETURNING'], true)) {
+                Http::conflict('That goods receipt was reversed, or is being returned; link the receipt that brought the replacement goods in.');
             }
             $used = Db::scalar("SELECT resolution_id FROM purchase_claim_resolutions WHERE cmp_id = :cmp AND kind = 'replacement' AND reference->>'receipt_request_id' = :rid AND resolution_id <> :me", ['cmp' => $this->ctx->cmpId, 'rid' => (string) $receiptId, 'me' => $resolutionId]);
             if ($used !== null) {

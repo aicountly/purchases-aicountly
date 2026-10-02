@@ -1,36 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { Download } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
-import type { PoCommunication, PurchaseOrder } from '../../services/types'
-import { useApi } from '../../hooks/useApi'
+import type { PoCommunication, PurchaseOrder, ReceiptAppliedLine, ReceiptRequest } from '../../services/types'
+import { useWarehouses } from '../../hooks/useWarehouses'
 import { Button, Card, date, Field, Input, Notice, qty, Select, Textarea } from '../../ui'
 
 type Run = (path: string, body?: Record<string, unknown>) => Promise<boolean>
-
-interface Warehouse {
-  id: number
-  name: string
-}
-
-/** Inventory's warehouses, read live through this product's relay. */
-function useWarehouses(enabled: boolean): Warehouse[] {
-  const { data } = useApi(
-    (signal) => api.get<{ data?: Array<Record<string, unknown>> }>('v1/catalog/warehouses', undefined, signal),
-    [],
-    enabled,
-  )
-
-  return useMemo(
-    () =>
-      (data?.data ?? [])
-        .map((w) => ({
-          id: Number(w.warehouse_id ?? w.id ?? 0),
-          name: String(w.warehouse_name ?? w.name ?? `Warehouse ${w.warehouse_id ?? w.id}`),
-        }))
-        .filter((w) => w.id > 0),
-    [data],
-  )
-}
 
 interface ReceiptDraftLine {
   line_id: number
@@ -169,7 +144,7 @@ export function ReceiveGoodsPanel({
               <Field label="Why was it rejected?"><Input value={l.rejection_reason} onChange={(e) => set(l.line_id, { rejection_reason: e.target.value })} /></Field>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(14rem, 1fr))', gap: '0.55rem', marginTop: '0.4rem' }}>
-              <Field label="Serial numbers" hint="One per accepted unit, separated by spaces or commas.">
+              <Field label="Serial numbers" hint="For an item Inventory tracks by serial: one per accepted unit in the item's base unit (a box of 10 needs 10), separated by spaces or commas. Each is registered in Inventory with the receipt; a unit already in stock cannot arrive again.">
                 <Input value={l.serials} onChange={(e) => set(l.line_id, { serials: e.target.value })} />
               </Field>
               <Field label="Inspection note"><Input value={l.inspection_note} onChange={(e) => set(l.line_id, { inspection_note: e.target.value })} /></Field>
@@ -348,6 +323,99 @@ export function ShortClosePanel({ po, run, busy, onCancel }: { po: PurchaseOrder
           <Button onClick={onCancel}>Keep waiting</Button>
           <Button tone="danger" disabled={busy || reason.trim() === '' || remaining.length === 0} onClick={async () => { if (await run('short-close', { reason: reason.trim() })) onCancel() }}>
             Short-close
+          </Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+/** A JSON column as the API hands it back: decoded already, or a string. */
+function jsonList<T>(raw: T[] | string | null | undefined): T[] {
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === 'string' && raw !== '') {
+    try {
+      const decoded = JSON.parse(raw) as unknown
+      return Array.isArray(decoded) ? (decoded as T[]) : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+/**
+ * A GRN no bill has settled, undone through Inventory (C10):
+ *
+ *   reverse  recorded by mistake — the order counts it as never received (its rejections too)
+ *   return   goods accepted and then sent back before the bill — all of them, or some; the
+ *            order counts them as rejected, still owed by the supplier
+ *
+ * Goods a bill has settled go back on a purchase return (debit note) instead; the server refuses
+ * this for them, before Inventory is asked.
+ */
+export function ReceiptReturnPanel({
+  po,
+  receipt,
+  mode,
+  run,
+  busy,
+  onCancel,
+}: {
+  po: PurchaseOrder
+  receipt: ReceiptRequest
+  mode: 'return' | 'reverse'
+  run: (fullPath: string, body?: Record<string, unknown>) => Promise<boolean>
+  busy: boolean
+  onCancel: () => void
+}) {
+  const [reason, setReason] = useState('')
+  const labels = new Map(po.lines.map((l) => [l.line_id, `Line ${l.line_no} · ${l.description ?? `Item #${l.item_id}`}`]))
+  // One row per order line on the GRN: a line delivered into two warehouses is one figure here.
+  const onReceipt = new Map<number, number>()
+  for (const l of jsonList<ReceiptAppliedLine>(receipt.applied_lines ?? null)) {
+    onReceipt.set(l.line_id, (onReceipt.get(l.line_id) ?? 0) + Number(l.qty || 0))
+  }
+  const lines = [...onReceipt.entries()].filter(([, q]) => q > 0)
+  const [back, setBack] = useState<Record<number, string>>(() => Object.fromEntries(lines.map(([id, q]) => [id, String(q)])))
+
+  const asked = lines.map(([id, q]) => ({ line_id: id, held: q, qty: Number(back[id] || 0) }))
+  const invalid = asked.some((l) => l.qty < 0 || l.qty > l.held)
+  const all = asked.every((l) => l.qty === l.held)
+  const nothing = asked.every((l) => l.qty === 0)
+  const grn = receipt.receipt_no ?? `#${receipt.request_id}`
+
+  async function submit() {
+    const path = `v1/receipt-requests/${receipt.request_id}/${mode === 'reverse' ? 'reverse' : 'return'}`
+    const body: Record<string, unknown> = { reason: reason.trim() }
+    if (mode === 'return' && !all) body.lines = asked.filter((l) => l.qty > 0).map((l) => ({ line_id: l.line_id, qty: l.qty }))
+    if (await run(path, body)) onCancel()
+  }
+
+  return (
+    <Card title={mode === 'reverse' ? `Reverse ${grn}` : `Give back goods from ${grn}`}>
+      <div style={{ display: 'grid', gap: '0.7rem' }}>
+        <Notice tone="info">
+          {mode === 'reverse'
+            ? 'For a GRN recorded by mistake. Inventory reverses it — the goods leave the warehouse they were received into — and this order counts them, and anything rejected on it, as never received.'
+            : 'For goods accepted and then sent back before the supplier billed them. Inventory takes them out of the warehouse they were received into; the order counts them as rejected and still owed. Give back part of the GRN and Inventory restates it for what you keep — only that can be billed.'}
+          {' '}Goods a bill has already settled go back on a purchase return instead.
+        </Notice>
+        {mode === 'return' && (
+          <div style={{ display: 'grid', gap: '0.45rem' }}>
+            {lines.map(([id, held]) => (
+              <Field key={id} label={labels.get(id) ?? `Order line ${id}`} hint={`${qty(held)} on this GRN`}>
+                <Input type="number" min={0} max={held} step="any" value={back[id] ?? ''} onChange={(e) => setBack((b) => ({ ...b, [id]: e.target.value }))} />
+              </Field>
+            ))}
+            {invalid && <Notice tone="warning">A line cannot give back more than the GRN holds of it.</Notice>}
+          </div>
+        )}
+        <Field label="Why"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={mode === 'reverse' ? 'Keyed against the wrong order' : 'Rejected at inspection after the GRN'} /></Field>
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <Button onClick={onCancel}>Keep the GRN</Button>
+          <Button tone="danger" disabled={busy || reason.trim() === '' || (mode === 'return' && (invalid || nothing))} onClick={() => void submit()}>
+            {mode === 'reverse' ? 'Reverse GRN' : all ? 'Give back everything' : 'Give back these goods'}
           </Button>
         </div>
       </div>

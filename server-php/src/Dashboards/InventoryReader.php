@@ -56,6 +56,7 @@ final class InventoryReader
 
         $rows = (array) ($result['body']['data'] ?? []);
         $items = [];
+        $groupIds = [];
         foreach ($rows as $row) {
             if (!is_array($row)) {
                 continue;
@@ -64,16 +65,51 @@ final class InventoryReader
             if ($id <= 0) {
                 continue;
             }
+            // Inventory's own names first (ItemsController::bulkLookup selects inv_items with the
+            // unit's symbol): item_sku, unit_symbol, item_grp_id. The older spellings stay as
+            // fallbacks for a reader of another shape.
             $items[$id] = [
                 'item_id' => $id,
                 'name'    => self::text($row['item_name'] ?? $row['name'] ?? null),
-                'code'    => self::text($row['item_code'] ?? $row['sku'] ?? $row['code'] ?? null),
-                'uom'     => self::text($row['uom'] ?? $row['unit_name'] ?? $row['base_unit'] ?? null),
-                'group'   => self::text($row['group_name'] ?? $row['item_group'] ?? null),
+                'code'    => self::text($row['item_sku'] ?? $row['item_code'] ?? $row['sku'] ?? $row['code'] ?? null),
+                'uom'     => self::text($row['unit_symbol'] ?? $row['uom'] ?? $row['unit_name'] ?? $row['base_unit'] ?? null),
+                'group'   => self::text($row['group_name'] ?? $row['item_group_name'] ?? $row['item_group'] ?? null),
             ];
+            if ($items[$id]['group'] === null && (int) ($row['item_grp_id'] ?? 0) > 0) {
+                $groupIds[$id] = (int) $row['item_grp_id'];
+            }
+        }
+
+        // The lookup carries the group's id, not its name: one more read, for the whole list,
+        // only when a name is wanted and missing. A failure leaves the groups unnamed.
+        if ($groupIds !== []) {
+            $names = $this->groupNames();
+            foreach ($groupIds as $itemId => $groupId) {
+                $items[$itemId]['group'] = $names[$groupId] ?? null;
+            }
         }
 
         return ['ok' => true, 'error' => null, 'items' => $items];
+    }
+
+    /** @return array<int, string> Inventory's item group names by id (v1/item-groups: item_grp_id, grp_name) */
+    private function groupNames(): array
+    {
+        $result = $this->client()->itemGroups($this->ctx);
+        if (!($result['ok'] ?? false)) {
+            return [];
+        }
+        $names = [];
+        foreach ((array) ($result['body']['data'] ?? []) as $row) {
+            if (is_array($row) && (int) ($row['item_grp_id'] ?? 0) > 0) {
+                $name = self::text($row['grp_name'] ?? $row['name'] ?? null);
+                if ($name !== null) {
+                    $names[(int) $row['item_grp_id']] = $name;
+                }
+            }
+        }
+
+        return $names;
     }
 
     /**

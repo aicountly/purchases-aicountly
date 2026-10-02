@@ -100,9 +100,9 @@ function reset(): void
     Permissions::forget();
 }
 
-function stubFail(string $path, int $status, bool $after = false, string $code = 'stub_forced'): void
+function stubFail(string $path, int $status, bool $after = false, string $code = 'stub_forced', string $message = ''): void
 {
-    file_put_contents(sys_get_temp_dir() . '/stub-control.json', json_encode(['path' => $path, 'status' => $status, 'after' => $after, 'code' => $code]));
+    file_put_contents(sys_get_temp_dir() . '/stub-control.json', json_encode(['path' => $path, 'status' => $status, 'after' => $after, 'code' => $code] + ($message === '' ? [] : ['message' => $message])));
 }
 
 function stubRecover(): void
@@ -412,7 +412,7 @@ check('a cancelled receipt cannot be sent again, and its command leaves the open
 
     refused(fn () => (new ReceiptService($ctx, $owner))->retry($requestId), 'cancelled', 'retrying a cancelled receipt');
     same('CANCELLED', Db::scalar("SELECT status FROM purchase_integration_commands WHERE entity_type = 'receipt_request'"), 'the command is withdrawn');
-    same(0, count(IntegrationCommand::outstanding($ctx)), 'and is not open work');
+    same(0, count(IntegrationCommand::outstanding($ctx, ['receipt_request', 'bill_request', 'purchase_return', 'claim_resolution'])), 'and is not open work');
     same(0, count(inventoryState()['by_id']), 'nothing reached Inventory');
 });
 
@@ -696,7 +696,7 @@ check('a revised bill\'s refused revision leaves the open work and cannot be sen
 
     same('CANCELLED', Db::scalar("SELECT status FROM purchase_integration_commands WHERE entity_type = 'bill_request' AND revision = 0"), 'revision 0 withdrawn');
     same('superseded', Db::scalar("SELECT resolved_by FROM purchase_integration_commands WHERE entity_type = 'bill_request' AND revision = 0"), 'as superseded');
-    same(0, count(array_filter(IntegrationCommand::outstanding($ctx), static fn ($c) => (int) $c['revision'] === 0)), 'and is not open work');
+    same(0, count(array_filter(IntegrationCommand::outstanding($ctx, ['receipt_request', 'bill_request', 'purchase_return', 'claim_resolution']), static fn ($c) => (int) $c['revision'] === 0)), 'and is not open work');
 });
 
 check('the same supplier invoice booked through Billing cannot be posted again from Purchase', function () use ($ctx, $owner) {
@@ -1345,6 +1345,983 @@ check('what a viewer sees of a shared document is asked with their own session, 
     same(404, $status, 'nor is one that does not exist');
     [$status] = endpoint(static fn () => Controllers\ConnectController::context('invoice', (string) $po['po_id']), person('user-viewer', 0));
     same(404, $status, 'nor a kind Purchases does not have');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU1: every key Books receives fits, and what its length blocked is recovered\n";
+
+/** Run bin/books-key-recovery.php; $session, when given, is the person's portal session. @return array{0:int, 1:string} */
+function keyRecovery(string $args, string $session = ''): array
+{
+    $env = $session === '' ? '' : 'RECOVERY_SES_KEY=' . escapeshellarg($session) . ' PORTAL_AUTH_BASE=' . escapeshellarg(Env::get('BOOKS_API_BASE')) . ' ';
+    exec($env . 'php ' . escapeshellarg(__DIR__ . '/../bin/books-key-recovery.php') . ' ' . $args . ' 2>&1', $out, $code);
+
+    return [$code, implode("\n", $out)];
+}
+
+/** POST straight to the stub's Books, as an older Purchase did — to show what Books makes of a key. */
+function rawBooksPost(string $path, string $key): int
+{
+    $ch = curl_init(Env::get('BOOKS_API_BASE') . $path);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_CUSTOMREQUEST => 'POST', CURLOPT_POSTFIELDS => '{"vch_type_id":3,"payload":{}}',
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer stub-ses-key.role-1', 'Idempotency-Key: ' . $key, 'X-Test-Probe: 1'],
+    ]);
+    curl_exec($ch);
+    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+    curl_close($ch);
+
+    return $status;
+}
+
+/** Books' answer to a key it cannot store, as Purchase received it before keys were sized. */
+function booksRefusesTheKey(): void
+{
+    stubFail('/vouchers/drafts', 400, false, 'idempotency_key_too_long', 'Idempotency-Key must be at most 64 characters.');
+}
+
+/** @return list<string> every Idempotency-Key Purchase sent to Books' voucher routes (not the tests' own probes) */
+function booksKeysSent(): array
+{
+    return array_values(array_map(
+        static fn (array $r) => (string) ($r['headers']['idempotency-key'] ?? ''),
+        array_filter(stubRequests('/vouchers/drafts'), static fn (array $r) => $r['method'] === 'POST' && empty($r['headers']['x-test-probe'])),
+    ));
+}
+
+check('every key Books receives fits its 64 characters: return and claim debit notes, and a large company\'s bill', function () use ($ctx, $owner) {
+    reset();
+    $short = 'purchases:88:purchases.bill.post:bill_request:5:r0:draft';
+    same($short, IdempotencyKey::forWire($short, '', 64), 'a key that fits goes out unchanged, so one Books already holds is still recognised');
+    $long = 'purchases:88:purchases.return.debit_note:purchase_return:1:r0';
+    $draft = IdempotencyKey::forWire($long, ':draft', 64);
+    same(64, strlen($draft), 'a longer one is compressed to exactly the width');
+    same($draft, IdempotencyKey::forWire($long, ':draft', 64), 'the same bytes every time');
+    truthy($draft !== IdempotencyKey::forWire($long, ':post', 64), 'the draft and its post never share a key');
+    truthy(IdempotencyKey::forWire($long . '0', ':draft', 64) !== $draft, 'two keys that share a head stay two keys');
+    truthy(str_starts_with($draft, 'purchases:88:'), 'and a person can still read whose it is');
+    same(400, rawBooksPost('/vouchers/drafts', $long . ':draft'), 'Books (and now the stub) refuses the uncompressed debit-note key');
+
+    $po = billedOrder($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
+    $returns->approveReturn($id, []);
+    $returns->dispatchReturn($id);
+    same('DEBITED', $returns->requestDebitNote($id)['status'], 'a purchase return\'s debit note posts');
+
+    $claimId = approvedClaim($ctx, $owner, 1200);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 1200, 'adjustment_acc_id' => 7310]);
+    same('COMPLETED', $resolutions->approve((int) $r['resolution_id'])['status'], 'a claim\'s debit note posts');
+
+    // A company and a bill with enough digits that the bill's own key passes 64 with its step.
+    $bigCompany = Context::of(4321987, 6, 0);
+    $bigOwner = person('user-owner', 1, 4321987);
+    Db::run("SELECT setval(pg_get_serial_sequence('purchase_bill_requests', 'request_id'), 98765432)");
+    $bigPo = billedOrder($bigCompany, $bigOwner);
+    same('CLOSED', $bigPo['status'], 'the large company\'s bill posts');
+    $bigKey = (string) Db::scalar("SELECT idempotency_key FROM purchase_integration_commands WHERE cmp_id = 4321987 AND command_type = 'purchases.bill.post'");
+    truthy(strlen($bigKey . ':draft') > 64, 'whose stored key is longer than Books keeps: ' . $bigKey);
+
+    $keys = booksKeysSent();
+    same(8, count($keys), 'two bills, two debit notes: a draft and a post each');
+    truthy(max(array_map('strlen', $keys)) <= 64, 'none longer than 64: ' . json_encode($keys));
+    same(count($keys), count(array_unique($keys)), 'and each its own key');
+    same(2, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'both debit notes are in Books');
+});
+
+check('a debit note Books refused for its key length is found, confirmed absent in Books and re-issued once — dry run first, one company, idempotent', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
+    $returns->approveReturn($id, []);
+    $returns->dispatchReturn($id);
+
+    booksRefusesTheKey();
+    refused(fn () => $returns->requestDebitNote($id), 'at most 64', 'Books refuses the key, before writing anything');
+    stubRecover();
+    $command = IntegrationCommand::find(88, Domain\ReturnClaimService::COMMAND_DEBIT_NOTE, 'purchase_return', $id);
+    same('BLOCKED', $command['status'], 'the debit note is blocked');
+    refused(fn () => $returns->requestDebitNote($id), 'at most 64', 'and pressing the button again never sends it on its own');
+    same('DISPATCHED', $returns->findReturn($id)['status'], 'the return waits with the payable overstated');
+
+    // Another company's command in the same state is not this company's business.
+    $other = IntegrationCommand::ensure(Context::of(91, 6, 0), 'books', Domain\ReturnClaimService::COMMAND_DEBIT_NOTE, 'purchase_return', 4242, ['bill' => ['bill_ref' => 'PR/91/1']]);
+    Db::run("UPDATE purchase_integration_commands SET status = 'BLOCKED', last_status_code = 400, last_error = 'Idempotency-Key must be at most 64 characters.' WHERE command_id = :id", ['id' => (int) $other['command_id']]);
+
+    $sent = count(stubRequests());
+    [$code, $out] = keyRecovery('--cmp=88 --json');
+    same(3, $code, 'a dry run that finds something says so in its exit status: ' . $out);
+    $report = json_decode($out, true);
+    same('dry_run', $report['mode'], 'the default is a dry run');
+    same(1, count($report['commands']), 'only this company\'s command');
+    $found = $report['commands'][0];
+    same($sent, count(stubRequests()), 'nothing was sent anywhere');
+    same('BLOCKED', IntegrationCommand::byId((int) $command['command_id'])['status'], 'and nothing changed');
+    same(null, $found['books_check'], 'Books is not asked in a dry run');
+    same($command['idempotency_key'] . ':draft', $found['refused_key'], 'it names the key Books refused');
+    same(400, rawBooksPost('/vouchers/drafts', $found['refused_key']), 'which Books does refuse');
+    truthy(strlen($found['wire_keys']['draft']) <= 64 && strlen($found['wire_keys']['post']) <= 64, 'and the keys it will go out with');
+
+    [$code] = keyRecovery('--cmp=88 --check');
+    same(1, $code, 'asking Books needs a person\'s session');
+    [$code, $out] = keyRecovery('--cmp=88 --check --json', 'stub-ses-key.role-1');
+    $found = json_decode($out, true)['commands'][0];
+    same('no_voucher', $found['books_check']['verdict'], 'Books holds no voucher and no draft for the return: ' . $found['books_check']['detail']);
+    same('BLOCKED', IntegrationCommand::byId((int) $command['command_id'])['status'], 'a check changes nothing');
+    same(0, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'and posts nothing');
+
+    [$code] = keyRecovery('--cmp=88 --apply', 'stub-ses-key.role-1');
+    same(1, $code, 'applying needs a reason');
+    [$code, $out] = keyRecovery('--cmp=88 --apply --json --reason=' . escapeshellarg('Debit notes stuck on the key length.'), 'stub-ses-key.role-1');
+    same(0, $code, 'everything found was re-issued: ' . $out);
+    $found = json_decode($out, true)['commands'][0];
+    same('reissued', $found['result']['outcome'], 'the debit note was re-issued: ' . $found['result']['detail']);
+    same('COMPLETED', IntegrationCommand::byId((int) $command['command_id'])['status'], 'the command completed');
+    same('DEBITED', $returns->findReturn($id)['status'], 'through the same operation the screen runs: the return is debited');
+    same('10.0000', (string) Db::scalar('SELECT debited_qty FROM purchase_order_lines WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'and the order counts it');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'one debit note in Books');
+    truthy(max(array_map('strlen', booksKeysSent())) <= 64, 'sent under keys Books keeps');
+    same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'integration.key_reissued' AND actor_uuid = 'user-owner' AND reason = 'Debit notes stuck on the key length.'"), 'audited against the person, with the reason');
+
+    [$code, $out] = keyRecovery('--cmp=88 --apply --reason=again', 'stub-ses-key.role-1');
+    same(0, $code, 'running it again finds nothing: ' . $out);
+    truthy(str_contains($out, 'No command'), 'and says so');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'still one debit note');
+    same('BLOCKED', IntegrationCommand::byId((int) $other['command_id'])['status'], 'the other company\'s command is untouched');
+});
+
+check('the recovery leaves alone a debit note Books already holds under the same reference, and re-issues it once that is cleared', function () use ($ctx, $owner) {
+    reset();
+    $claimId = approvedClaim($ctx, $owner, 900);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 900, 'adjustment_acc_id' => 7310]);
+    booksRefusesTheKey();
+    refused(fn () => $resolutions->approve((int) $r['resolution_id']), 'at most 64', 'Books refuses the claim\'s debit note');
+    stubRecover();
+    same('BLOCKED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution is blocked');
+
+    // While it was stuck, an accountant keyed the debit note into Books by hand.
+    $reference = Db::scalar('SELECT claim_no FROM purchase_claims WHERE claim_id = :id', ['id' => $claimId]) . '/' . $r['resolution_id'];
+    file_put_contents(sys_get_temp_dir() . '/stub-vouchers.json', json_encode(['5101' => [
+        'vch_txn_id' => 5101, 'vch_type_id' => 3, 'vch_number' => 'DN/77', 'vch_date' => '2026-09-30',
+        'party' => ['acc_id' => 601], 'bill' => ['bill_ref' => strtolower($reference)], 'lines' => [],
+    ]]));
+    [$code, $out] = keyRecovery('--cmp=88 --apply --json --reason=' . escapeshellarg('Recovery run.'), 'stub-ses-key.role-1');
+    same(3, $code, 'something is left for a person');
+    $found = json_decode($out, true)['commands'][0];
+    same('voucher_found', $found['books_check']['verdict'], 'Books holds a debit note under the claim\'s reference');
+    same(5101, $found['books_check']['matches'][0]['vch_txn_id'] ?? null, 'and names it');
+    same('left_alone', $found['result']['outcome'], 'so it is not re-issued');
+    same('BLOCKED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution is as it was');
+    same(1, count(booksVouchers()), 'and Books has no second debit note');
+
+    // The accountant cancels the hand-made one; now the claim's own debit note can go.
+    file_put_contents(sys_get_temp_dir() . '/stub-vouchers.json', json_encode([]));
+    [$code, $out] = keyRecovery('--cmp=88 --apply --json --reason=' . escapeshellarg('Hand-made note cancelled.'), 'stub-ses-key.role-1');
+    same(0, $code, 'all re-issued: ' . $out);
+    same('COMPLETED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution completes');
+    same('SETTLED', (new Domain\ReturnClaimService($ctx, $owner))->findClaim($claimId)['status'], 'and settles the claim');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'one debit note');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU2: what Purchase sends is what each receiver reads\n";
+
+/** The payload of the last purchase-voucher draft Books was sent. @return array<string, mixed> */
+function lastPurchaseDraft(): array
+{
+    $drafts = array_values(array_filter(stubRequests('/vouchers/drafts'), static fn (array $r) => $r['method'] === 'POST' && !str_contains((string) $r['path'], '/post') && (int) ($r['body']['vch_type_id'] ?? 0) === 11));
+
+    return $drafts === [] ? [] : (array) end($drafts)['body'];
+}
+
+check('item names come from Inventory\'s bulk lookup as Inventory reads it: item_ids in, its own row shape out', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $doc = (new PurchaseOrderService($ctx, $owner))->document((int) $po['po_id']);
+    truthy(str_contains($doc['pdf'], 'Stub Item 201'), 'the order\'s document names the item');
+    $asked = stubRequests('/v1/items/bulk-lookup');
+    same([201], end($asked)['body']['item_ids'] ?? null, 'Inventory is asked by item_ids');
+    truthy(!array_key_exists('ids', end($asked)['body']), 'never by ids, which Inventory ignores');
+
+    $items = (new Dashboards\InventoryReader($ctx, $owner->sesKey()))->items([201, 202]);
+    same(['item_id' => 201, 'name' => 'Stub Item 201', 'code' => 'SKU-201', 'uom' => 'Nos', 'group' => 'Stub Group'], $items['items'][201] ?? null, 'code, unit and group read from Inventory\'s own fields (item_sku, unit_symbol, item_grp_id)');
+    same(1, count(stubRequests('/v1/item-groups')), 'the group names in one read for the whole list');
+});
+
+check('Contacts is asked at /api/companies/… on a deployed base, never /api/api/…', function () {
+    $seen = [];
+    Clients\ApiClient::intercept(static function (string $method, string $url) use (&$seen): array {
+        $seen[] = $method . ' ' . $url;
+
+        return ['ok' => true, 'status' => 200, 'body' => ['status' => 1, 'data' => []], 'error' => null];
+    });
+    $uuid = '0b0e8c7e-1111-4a4a-9c9c-000000000001';
+    try {
+        foreach (['https://contacts.gh.aicountly.com', 'https://contacts.aicountly.com'] as $base) {
+            putenv('CONTACTS_API_BASE=' . $base);
+            $client = (new Clients\ContactsClient())->withSession('ses');
+            $client->companyContacts(88, 'anita');
+            $client->companyContact(88, $uuid);
+            $client->byLedgerAccount(88, 601);
+            $client->linkLedgerAccount(88, $uuid, 601, 'purchases:88:supplier-contact:601');
+        }
+    } finally {
+        Clients\ApiClient::intercept(null);
+        putenv('CONTACTS_API_BASE');
+    }
+    same([
+        'GET https://contacts.gh.aicountly.com/api/companies/88/contacts?q=anita&per_page=20',
+        'GET https://contacts.gh.aicountly.com/api/companies/88/contacts/' . $uuid,
+        'GET https://contacts.gh.aicountly.com/api/companies/88/contacts/by-reference?product=books&ref_type=ledger_account&ref=601',
+        'POST https://contacts.gh.aicountly.com/api/companies/88/contacts/' . $uuid . '/references',
+        'GET https://contacts.aicountly.com/api/companies/88/contacts?q=anita&per_page=20',
+        'GET https://contacts.aicountly.com/api/companies/88/contacts/' . $uuid,
+        'GET https://contacts.aicountly.com/api/companies/88/contacts/by-reference?product=books&ref_type=ledger_account&ref=601',
+        'POST https://contacts.aicountly.com/api/companies/88/contacts/' . $uuid . '/references',
+    ], $seen, 'Contacts\' own routes under its one /api prefix, sandbox and production alike');
+});
+
+check('a bill settles each GRN from the warehouse the GRN put the goods in, and receives them there', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner); // its line says warehouse 3
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 60, ['lines' => [['line_id' => $lineId, 'qty' => 60, 'warehouse_id' => 2]]]);
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 40, ['lines' => [['line_id' => $lineId, 'qty' => 40, 'warehouse_id' => 5]]]);
+    $grns = array_values(array_map(static fn (array $d) => (int) $d['document_id'], inventoryState()['by_id']));
+
+    $bills = new BillService($ctx, $owner);
+    $first = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'WH-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
+    $bills->post((int) $first['request_id']);
+    $sent = lastPurchaseDraft()['payload'];
+    same([[2, 50.0, 12500.0]], array_map(static fn ($l) => [(int) $l['mc_id'], (float) $l['qty'], (float) $l['amount']], $sent['inventory_lines']), 'received where the first GRN put them, not the order line\'s warehouse 3');
+    same([[$grns[0], 50.0, 2]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty'], (int) $s['mc_id']], $sent['challan_settlements']), 'and that GRN\'s pending settled in its warehouse');
+
+    $second = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'WH-2', 'supplier_invoice_date' => '2026-09-20', 'lines' => [['po_line_id' => $lineId, 'qty' => 50, 'rate' => 250]]]);
+    $posted = $bills->post((int) $second['request_id']);
+    $sent = lastPurchaseDraft()['payload'];
+    same([[2, 10.0, 2500.0], [5, 40.0, 10000.0]], array_map(static fn ($l) => [(int) $l['mc_id'], (float) $l['qty'], (float) $l['amount']], $sent['inventory_lines']), 'what is left of the first GRN in its warehouse, the second GRN in its own, the amount shared exactly');
+    same([[$grns[0], 10.0, 2], [$grns[1], 40.0, 5]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty'], (int) $s['mc_id']], $sent['challan_settlements']), 'each settlement in its GRN\'s warehouse');
+    same(true, $posted['posting_check']['verified'] ?? null, 'and Books\' voucher still adds up to the bill');
+});
+
+check('a bill is posted, read back and revised in the year and branch it was entered in, not the screen\'s', function () use ($owner) {
+    reset();
+    $branch = Context::of(88, 6, 31);
+    $po = orderOf($branch, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($branch, $owner, (int) $po['po_id'], $lineId, 10);
+    $bill = (new BillService($branch, $owner))->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'BR-31', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 10, 'rate' => 250]]]);
+    same(31, (int) $bill['bo_id'], 'entered under branch 31');
+
+    // Posted from the consolidated view.
+    $posted = (new BillService(Context::of(88, 6, 0), $owner))->post((int) $bill['request_id']);
+    same('POSTED', $posted['status'], 'posted');
+    $sent = lastPurchaseDraft();
+    same([88, 6, 31], [(int) $sent['cmp_id'], (int) $sent['fy_id'], (int) $sent['bo_id']], 'Books is asked for the purchase in branch 31, whose GSTIN decides its tax');
+    same(31, (int) Db::scalar("SELECT bo_id FROM purchase_integration_commands WHERE command_type = 'purchases.bill.post'"), 'and the command keeps that scope for any retry');
+    $reads = array_values(array_filter(stubRequests('/vouchers/'), static fn ($r) => $r['method'] === 'GET'));
+    same('31', end($reads)['query']['bo_id'] ?? null, 'the posted voucher is read back in branch 31 too');
+
+    // A bill of last year, refused by Books and revised from this year's screen, keeps last year's rules.
+    $lastYear = Context::of(88, 5, 0);
+    $old = (new BillService($lastYear, $owner))->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'FY5-1', 'supplier_invoice_date' => '2026-03-20', 'lines' => [['description' => 'Audit fee', 'is_service' => true, 'purchase_acc_id' => 7301, 'qty' => 1, 'rate' => 5000]]]);
+    (new BillService($lastYear, $owner))->resolveException((int) $old['matches'][0]['exceptions'][0]['exception_id'], 'accept', ['note' => 'Reviewed.']);
+    stubFail('/vouchers/drafts', 422, false, 'stub_forced', 'Books refused it.');
+    refused(fn () => (new BillService($lastYear, $owner))->post((int) $old['request_id']), 'Books refused it', 'Books refuses');
+    stubRecover();
+    $thisYearsScreen = new BillService(Context::of(88, 6, 0), $owner);
+    refused(fn () => $thisYearsScreen->revise((int) $old['request_id'], ['posting_date' => '2026-05-02', 'note' => 'move it']), 'outside the financial year', 'a revision cannot carry last year\'s bill into this year');
+    $revised = $thisYearsScreen->revise((int) $old['request_id'], ['posting_date' => '2026-03-25', 'note' => 'booked a few days later']);
+    same(1, (int) $revised['revision'], 'revised within its own year');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU3: a product's key acts only for its companies, and only reads unless granted\n";
+
+/** What Auth::resolve() builds for a product's X-Service-Key: the product, an actor it names, no session. */
+function productKey(string $app = 'insights'): Auth
+{
+    $r = new \ReflectionClass(Auth::class);
+    $auth = $r->newInstanceWithoutConstructor();
+    foreach (['uuid' => 'service:' . $app, 'kind' => 'service', 'sourceApp' => $app, 'sesKey' => '', 'session' => null] as $prop => $value) {
+        $r->getProperty($prop)->setValue($auth, $value);
+    }
+
+    return $auth;
+}
+
+check('a product key opens only the companies it is bound to, and reads but cannot write, approve or administer', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $key = productKey();
+
+    $refusal = refused(fn () => Context::of(88, 6, 0)->assertAllowed($key), 'SERVICE_KEY_COMPANIES', 'a key bound to no company');
+    same(403, $refusal['status'], 'opens none');
+    [$status] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key);
+    same(403, $status, 'not even to read');
+
+    putenv('SERVICE_KEY_COMPANIES=insights:88|94,billing:91');
+    try {
+        Context::of(88, 6, 0)->assertAllowed($key);
+        [$status, $payload] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key);
+        same(200, $status, 'its own company\'s orders are readable');
+        same((int) $po['po_id'], (int) ($payload['data'][0]['po_id'] ?? 0), 'and read');
+        [$status] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key, ['cmp_id' => '91', 'fy_id' => '6', 'bo_id' => '0']);
+        same(403, $status, 'another company\'s are not, though another product may hold that one');
+
+        same(ServiceKeys::DEFAULT_PERMISSIONS, Permissions::granted($ctx, $key), 'unlisted, a key only reads');
+        $write = refused(fn () => (new PurchaseOrderService($ctx, $key))->create(['supplier_account_id' => 601, 'supplier_name' => 'X', 'po_date' => '2026-09-01', 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 1]]]), 'SERVICE_KEY_PERMISSIONS', 'a write');
+        same(403, $write['status'], 'refused, naming the setting');
+
+        putenv('SERVICE_KEY_PERMISSIONS=insights:po.view|po.create|access.manage|po.approve|bill.post|made.up');
+        Permissions::forget();
+        same(['po.view', 'po.create'], Permissions::granted($ctx, $key), 'granted more, it holds real codes only and never administration, approval or posting');
+        [$status] = endpoint([Controllers\AccessController::class, 'profiles'], $key);
+        same(403, $status, 'access administration stays closed to a key');
+        same([], Permissions::grantable($ctx, $key), 'and a key can grant nobody anything');
+        refused(fn () => (new PurchaseOrderService($ctx, $key))->cancel((int) $po['po_id'], ['reason' => 'test']), 'service key is not allowed', 'nor cancel an order');
+        refused(fn () => (new PurchaseOrderService($ctx, $key))->decide((int) $po['po_id'], 'approve', []), 'service key is not allowed', 'nor approve one');
+    } finally {
+        putenv('SERVICE_KEY_COMPANIES');
+        putenv('SERVICE_KEY_PERMISSIONS');
+        Permissions::forget();
+    }
+});
+
+check('the key resolves to its product by constant-time comparison, and a placeholder authenticates nothing', function () {
+    putenv('SERVICE_KEYS=insights:k-insights-0001,billing:CHANGE_ME_LATER');
+    try {
+        $_SERVER['HTTP_X_SERVICE_KEY'] = 'k-insights-0001';
+        $_SERVER['HTTP_X_ACTOR_UUID'] = 'user-7';
+        $auth = Auth::resolve();
+        same(['service', 'insights', 'user-7'], [$auth?->kind, $auth?->sourceApp, $auth?->uuid], 'the product, acting for the person it names');
+        $_SERVER['HTTP_X_SERVICE_KEY'] = 'CHANGE_ME_LATER';
+        same(null, Auth::resolve(), 'a placeholder left in .env is no key');
+        $_SERVER['HTTP_X_SERVICE_KEY'] = 'k-insights-0002';
+        same(null, Auth::resolve(), 'nor is a near miss');
+    } finally {
+        unset($_SERVER['HTTP_X_SERVICE_KEY'], $_SERVER['HTTP_X_ACTOR_UUID']);
+        putenv('SERVICE_KEYS');
+    }
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU4: unfinished work and the overview's inbox show only what the reader may see\n";
+
+check('unfinished integration work is listed only to those who work on its documents, and never with its stored body, lease or key', function () use ($ctx) {
+    reset();
+    $bill = IntegrationCommand::ensure($ctx, 'books', BillService::COMMAND_BILL, 'bill_request', 41, ['party' => ['acc_id' => 601], 'inventory_lines' => [['item_id' => 201, 'rate' => 999.5]]], ['supplier_invoice_no' => 'S-41']);
+    $receipt = IntegrationCommand::ensure($ctx, 'inventory', ReceiptService::COMMAND_RECEIPT, 'receipt_request', 42, ['lines' => [['item_id' => 201, 'qty' => 5]]], ['receipt_no' => 'GRN-42']);
+    Db::run("UPDATE purchase_integration_commands SET status = 'BLOCKED', last_error = 'Books refused it.', lease_token = 'lease-secret' WHERE command_id = :id", ['id' => (int) $bill['command_id']]);
+    Db::run("UPDATE purchase_integration_commands SET status = 'FAILED', last_error = 'Inventory was down.' WHERE command_id = :id", ['id' => (int) $receipt['command_id']]);
+    profile('user-req', 'Requisitioner', ['requisition.view', 'requisition.create']);
+    profile('user-buyer', 'Buyer', ['po.view']);
+    profile('user-ap', 'Payables', ['bill.enter']);
+    $list = static fn (Auth $who) => endpoint([Controllers\DashboardController::class, 'commands'], $who);
+
+    [$status] = $list(person('user-req', 0));
+    same(403, $status, 'a member who works on neither document sees none of it');
+    [$status, $payload] = $list(person('user-buyer', 0));
+    same([200, ['receipt_request']], [$status, array_column($payload['data'], 'entity_type')], 'a buyer sees the receipt\'s');
+    [, $payload] = $list(person('user-ap', 0));
+    same(['bill_request'], array_column($payload['data'], 'entity_type'), 'payables sees the bill\'s');
+    [, $payload] = $list(person());
+    same(2, count($payload['data']), 'the owner sees both');
+    foreach ($payload['data'] as $row) {
+        foreach (['request_payload', 'lease_token', 'idempotency_key'] as $secret) {
+            truthy(!array_key_exists($secret, $row), $secret . ' is never sent to a screen');
+        }
+    }
+    truthy(!str_contains(json_encode($payload), '999.5') && !str_contains(json_encode($payload), 'lease-secret'), 'nothing of the stored body or the lease leaks through another field');
+    same('S-41', $payload['data'][array_search('bill_request', array_column($payload['data'], 'entity_type'), true)]['request_summary']['supplier_invoice_no'] ?? null, 'what a person needs to recognise it is still there');
+});
+
+check('the overview\'s priority inbox lists approvals only to those who decide them, and names and values only to those who may see them', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    Db::run("UPDATE purchase_orders SET promised_date = '2026-01-15' WHERE po_id = :id", ['id' => (int) $po['po_id']]);
+    Db::insert('purchase_approval_requests', [
+        'cmp_id' => 88, 'fy_id' => 6, 'entity_type' => 'purchase_order', 'entity_id' => (int) $po['po_id'], 'reason_kind' => 'value',
+        'reason_detail' => 'Order value ₹5,00,000.00 is above the ₹1,00,000.00 approval threshold.', 'status' => 'PENDING',
+        'actual_value' => 500000, 'requested_by' => 'user-buyer',
+    ], 'approval_id');
+    profile('user-member', 'Member', ['requisition.view']);
+    profile('user-approver', 'Approver', ['po.approve']);
+    profile('user-viewer', 'Viewer', ['po.view']);
+    $inbox = static function (Auth $who) use ($ctx): array {
+        $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0', 'preset' => 'this_year'];
+        $overview = (new Dashboards\OverviewDashboard($ctx, $who, Dashboards\Period::fromRequest(), Dashboards\Filters::fromRequest()))->build();
+        $byKind = [];
+        foreach ($overview['panels']['priority_inbox']['items'] as $item) {
+            $byKind[$item['kind']][] = $item;
+        }
+
+        return [$byKind, json_encode($overview['panels']['priority_inbox']) . json_encode($overview['panels']['briefing'])];
+    };
+
+    [$items, $text] = $inbox(person('user-member', 0));
+    same([], array_keys($items), 'a member with no part in orders sees no approval and no late order');
+    truthy(!str_contains($text, 'Deccan') && !str_contains($text, '5,00,000') && !str_contains($text, '25,000'), 'no supplier and no value anywhere in the inbox or the briefing');
+
+    [$items, $text] = $inbox(person('user-approver', 0));
+    same(1, count($items['approval'] ?? []), 'an approver sees what waits for them');
+    same([null, 'po.view'], [$items['approval'][0]['amount'], $items['approval'][0]['values_withheld']], 'without the value, and told why');
+    truthy(!str_contains($text, '5,00,000'), 'not even in the reason text');
+    same(false, isset($items['delivery']), 'and no late order, without po.view');
+
+    [$items] = $inbox(person('user-viewer', 0));
+    same(false, isset($items['approval']), 'a viewer who does not approve sees no approval');
+    same(1, count($items['delivery'] ?? []), 'but sees the late order');
+    truthy(str_contains($items['delivery'][0]['detail'], 'Deccan Steel Traders'), 'with its supplier');
+    same(null, $items['delivery'][0]['amount'], 'and not the money still to come, without cost or report access');
+
+    [$items] = $inbox($owner);
+    same('500000', $items['approval'][0]['amount'] ?? null, 'the owner sees the value');
+    truthy(str_contains($items['approval'][0]['detail'], '5,00,000'), 'and the reason');
+    same('25000', $items['delivery'][0]['amount'] ?? null, 'and what is still to come');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU5: Books is told where the supplier supplies from, and a debit note reverses the tax billed\n";
+
+/** Change supplier ledgers as Books answers them. @param array<int, array<string, mixed>|null> $byAccount */
+function ledgers(array $byAccount): void
+{
+    file_put_contents(sys_get_temp_dir() . '/stub-accounts.json', json_encode(array_map(static fn ($v) => $v, $byAccount)));
+}
+
+/** The body of the last draft of a voucher type Books was sent (the tests' probes excluded). @return array<string, mixed> */
+function lastDraftOf(int $type): array
+{
+    $drafts = array_values(array_filter(stubRequests('/vouchers/drafts'), static fn (array $r) => $r['method'] === 'POST' && empty($r['headers']['x-test-probe']) && !str_contains((string) $r['path'], '/post') && (int) ($r['body']['vch_type_id'] ?? 0) === $type));
+
+    return $drafts === [] ? [] : (array) end($drafts)['body']['payload'];
+}
+
+/** A reviewed service bill with a GST category, entered and matched. @return array<string, mixed> */
+function taxedServiceBill(BillService $bills, string $invoiceNo, array $extra = []): array
+{
+    $bill = $bills->enter($extra + ['supplier_account_id' => 601, 'supplier_invoice_no' => $invoiceNo, 'supplier_invoice_date' => '2026-09-19', 'lines' => [['description' => 'Annual maintenance', 'is_service' => true, 'purchase_acc_id' => 7301, 'tax_cat_id' => 18, 'qty' => 1, 'rate' => 10000]]]);
+    acceptOpenExceptions($bills, (int) $bill['request_id']);
+
+    return $bill;
+}
+
+function acceptOpenExceptions(BillService $bills, int $requestId): void
+{
+    foreach ($bills->find($requestId)['matches'][0]['exceptions'] ?? [] as $exception) {
+        if ($exception['status'] === 'OPEN') {
+            $bills->resolveException((int) $exception['exception_id'], 'accept', ['note' => 'Reviewed.']);
+        }
+    }
+}
+
+check('the place of supply is where the supplier supplies from: its GSTIN, the invoice\'s, abroad, or its state', function () {
+    $pos = static fn (array $ledger, ?string $billGstin = null) => array_values(array_intersect_key(Domain\PlaceOfSupply::decide($ledger, $billGstin), ['pos_state_code' => 1, 'supply_nature' => 1]));
+    same(['27', null], $pos(['gstin' => '27AAPFU0939F1ZV', 'state_code' => '29']), 'the GSTIN\'s state, before the ledger\'s address');
+    same(['29', null], $pos(['gstin' => '27AAPFU0939F1ZV'], '29AABCU9603R1ZM'), 'the GSTIN on the invoice, when it names another registration');
+    same(['96', null], $pos(['gstin' => '', 'gst_reg_type' => 'overseas', 'country_code' => 'US']), 'a supplier abroad: Other Country, an import');
+    same(['96', null], $pos(['gstin' => '', 'country_code' => 'DE']), 'a foreign address too');
+    same(['96', null], $pos(['gstin' => '', 'is_non_resident' => 1]), 'and a non-resident');
+    same(['07', null], $pos(['gstin' => '', 'state_code' => '7']), 'an unregistered supplier: the state on its ledger');
+    same([null, null], $pos(['gstin' => '', 'state_code' => '']), 'nothing to go on: unknown, and nothing is sent');
+    same(['24', 'sez'], $pos(['gstin' => '24AAACS1234A1Z5', 'gst_reg_type' => 'sez']), 'an SEZ unit carries Books\' own SEZ nature');
+    same('29AABCU9603R1ZM', Domain\PlaceOfSupply::normaliseGstin(' 29aabcu9603r1zm ', 'supplier_gstin'), 'a GSTIN as typed');
+    refused(fn () => Domain\PlaceOfSupply::normaliseGstin('GST-29', 'supplier_gstin'), 'not a GSTIN', 'and not anything else');
+});
+
+check('a bill tells Books where the supplier supplies from, so its GST is split, and a Books it cannot ask sends nothing', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_gst_state' => '27']);
+    $bills = new BillService($ctx, $owner);
+
+    $local = taxedServiceBill($bills, 'POS-1');
+    same('POSTED', $bills->post((int) $local['request_id'])['status'], 'posted');
+    same('27', lastDraftOf(11)['party']['pos_state_code'] ?? null, 'from the supplier\'s GSTIN on its Books ledger');
+    $voucher = array_values(booksVouchers())[0];
+    same([900.0, 900.0, 0.0], [(float) $voucher['tax_summary']['cgst'], (float) $voucher['tax_summary']['sgst'], (float) $voucher['tax_summary']['igst']], 'same state as the branch: CGST and SGST');
+
+    $other = taxedServiceBill($bills, 'POS-2', ['supplier_gstin' => '29AABCU9603R1ZM']);
+    $posted = $bills->post((int) $other['request_id']);
+    same('29', lastDraftOf(11)['party']['pos_state_code'] ?? null, 'invoiced from its Karnataka registration');
+    same(1800.0, (float) array_values(booksVouchers())[1]['tax_summary']['igst'], 'another state: IGST');
+    same(true, $posted['posting_check']['verified'] ?? null, 'and what Books booked agrees with the bill');
+
+    $third = taxedServiceBill($bills, 'POS-3');
+    $drafts = count(stubRequests('/vouchers/drafts'));
+    stubFail('/masters/accounts/', 503);
+    $refusal = refused(fn () => $bills->post((int) $third['request_id']), 'supplier_ledger_unreadable', 'the ledger cannot be read');
+    stubRecover();
+    same(502, $refusal['status'], 'a retryable failure');
+    same($drafts, count(stubRequests('/vouchers/drafts')), 'and nothing was sent without a place of supply');
+    same('POSTED', $bills->post((int) $third['request_id'])['status'], 'posted once the ledger can be read');
+});
+
+check('a GST bill whose supplier has no GSTIN or state is refused by Books with what to fix, and posts once it is put right', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_gst_state' => '27']);
+    ledgers([601 => ['gstin' => '', 'state_code' => '']]);
+    $bills = new BillService($ctx, $owner);
+    $bill = taxedServiceBill($bills, 'NOPOS-1');
+
+    $refusal = refused(fn () => $bills->post((int) $bill['request_id']), 'no GSTIN and no state', 'Books refuses a GST bill with no place of supply');
+    truthy(str_contains($refusal['message'], 'place of supply is not known'), 'Books\' own words first: ' . $refusal['message']);
+    truthy(str_contains($refusal['message'], 'then revise the bill'), 'and what to do next');
+    same('BLOCKED', $bills->find((int) $bill['request_id'])['status'], 'the bill waits for a revision');
+    same(0, count(booksVouchers()), 'nothing posted');
+
+    ledgers([601 => ['gstin' => '27AAPFU0939F1ZV', 'state_code' => '27']]);
+    $bills->revise((int) $bill['request_id'], ['note' => 'GSTIN added to the supplier\'s ledger in Smart Books.']);
+    acceptOpenExceptions($bills, (int) $bill['request_id']);
+    same('POSTED', $bills->post((int) $bill['request_id'])['status'], 'the revision posts');
+    same('27', lastDraftOf(11)['party']['pos_state_code'] ?? null, 'with the place of supply');
+    same(900.0, (float) array_values(booksVouchers())[0]['tax_summary']['cgst'], 'and its GST');
+});
+
+check('a bill Books posts with no GST, or an SEZ supply with CGST, is flagged after posting rather than trusted', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_gst_state' => '27', 'books_before_c1' => true]); // Books before 7c10e6eb: no refusal, no split without a place of supply — what vouchers posted before it look like
+    $bills = new BillService($ctx, $owner);
+
+    ledgers([601 => ['gstin' => '', 'state_code' => '']]);
+    $none = taxedServiceBill($bills, 'ZERO-1');
+    $posted = $bills->post((int) $none['request_id']);
+    same(false, $posted['posting_check']['verified'] ?? null, 'not verified');
+    truthy(str_contains(implode(' ', $posted['posting_check']['problems']), 'booked no GST'), 'Smart Books\' zero GST is put in front of a person');
+
+    ledgers([601 => ['gstin' => '27AAACS1234A1Z5', 'gst_reg_type' => 'sez']]);
+    $sez = taxedServiceBill($bills, 'SEZ-1');
+    $posted = $bills->post((int) $sez['request_id']);
+    same('sez', lastDraftOf(11)['supply_nature'] ?? null, 'an SEZ supplier is sent as an SEZ supply');
+    truthy(str_contains(implode(' ', $posted['posting_check']['problems'] ?? []), 'SEZ'), 'and CGST on it is flagged: an SEZ supply is inter-state');
+});
+
+check('a return\'s debit note reverses the GST the bill charged — its category and its rate — from where the supplier supplies', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner); // ordered at 250, item default category
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 100);
+    $bills = new BillService($ctx, $owner);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'TAX-12', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 100, 'rate' => 240, 'tax_cat_id' => 12, 'hsn_sac' => '7214']]]);
+    acceptOpenExceptions($bills, (int) $bill['request_id']);
+    same('POSTED', $bills->post((int) $bill['request_id'])['status'], 'billed at 240 under category 12');
+
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $return = returnOf($ctx, $owner, $po, 10);
+    same([240.0, 12], [(float) $return['lines'][0]['rate'], (int) $return['lines'][0]['tax_cat_id']], 'the return is valued and taxed as it was billed, not as it was ordered');
+    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->dispatchReturn((int) $return['return_id']);
+    $returns->requestDebitNote((int) $return['return_id']);
+    $note = lastDraftOf(3);
+    same([12, '7214', 240.0], [(int) ($note['inventory_lines'][0]['tax_cat_id'] ?? 0), $note['inventory_lines'][0]['hsn_sac'] ?? null, (float) $note['inventory_lines'][0]['rate']], 'the debit note carries the billed category, HSN and rate');
+    same('27', $note['party']['pos_state_code'] ?? null, 'and the supplier\'s state');
+});
+
+check('a financial return and a claim settled by a debit note carry the tax category they are booked under', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $return = $returns->createReturn(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'return_kind' => 'financial', 'adjustment_acc_id' => 7310, 'adjustment_reason' => 'Rate agreed down.', 'lines' => [['description' => 'Rate difference', 'return_qty' => 1, 'rate' => 1500, 'tax_cat_id' => 18]]]);
+    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->requestDebitNote((int) $return['return_id']);
+    same(18, (int) (lastDraftOf(3)['service_lines'][0]['tax_cat_id'] ?? 0), 'a rate difference reverses its GST too');
+
+    $claimId = approvedClaim($ctx, $owner, 900);
+    $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
+    $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 900, 'adjustment_acc_id' => 7310, 'tax_cat_id' => 18]);
+    $resolutions->approve((int) $r['resolution_id']);
+    $note = lastDraftOf(3);
+    same([18, '27'], [(int) ($note['service_lines'][0]['tax_cat_id'] ?? 0), $note['party']['pos_state_code'] ?? null], 'and so does a claim\'s debit note, from where the supplier supplies');
+});
+
+check('a debit note Books refused is sent again — as a new request, once what it refused is put right — and posts once', function () use ($ctx, $owner) {
+    reset();
+        $po = orderOf($ctx, $owner, [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 250, 'warehouse_id' => 3, 'tax_cat_id' => 18]]);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 100);
+    $bills = new BillService($ctx, $owner);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'RS-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 100, 'rate' => 250]]]);
+    $bills->post((int) $bill['request_id']);
+
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
+    $returns->approveReturn($id, []);
+    $returns->dispatchReturn($id);
+
+    ledgers([601 => ['gstin' => '', 'state_code' => '']]); // the ledger lost its GSTIN
+    $refusal = refused(fn () => $returns->requestDebitNote($id), 'then send it again', 'Books refuses the debit note, and says what to do');
+    refused(fn () => $returns->requestDebitNote($id), 'place of supply is not known', 'pressing the same button sends nothing new');
+    refused(fn () => $returns->requestDebitNote($id, ['resend' => true]), 'place of supply is not known', 'sent again before the ledger is put right, it is refused again');
+    same(0, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'no debit note yet');
+
+    ledgers([601 => ['gstin' => '27AAPFU0939F1ZV']]);
+    $debited = $returns->requestDebitNote($id, ['resend' => true, 'note' => 'GSTIN restored on the ledger.']);
+    same('DEBITED', $debited['status'], 'sent again, it posts');
+    $commands = IntegrationCommand::forEntity($ctx, 'purchase_return', $id);
+    $notes = array_values(array_filter($commands, static fn ($c) => $c['command_type'] === Domain\ReturnClaimService::COMMAND_DEBIT_NOTE));
+    same([['CANCELLED', 'superseded'], ['CANCELLED', 'superseded'], ['COMPLETED', 'response']], array_map(static fn ($c) => [$c['status'], $c['resolved_by']], $notes), 'each refused request superseded by the next, under its own key');
+    same('27', lastDraftOf(3)['party']['pos_state_code'] ?? null, 'built from the return as it stands now');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'one debit note in Books');
+    same(2, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'return.debit_note_resent'"), 'each resend audited');
+    same('DEBITED', $returns->requestDebitNote($id, ['resend' => true])['status'], 'asked again once debited, nothing more is sent');
+    same(1, count(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3)), 'still one debit note');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU6: goods received and not billed go back through Inventory, once (C10)\n";
+
+/** A GRN of $qty against a fresh order of 100. @return array{po: array, line: int, receipt: array} */
+function receivedOrder(Context $ctx, Auth $auth, float $qty = 40, array $line = []): array
+{
+    $po = orderOf($ctx, $auth);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $auth, (int) $po['po_id'], $lineId, $qty, $line === [] ? [] : ['lines' => [['line_id' => $lineId, 'qty' => $qty] + $line]]);
+    $receipt = Db::first('SELECT * FROM purchase_receipt_requests WHERE po_id = :po ORDER BY request_id DESC LIMIT 1', ['po' => (int) $po['po_id']]);
+
+    return ['po' => $po, 'line' => $lineId, 'receipt' => $receipt];
+}
+
+function poLine(int $lineId): array
+{
+    return Db::first('SELECT received_qty, rejected_qty, billed_qty FROM purchase_order_lines WHERE line_id = :id', ['id' => $lineId]) ?? [];
+}
+
+function receiptRow(int $requestId): array
+{
+    return Db::first('SELECT * FROM purchase_receipt_requests WHERE request_id = :id', ['id' => $requestId]) ?? [];
+}
+
+function enterBill(Context $ctx, Auth $auth, array $po, int $lineId, float $qty, string $invoiceNo): array
+{
+    return (new BillService($ctx, $auth))->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => $invoiceNo, 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => $lineId, 'qty' => $qty, 'rate' => 250]],
+    ]);
+}
+
+check('goods given back in full before the bill: Inventory reverses the GRN, and the order counts them as still owed', function () use ($ctx, $owner) {
+    reset();
+    ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 40);
+    $requestId = (int) $receipt['request_id'];
+    $documentId = (int) $receipt['inventory_document_id'];
+    $returns = new Domain\ReceiptReturnService($ctx, $owner);
+
+    refused(fn () => $returns->returnUnbilled($requestId, []), 'Say why', 'a reason is required');
+    $view = $returns->returnUnbilled($requestId, ['reason' => 'Wrong grade delivered; sent back with the truck.']);
+
+    $sent = stubRequests('/v1/inventory-documents/' . $documentId . '/reverse');
+    same(1, count($sent), 'one reversal of the GRN Inventory holds');
+    same('Wrong grade delivered; sent back with the truck.', $sent[0]['body']['reason'] ?? null, 'with the reason');
+    truthy(($sent[0]['headers']['idempotency-key'] ?? '') !== '', 'on an idempotency key');
+    same('REVERSED', inventoryState()['by_id'][(string) $documentId]['status'] ?? null, 'Inventory holds it as reversed');
+
+    same('REVERSED', $view['receipt']['status'], 'the receipt counts for nothing');
+    truthy($view['receipt']['reversed_at'] !== null, 'and says when');
+    same([0.0, 40.0], [(float) poLine($lineId)['received_qty'], (float) poLine($lineId)['rejected_qty']], 'the order counts the 40 as rejected, not received');
+    same('ISSUED', $view['status'], 'the order is waiting for the goods again');
+    same(100.0, $view['progress']['lines'][0]['to_receive_qty'], 'all 100 still to come');
+    $history = Db::jsonColumn(receiptRow($requestId)['return_history']);
+    same([1, 'return', 'reverse', $documentId], [count($history), $history[0]['kind'], $history[0]['action'], $history[0]['document_before']], 'what was done is kept on the receipt');
+    same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'receipt.returned' AND entity_id = :id", ['id' => $requestId]), 'and audited');
+    same('COMPLETED', IntegrationCommand::latest(88, Domain\ReceiptReturnService::COMMAND, 'receipt_request', $requestId)['status'] ?? null, 'the request is complete');
+
+    refused(fn () => $returns->returnUnbilled($requestId, ['reason' => 'again']), 'already been reversed', 'asked again, nothing more goes back');
+    same(1, count(stubRequests('/reverse')), 'still one reversal');
+
+    $bill = enterBill($ctx, $owner, $po, $lineId, 40, 'RU-1');
+    refused(fn () => (new BillService($ctx, $owner))->post((int) $bill['request_id']), 'more than has been received', 'goods given back cannot be billed');
+    same(0, count(stubRequests('/vouchers/drafts')), 'and Books is not asked');
+    $ledger = (new Domain\ReceiptLedger($ctx, $owner))->forOrder((int) $po['po_id']);
+    same([[], []], [$ledger['received_by_line'], $ledger['discrepancies']], 'the live receipt read agrees: nothing received, nothing disputed');
+});
+
+check('part of an unbilled GRN given back: Inventory restates it for the quantity kept, and only that is billed', function () use ($ctx, $owner) {
+    reset();
+    ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 40);
+    $requestId = (int) $receipt['request_id'];
+    $old = (int) $receipt['inventory_document_id'];
+    $returns = new Domain\ReceiptReturnService($ctx, $owner);
+
+    refused(fn () => $returns->returnUnbilled($requestId, ['reason' => 'x', 'lines' => [['line_id' => $lineId, 'qty' => 41]]]), 'Only 40', 'no more than the GRN holds');
+    $view = $returns->returnUnbilled($requestId, ['reason' => '15 rejected at inspection', 'lines' => [['line_id' => $lineId, 'qty' => 15]]]);
+
+    $sent = stubRequests('/v1/inventory-documents/' . $old . '/revise');
+    same(1, count($sent), 'one revision of the GRN');
+    $body = $sent[0]['body'];
+    same(
+        ['15 rejected at inspection', 'INWARD_CHALLAN', '2026-09-18', 'challan_only', '601', 'purchases', Domain\ReceiptService::SOURCE_TYPE, $requestId],
+        [$body['reason'] ?? null, $body['document_type'] ?? null, $body['document_date'] ?? null, $body['stock_effect'] ?? null, $body['party_ref'] ?? null, $body['source_app'] ?? null, $body['source_document_type'] ?? null, (int) ($body['source_document_id'] ?? 0)],
+        'the whole receipt is sent, under the receipt\'s own source identity',
+    );
+    same([[$lineId, 25.0, 3, 1, 250.0]], array_map(static fn ($l) => [(int) $l['source_line_ref'], (float) $l['qty'], (int) $l['warehouse_id'], (int) $l['unit_id'], (float) $l['rate']], $body['lines'] ?? []), 'for the 25 kept, in the same warehouse, unit and rate');
+
+    $replacement = null;
+    foreach (inventoryState()['by_id'] as $doc) {
+        if ((int) ($doc['replaced_document_id'] ?? 0) === $old) {
+            $replacement = $doc;
+        }
+    }
+    truthy($replacement !== null, 'Inventory made a replacement');
+    $row = receiptRow($requestId);
+    same(['ACCEPTED', (int) $replacement['document_id'], $replacement['document_uuid']], [$row['status'], (int) $row['inventory_document_id'], $row['inventory_document_uuid']], 'the receipt stands for the 25 kept, under the replacement');
+    same([25.0, 15.0], [(float) Db::jsonColumn($row['applied_lines'])[0]['qty'], (float) Db::jsonColumn($row['applied_lines'])[0]['rejected_qty']], 'its quantities say so');
+    same([25.0, 15.0], [(float) poLine($lineId)['received_qty'], (float) poLine($lineId)['rejected_qty']], 'and so does the order');
+    same(75.0, $view['progress']['lines'][0]['to_receive_qty'], '75 still to come');
+    $ledger = (new Domain\ReceiptLedger($ctx, $owner))->forOrder((int) $po['po_id']);
+    same([25.0, []], [$ledger['received_by_line'][$lineId] ?? null, $ledger['discrepancies']], 'Inventory and the order agree on 25');
+
+    $bills = new BillService($ctx, $owner);
+    $tooMuch = enterBill($ctx, $owner, $po, $lineId, 40, 'RP-40');
+    refused(fn () => $bills->post((int) $tooMuch['request_id']), 'more than has been received', 'the 15 given back cannot be billed');
+    $bills->cancel((int) $tooMuch['request_id'], ['reason' => 'Billed the kept quantity instead.']);
+    $bill = enterBill($ctx, $owner, $po, $lineId, 25, 'RP-25');
+    same('POSTED', $bills->post((int) $bill['request_id'])['status'], 'the 25 kept are billed');
+    $held = booksVouchers();
+    $voucher = end($held);
+    same([[(int) $replacement['document_id'], 25.0]], array_map(static fn ($s) => [(int) $s['source_document_id'], (float) $s['qty']], $voucher['challan_settlements'] ?? []), 'settling the replacement, never the reversed GRN');
+
+    $before = count(stubRequests('/v1/inventory-documents/'));
+    $refusal = refused(fn () => $returns->returnUnbilled($requestId, ['reason' => 'late find', 'lines' => [['line_id' => $lineId, 'qty' => 5]]]), 'purchase return', 'once billed, goods go back on a purchase return');
+    same(409, $refusal['status'], 'refused');
+    same($before, count(stubRequests('/v1/inventory-documents/')), 'before Inventory is asked');
+});
+
+check('a GRN recorded by mistake is reversed: what it received and what it rejected are both undone', function () use ($ctx, $owner) {
+    reset();
+    ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 90, ['rejected_qty' => 10, 'rejection_reason' => 'Dented']);
+    same([90.0, 10.0], [(float) poLine($lineId)['received_qty'], (float) poLine($lineId)['rejected_qty']], 'keyed as 90 accepted, 10 rejected');
+    $returns = new Domain\ReceiptReturnService($ctx, $owner);
+    $view = $returns->reverse((int) $receipt['request_id'], ['reason' => 'Keyed against the wrong order.']);
+    same(1, count(stubRequests('/v1/inventory-documents/' . (int) $receipt['inventory_document_id'] . '/reverse')), 'Inventory reverses the GRN');
+    same(['REVERSED', 0.0, 0.0], [$view['receipt']['status'], (float) poLine($lineId)['received_qty'], (float) poLine($lineId)['rejected_qty']], 'as if it had never been recorded');
+    same('ISSUED', $view['status'], 'the order waits again');
+
+    // A delivery turned away in full at the gate never reached Inventory: it is undone here alone.
+    $gate = receivedOrder($ctx, $owner, 0, ['rejected_qty' => 5, 'rejection_reason' => 'Wrong item']);
+    truthy($gate['receipt']['inventory_document_id'] === null, 'nothing went to Inventory');
+    refused(fn () => $returns->returnUnbilled((int) $gate['receipt']['request_id'], ['reason' => 'x']), 'nothing to give back', 'nothing to return from it');
+    $before = count(stubRequests('/v1/inventory-documents/'));
+    same('REVERSED', $returns->reverse((int) $gate['receipt']['request_id'], ['reason' => 'Recorded twice.'])['receipt']['status'], 'it can be reversed');
+    same($before, count(stubRequests('/v1/inventory-documents/')), 'without asking Inventory anything');
+    same(0.0, (float) poLine((int) $gate['line'])['rejected_qty'], 'and its rejection is undone');
+});
+
+check('goods a Smart Books bill already settled: Inventory refuses, the GRN stands as it was and says what to do', function () use ($ctx, $owner) {
+    reset();
+    ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 40);
+    $requestId = (int) $receipt['request_id'];
+    // A purchase entered directly in Smart Books settled 10 of the GRN; Purchase cannot know.
+    $vouchers = booksVouchers();
+    $vouchers['9901'] = ['vch_txn_id' => 9901, 'vch_type_id' => 11, 'challan_settlements' => [['source_document_id' => (int) $receipt['inventory_document_id'], 'qty' => 10]]];
+    file_put_contents(sys_get_temp_dir() . '/stub-vouchers.json', json_encode($vouchers));
+
+    $returns = new Domain\ReceiptReturnService($ctx, $owner);
+    $refusal = refused(fn () => $returns->returnUnbilled($requestId, ['reason' => 'late rejection', 'lines' => [['line_id' => $lineId, 'qty' => 10]]]), 'already settled', 'Inventory refuses');
+    same([409, 'inventory_refused'], [$refusal['status'], $refusal['code']], 'as a refusal, not a failure to retry');
+    truthy(str_contains($refusal['message'], 'purchase return, after the bill'), 'and says where those goods go back');
+    $row = receiptRow($requestId);
+    same(['ACCEPTED', null, (int) $receipt['inventory_document_id']], [$row['status'], $row['pending_return'], (int) $row['inventory_document_id']], 'the receipt is exactly as it was');
+    same([40.0, 0.0], [(float) poLine($lineId)['received_qty'], (float) poLine($lineId)['rejected_qty']], 'and so is the order');
+    $command = IntegrationCommand::latest(88, Domain\ReceiptReturnService::COMMAND, 'receipt_request', $requestId);
+    same(['CANCELLED', 'refused'], [$command['status'], $command['resolved_by']], 'the refused request is closed with the refusal on it');
+    same([], array_values(array_filter(IntegrationCommand::outstanding($ctx, ['receipt_request']), static fn ($c) => $c['command_type'] === Domain\ReceiptReturnService::COMMAND)), 'not left as unfinished work');
+    same('POSTED', inventoryState()['by_id'][(string) $receipt['inventory_document_id']]['status'], 'Inventory still holds the GRN');
+});
+
+check('a return whose answer was lost is retried on its key and applied once; on its way, its goods cannot be billed', function () use ($ctx, $owner) {
+    reset();
+    ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 40);
+    $requestId = (int) $receipt['request_id'];
+    $old = (int) $receipt['inventory_document_id'];
+    $returns = new Domain\ReceiptReturnService($ctx, $owner);
+
+    stubFail('/revise', 504, true);
+    $lost = refused(fn () => $returns->returnUnbilled($requestId, ['reason' => '10 short-shipped', 'lines' => [['line_id' => $lineId, 'qty' => 10]]]), 'Retry', 'the answer is lost');
+    same(502, $lost['status'], 'reported as not confirmed');
+    same('RETURNING', receiptRow($requestId)['status'], 'the receipt is marked as on its way back');
+    same([40.0, 0.0], [(float) poLine($lineId)['received_qty'], (float) poLine($lineId)['rejected_qty']], 'nothing counted yet');
+    refused(fn () => $returns->withdraw($requestId, ['reason' => 'changed my mind']), 'may already have taken', 'an unconfirmed return cannot be withdrawn');
+    refused(fn () => $returns->reverse($requestId, ['reason' => 'something else']), 'still on its way', 'nor replaced by another');
+
+    $bill = enterBill($ctx, $owner, $po, $lineId, 30, 'RL-30');
+    refused(fn () => (new BillService($ctx, $owner))->post((int) $bill['request_id']), 'being returned', 'its goods cannot be billed meanwhile');
+    same(0, count(stubRequests('/vouchers/drafts')), 'Books is not asked');
+
+    stubRecover();
+    $view = $returns->retry($requestId);
+    $sent = stubRequests('/v1/inventory-documents/' . $old . '/revise');
+    same(2, count($sent), 'sent twice');
+    same($sent[0]['headers']['idempotency-key'], $sent[1]['headers']['idempotency-key'], 'on one key');
+    same($sent[0]['body'], $sent[1]['body'], 'with one body');
+    $replacements = array_filter(inventoryState()['by_id'], static fn ($d) => (int) ($d['replaced_document_id'] ?? 0) === $old);
+    same(1, count($replacements), 'Inventory made one replacement');
+    same(['ACCEPTED', (int) array_values($replacements)[0]['document_id']], [$view['receipt']['status'], (int) $view['receipt']['inventory_document_id']], 'the receipt stands for what is kept');
+    same([30.0, 10.0], [(float) poLine($lineId)['received_qty'], (float) poLine($lineId)['rejected_qty']], 'counted once');
+    refused(fn () => $returns->retry($requestId), 'No return', 'nothing left to retry');
+    $bills = new BillService($ctx, $owner);
+    same('MATCHED', $bills->rematch((int) $bill['request_id'])['match']['verdict'], 'matched again, the bill agrees with the 30 kept');
+    same('POSTED', $bills->post((int) $bill['request_id'])['status'], 'and the 30 kept are billed');
+});
+
+check('a return Inventory could not take is withdrawn, and the GRN is billable again', function () use ($ctx, $owner) {
+    reset();
+    ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 40);
+    $requestId = (int) $receipt['request_id'];
+    $returns = new Domain\ReceiptReturnService($ctx, $owner);
+    stubFail('/reverse', 503);
+    same(502, refused(fn () => $returns->returnUnbilled($requestId, ['reason' => 'Supplier collecting']), 'Retry', 'Inventory is down')['status'], 'a failure to retry');
+    stubRecover();
+    refused(fn () => $returns->withdraw($requestId, []), 'Say why', 'withdrawing needs a reason');
+    same('ACCEPTED', $returns->withdraw($requestId, ['reason' => 'Supplier did not collect.'])['receipt']['status'], 'withdrawn, the GRN stands');
+    same('CANCELLED', IntegrationCommand::latest(88, Domain\ReceiptReturnService::COMMAND, 'receipt_request', $requestId)['status'], 'its request can never be sent');
+    same('POSTED', inventoryState()['by_id'][(string) $receipt['inventory_document_id']]['status'], 'Inventory never acted');
+    $bill = enterBill($ctx, $owner, $po, $lineId, 40, 'RW-40');
+    same('POSTED', (new BillService($ctx, $owner))->post((int) $bill['request_id'])['status'], 'and the goods are billed');
+});
+
+check('a bill over a GRN reversed in Inventory directly is refused before Books, and reversing it here records it without moving goods twice', function () use ($ctx, $owner) {
+    reset();
+    ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 40);
+    $documentId = (int) $receipt['inventory_document_id'];
+    (new Clients\InventoryClient())->withService('ops')->reverseDocument($ctx, $documentId, 'Reversed at the warehouse', 'direct-reverse-1');
+
+    $bills = new BillService($ctx, $owner);
+    $bill = enterBill($ctx, $owner, $po, $lineId, 40, 'RD-40');
+    refused(fn () => $bills->post((int) $bill['request_id']), 'was reversed in Inventory', 'the bill names the GRN Inventory no longer holds');
+    same(0, count(stubRequests('/vouchers/drafts')), 'before Books is asked');
+    truthy(Db::scalar('SELECT status FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $bill['request_id']]) !== 'POSTING', 'the bill is not left half-sent');
+    same(null, IntegrationCommand::latest(88, BillService::COMMAND_BILL, 'bill_request', (int) $bill['request_id']), 'no request recorded for it');
+
+    $view = (new Domain\ReceiptReturnService($ctx, $owner))->reverse((int) $receipt['request_id'], ['reason' => 'Recording the reversal done at the warehouse.']);
+    same(['REVERSED', 0.0], [$view['receipt']['status'], (float) poLine($lineId)['received_qty']], 'reversing it here records it');
+    same(1, count(array_filter(inventoryState()['by_id'], static fn ($d) => ($d['status'] ?? '') === 'REVERSED')), 'and Inventory reversed nothing more');
+    refused(fn () => $bills->post((int) $bill['request_id']), 'more than has been received', 'the bill now waits for goods that arrive');
+});
+
+check('who may give goods back, and what cannot be split', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['tracked_items' => ['201' => ['serial' => 1]]]);
+    ['line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 4, ['serials' => ['SN-1', 'SN-2', 'SN-3', 'SN-4']]);
+    profile('user-storekeeper', 'Stores', ['receipt.request', 'po.view']);
+    $storekeeper = person('user-storekeeper', 0);
+    refused(fn () => (new Domain\ReceiptReturnService($ctx, $storekeeper))->returnUnbilled((int) $receipt['request_id'], ['reason' => 'x']), '', 'returning goods needs the return authority');
+    $returns = new Domain\ReceiptReturnService($ctx, $owner);
+    refused(fn () => $returns->returnUnbilled((int) $receipt['request_id'], ['reason' => 'one faulty', 'lines' => [['line_id' => $lineId, 'qty' => 1]]]), 'serial', 'part of a serial-numbered line is refused rather than guessed');
+    same(0, count(stubRequests('/revise')), 'nothing was sent');
+    same('ACCEPTED', receiptRow((int) $receipt['request_id'])['status'], 'and the receipt is untouched');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nLaunch 2026-10-01 — PU2/C6: a receipt names serials and batches by the ids Inventory registered them under\n";
+
+/** @return array<string, mixed> Inventory's serial register as the stub holds it */
+function serialRegister(): array
+{
+    $file = sys_get_temp_dir() . '/stub-serials.json';
+
+    return is_file($file) ? (json_decode((string) file_get_contents($file), true) ?: []) + ['serials' => [], 'batches' => []] : ['serials' => [], 'batches' => []];
+}
+
+/** @return list<array<string, mixed>> the GRNs Purchase posted */
+function grnPosts(): array
+{
+    return array_values(array_filter(stubRequests('/v1/inventory-documents/post'), static fn ($r) => ($r['body']['document_type'] ?? '') === 'INWARD_CHALLAN'));
+}
+
+check('Inventory refuses serial numbers sent as text (the stub answers as Inventory 3f66a41 does)', function () use ($ctx) {
+    reset();
+    $answer = (new Clients\InventoryClient())->withService('ops')->postDocument($ctx, [
+        'document_type' => 'INWARD_CHALLAN', 'source_app' => 'purchases', 'source_document_type' => 'purchases.receipt', 'source_document_id' => 1,
+        'lines' => [['item_id' => 201, 'qty' => 1, 'serials' => ['SN-7']]],
+    ], 'c6-probe-1');
+    same([422, false], [(int) $answer['status'], $answer['ok']], 'a serial number in place of its id is refused');
+    truthy(str_contains((string) $answer['error'], 'serials must be serial ids'), 'with Inventory\'s words');
+});
+
+check('serial numbers are checked against the item, registered with Purchase\'s key, and sent as ids — one per base unit, never twice into stock', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['tracked_items' => ['201' => ['serial' => 1, 'units' => [['unit_id' => 2, 'conversion_factor' => 10]]]]]);
+    $po = orderOf($ctx, $owner);
+    $poId = (int) $po['po_id'];
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $receipts = new ReceiptService($ctx, $owner);
+    $with = static fn (float $qty, array $serials, array $extra = []) => ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => $qty, 'serials' => $serials] + $extra]];
+
+    refused(fn () => $receipts->request($poId, $with(3, ['SN-1', 'SN-2'])), 'name 3 serial number(s); 2 given', 'one serial per unit');
+    refused(fn () => $receipts->request($poId, $with(1, ['SN-1'], ['unit_id' => 2])), 'is 10 unit(s)', 'per BASE unit: a box of 10 needs 10');
+    refused(fn () => $receipts->request($poId, $with(2, ['SN-1', 'SN-1'])), 'named twice', 'each unit once');
+    same([0, 0], [(int) Db::scalar('SELECT COUNT(*) FROM purchase_receipt_requests'), count(stubRequests('/v1/serials/bulk'))], 'refused before anything is recorded or registered');
+
+    $receipts->request($poId, $with(3, ['SN-1', 'SN-2', 'SN-3']));
+    $registered = stubRequests('/v1/serials/bulk');
+    same(1, count($registered), 'the numbers are registered once');
+    same([201, 3, ['SN-1', 'SN-2', 'SN-3']], [(int) $registered[0]['body']['item_id'], (int) $registered[0]['body']['warehouse_id'], $registered[0]['body']['serial_nos']], 'for the item, in the warehouse they arrive in');
+    truthy(isset($registered[0]['headers']['x-service-key']), 'with Purchase\'s own key: Inventory 2880977 lets it register serials and batches');
+    $ids = array_map(static fn ($r) => (int) $r['serial_id'], array_values(serialRegister()['serials']));
+    same($ids, grnPosts()[0]['body']['lines'][0]['serials'] ?? null, 'the GRN names the units by the ids Inventory gave them');
+    same($ids, Db::jsonColumn(Db::scalar('SELECT requested_lines FROM purchase_receipt_requests ORDER BY request_id LIMIT 1'))[0]['serial_ids'] ?? null, 'kept on the receipt, so a retry sends the same ids');
+    same(['in_stock', 'in_stock', 'in_stock'], array_column(array_values(serialRegister()['serials']), 'status'), 'the units are in stock');
+
+    $again = refused(fn () => $receipts->request($poId, $with(1, ['SN-2'])), 'already in stock', 'a unit already in stock cannot arrive again');
+    same(422, $again['status'], 'refused');
+    same(1, count(grnPosts()), 'before a GRN is sent');
+    $stuck = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'FAILED'");
+    $receipts->cancel($stuck, ['reason' => 'Wrong serial keyed.']);
+    same('CANCELLED', Db::scalar('SELECT status FROM purchase_receipt_requests WHERE request_id = :id', ['id' => $stuck]), 'and the receipt can be withdrawn');
+
+    // A lost answer while registering: Retry finds what the first attempt registered.
+    stubFail('/v1/serials/bulk', 504, true);
+    same(502, refused(fn () => $receipts->request($poId, $with(2, ['SN-4', 'SN-5'])), 'Retry', 'no answer from Inventory')['status'], 'retryable');
+    stubRecover();
+    $failed = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'FAILED' ORDER BY request_id DESC LIMIT 1");
+    $receipts->retry($failed);
+    same(5, count(serialRegister()['serials']), 'each number registered once');
+    same(2, count(grnPosts()), 'and the delivery received once');
+    $posts = grnPosts();
+    same(2, count(array_unique(end($posts)['body']['lines'][0]['serials'])), 'naming two distinct units');
+
+    // A GRN reversed here sends its units back out of stock; they can be received again.
+    $first = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'ACCEPTED' ORDER BY request_id LIMIT 1");
+    (new Domain\ReceiptReturnService($ctx, $owner))->reverse($first, ['reason' => 'Recorded against the wrong order.']);
+    $receipts->request($poId, $with(3, ['SN-1', 'SN-2', 'SN-3']));
+    $posts = grnPosts();
+    same($ids, end($posts)['body']['lines'][0]['serials'] ?? null, 'the same units, under the same ids');
+});
+
+check('an Inventory that does not yet let Purchase\'s key register serials: the person registers them, as before', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['tracked_items' => ['201' => ['serial' => 1]], 'inventory_pre_register_policy' => true]);
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+
+    (new ReceiptService($ctx, $owner))->request((int) $po['po_id'], ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 2, 'serials' => ['SN-8', 'SN-9']]]]);
+
+    $calls = stubRequests('/v1/serials/bulk');
+    same(2, count($calls), 'the key is refused once, then the person registers them');
+    truthy(isset($calls[0]['headers']['x-service-key']), 'first with Purchase\'s key');
+    truthy(str_starts_with((string) ($calls[1]['headers']['authorization'] ?? ''), 'Bearer ') && !isset($calls[1]['headers']['x-service-key']), 'then as the person');
+    same(2, count(grnPosts()[0]['body']['lines'][0]['serials'] ?? []), 'and the receipt goes through with both ids');
+});
+
+check('serial numbers on an item that does not track them are refused; a batch goes as the batch it is, registered once', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $poId = (int) $po['po_id'];
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $receipts = new ReceiptService($ctx, $owner);
+    refused(fn () => $receipts->request($poId, ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 1, 'serials' => ['SN-1']]]]), 'does not track serial numbers', 'an untracked item carries no serials');
+
+    $receipts->request($poId, ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 10, 'batch_no' => 'B-77']]]);
+    $receipts->request($poId, ['received_at' => '2026-09-19', 'lines' => [['line_id' => $lineId, 'qty' => 5, 'batch_no' => 'B-77']]]);
+    $batches = serialRegister()['batches'];
+    same(1, count($batches), 'one batch in Inventory');
+    $batchId = (int) array_values($batches)[0]['batch_id'];
+    same([$batchId, $batchId], array_map(static fn ($r) => (int) ($r['body']['lines'][0]['batch_id'] ?? 0), grnPosts()), 'both GRNs name it by its id');
+    same([null, null], array_map(static fn ($r) => $r['body']['lines'][0]['metadata']['batch_no'] ?? null, grnPosts()), 'not as a number in metadata');
+    same(['POST', 'POST', 'GET'], array_column(stubRequests('/v1/batches'), 'method'), 'the second receipt found the batch the first created (409, then a lookup)');
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";

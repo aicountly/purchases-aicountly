@@ -109,6 +109,11 @@ final class Routes
         $router->post('v1/receipt-requests/{id}/retry', [PurchaseOrdersController::class, 'retryReceipt']);
         $router->post('v1/receipt-requests/{id}/reconcile', [PurchaseOrdersController::class, 'reconcileReceipt']);
         $router->post('v1/receipt-requests/{id}/cancel', [PurchaseOrdersController::class, 'cancelReceipt']);
+        // A GRN no bill has settled: undone (recorded by mistake), or goods given back (C10).
+        $router->post('v1/receipt-requests/{id}/reverse', [PurchaseOrdersController::class, 'reverseReceipt']);
+        $router->post('v1/receipt-requests/{id}/return', [PurchaseOrdersController::class, 'returnReceipt']);
+        $router->post('v1/receipt-requests/{id}/retry-return', [PurchaseOrdersController::class, 'retryReceiptReturn']);
+        $router->post('v1/receipt-requests/{id}/withdraw-return', [PurchaseOrdersController::class, 'withdrawReceiptReturn']);
 
         // Vendor bills and the three-way match.
         $router->get('v1/bills', [BillsController::class, 'index']);

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aicountly\Api\Controllers;
 
 use Aicountly\Api\Dashboards\BooksReader;
+use Aicountly\Api\Domain\ApprovalAccess;
 use Aicountly\Api\Dashboards\Decimal;
 use Aicountly\Api\Dashboards\Period;
 use Aicountly\Api\Db;
@@ -50,31 +51,18 @@ final class DashboardController extends Controller
     {
         [$auth, $ctx] = self::enter();
 
-        $types = [];
-        if (Permissions::allows($ctx, $auth, 'requisition.approve')) {
-            $types[] = 'requisition';
-        }
-        if (Permissions::allows($ctx, $auth, 'po.approve')) {
-            $types[] = 'purchase_order';
-        }
-        if ($types === []) {
+        // Kinds the caller approves, and a stage that names a permission only to those who
+        // hold it — ApprovalAccess, the one rule every approvals surface uses.
+        [$decidable, $bind] = ApprovalAccess::decidable($ctx, $auth);
+        if ($decidable === null) {
             Http::forbidden('You do not approve requisitions or purchase orders in this company.');
         }
 
         $status = Http::param('status') ?? 'PENDING';
         $params = Http::listParams(['created_at'], 'created_at');
-        // Approvals carry no branch: company and year. A stage that names the permission it
-        // needs is listed only to those who hold it.
-        $typeList = "'" . implode("', '", $types) . "'";
-        $granted = Permissions::granted($ctx, $auth);
-        $bind = ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId, 'status' => $status];
-        $grantedSql = [];
-        foreach (array_values($granted) as $i => $permission) {
-            $grantedSql[] = ':perm' . $i;
-            $bind['perm' . $i] = $permission;
-        }
-        $where = "a.cmp_id = :cmp AND a.fy_id = :fy AND a.status = :status AND a.entity_type IN ({$typeList})
-                  AND (a.required_permission IS NULL" . ($grantedSql === [] ? '' : ' OR a.required_permission IN (' . implode(', ', $grantedSql) . ')') . ')';
+        // Approvals carry no branch: company and year.
+        $bind += ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId, 'status' => $status];
+        $where = "a.cmp_id = :cmp AND a.fy_id = :fy AND a.status = :status AND {$decidable}";
 
         $rows = Db::all(
             "SELECT a.*,
@@ -90,17 +78,16 @@ final class DashboardController extends Controller
         );
 
         // A document's own amounts go with permission to view that document — the same rule
-        // as its own screen. Approving a requisition without seeing it is not a thing.
-        $seesRequisitions = Permissions::allows($ctx, $auth, 'requisition.view');
-        $seesOrders = Permissions::allows($ctx, $auth, 'po.view');
+        // as its own screen. Approving a requisition without seeing it is not a thing. The
+        // reason text states the value and the threshold, so it goes with them.
         foreach ($rows as $i => $row) {
-            $sees = $row['entity_type'] === 'requisition' ? $seesRequisitions : $seesOrders;
-            if (!$sees) {
+            if (!ApprovalAccess::seesValues($ctx, $auth, (string) $row['entity_type'])) {
                 $rows[$i]['requisition_value'] = null;
                 $rows[$i]['po_value'] = null;
                 $rows[$i]['threshold_value'] = null;
                 $rows[$i]['actual_value'] = null;
-                $rows[$i]['values_withheld'] = $row['entity_type'] === 'requisition' ? 'requisition.view' : 'po.view';
+                $rows[$i]['reason_detail'] = null;
+                $rows[$i]['values_withheld'] = ApprovalAccess::viewPermission((string) $row['entity_type']);
             }
         }
 
@@ -144,6 +131,31 @@ final class DashboardController extends Controller
     public static function commands(): void
     {
         [$auth, $ctx] = self::enter();
-        Http::data(IntegrationCommand::outstanding($ctx, Http::intParam('limit', 100) ?? 100));
+
+        // Each command belongs to a document, and is listed only to someone who may work on
+        // that kind of document; procurement reports see them all. Somebody who may see none
+        // is told so rather than handed an empty list that reads as "nothing is stuck".
+        $visible = [];
+        foreach (self::COMMAND_DOCUMENTS as $entityType => $permissions) {
+            foreach (['reports.view', ...$permissions] as $permission) {
+                if (Permissions::allows($ctx, $auth, $permission)) {
+                    $visible[] = $entityType;
+                    break;
+                }
+            }
+        }
+        if ($visible === []) {
+            Http::forbidden('You do not have permission to see unfinished work with Smart Books and Inventory in this company.');
+        }
+
+        Http::data(IntegrationCommand::outstanding($ctx, $visible, Http::intParam('limit', 100) ?? 100));
     }
+
+    /** The document behind each kind of command, and the permissions that work on it. */
+    private const COMMAND_DOCUMENTS = [
+        'receipt_request'  => ['receipt.request', 'po.view'],
+        'bill_request'     => ['bill.enter', 'bill.post', 'match.view'],
+        'purchase_return'  => ['return.create', 'return.approve'],
+        'claim_resolution' => ['claim.create', 'claim.settle'],
+    ];
 }

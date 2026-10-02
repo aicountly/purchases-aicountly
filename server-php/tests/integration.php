@@ -920,20 +920,33 @@ check('an order line billed before its goods arrive is refused, even with the ex
     assertSame(0, count(stubRequestsTo('/vouchers/drafts')), 'nothing was sent to Books');
 });
 
-check('a direct purchase with no order receives its goods with the bill', function () use ($ctx, $auth) {
+check('a direct purchase with no order receives its goods with the bill, into a warehouse Books is told', function () use ($ctx, $auth) {
     resetDatabase();
     $bills = new BillService($ctx, $auth);
-    $bill = $bills->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'DIRECT-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['item_id' => 201, 'qty' => 10, 'rate' => 250]]]);
+    // Books refuses an item line received on the invoice without its material centre (422), so a
+    // direct goods bill that names none — and has no default to fall back on — is refused here,
+    // when it is entered, rather than BLOCKED when it is posted.
+    assertThrows(
+        static fn () => $bills->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'DIRECT-0', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['item_id' => 201, 'qty' => 10, 'rate' => 250]]]),
+        'say which warehouse',
+        'goods with nowhere to go',
+    );
+    Db::insert('purchase_settings', ['cmp_id' => $ctx->cmpId, 'default_warehouse_id' => 2], 'cmp_id');
+    $bill = $bills->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'DIRECT-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['item_id' => 201, 'qty' => 10, 'rate' => 250], ['item_id' => 202, 'warehouse_id' => 1, 'qty' => 2, 'rate' => 900]]]);
     assertSame('direct', $bill['bill_kind'], 'a direct bill');
+    $entered = Db::jsonColumn(Db::scalar('SELECT requested_lines FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $bill['request_id']]));
+    assertSame(2, (int) $entered[0]['warehouse_id'], 'a line that names no warehouse takes the company default');
+    assertSame(1, (int) $entered[1]['warehouse_id'], 'a line that names one keeps it');
     assertSame(ThreeWayMatchService::REVIEW_REQUIRED, $bill['match']['verdict'], 'with no order it cannot be matched, so it is reviewed');
     assertThrows(static fn () => $bills->post((int) $bill['request_id']), 'unresolved match exception', 'posting before review');
 
     $bills->resolveException((int) $bill['matches'][0]['exceptions'][0]['exception_id'], 'accept', ['note' => 'Counter purchase, checked against the invoice.']);
     $posted = $bills->post((int) $bill['request_id']);
-    assertSame('POSTED', $posted['status'], 'posted after review');
+    assertSame('POSTED', $posted['status'], 'posted after review (Books, like the stub, refuses an item line with no material centre)');
     $payload = lastDraftPayload(11);
     assertSame('on_invoice', $payload['stock_effect'] ?? null, 'Books receives the goods with the bill: there is no GRN to settle');
     assertTrue(!isset($payload['challan_settlements']), 'nothing to settle');
+    assertSame([2, 1], array_map(static fn (array $l) => (int) $l['mc_id'], $payload['inventory_lines']), 'each item line carries its material centre');
 });
 
 check('a service bill books to the chosen ledger and moves no stock', function () use ($ctx, $auth) {
@@ -1337,7 +1350,9 @@ check('concentration refuses to add two currencies together', function () use ($
     $orders->create(poInput());
     $orders->create(poInput(['currency_code' => 'USD', 'exchange_rate' => 83]));
 
-    $overview = dashboardFor('overview', $ctx, $auth);
+    // The orders are dated in September 2026 (poInput): ask for that month, not whichever month
+    // the suite happens to run in — from 1 Oct 2026 the default period held no orders at all.
+    $overview = dashboardFor('overview', $ctx, $auth, ['from' => '2026-09-01', 'to' => '2026-09-30']);
     $concentration = $overview['panels']['concentration'];
 
     assertSame(false, $concentration['available'], 'a mixed-currency base is not shown');

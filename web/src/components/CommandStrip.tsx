@@ -22,11 +22,14 @@ export function CommandStrip({
   commands,
   onRetry,
   onReconcile,
+  onResend,
   busy,
 }: {
   commands: IntegrationCommand[]
   onRetry?: (command: IntegrationCommand) => void
   onReconcile?: (command: IntegrationCommand) => void
+  /** A refused request sent again as a new one, built from the document as it stands now. */
+  onResend?: (command: IntegrationCommand) => void
   busy?: boolean
 }) {
   const unresolved = commands.filter((command) => command.status !== 'COMPLETED' && command.status !== 'CANCELLED')
@@ -51,6 +54,11 @@ export function CommandStrip({
                   Retry
                 </Button>
               )}
+              {command.status === 'BLOCKED' && onResend && resendable(command) && (
+                <Button tone="secondary" disabled={busy} onClick={() => onResend(command)}>
+                  Send again
+                </Button>
+              )}
             </div>
           }
         >
@@ -71,6 +79,7 @@ export function CommandStrip({
           {command.status === 'BLOCKED' && (
             <p style={{ margin: '0.4rem 0 0', fontSize: '0.82rem', color: 'var(--muted)' }}>
               This was refused rather than missed, so retrying it unchanged will fail the same way.
+              {onResend && resendable(command) && ' Put right what Smart Books refused, then Send again: it goes as a new request, built from the document as it stands now.'}
             </p>
           )}
           {command.status === 'POSTING' && (
@@ -86,6 +95,7 @@ export function CommandStrip({
 
 const WHAT: Record<string, string> = {
   'purchases.receipt.request': 'Recording the goods receipt',
+  'purchases.receipt.return': 'Giving back goods from the goods receipt',
   'purchases.bill.post': 'Posting the supplier\'s bill',
   'purchases.return.dispatch': 'Recording the dispatch of returned goods',
   'purchases.return.recall': 'Recalling the returned goods',
@@ -100,6 +110,11 @@ export function describe(command: IntegrationCommand): string {
   return `${what} in ${target}`
 }
 
+/** Commands that can be sent again as a new request after a refusal (a new revision with its own key). */
+export function resendable(command: IntegrationCommand): boolean {
+  return command.command_type === 'purchases.return.debit_note'
+}
+
 /**
  * The endpoint that retries (or reconciles) a command, from what it was about.
  * One place, so every screen offers the same recovery for the same command.
@@ -108,6 +123,9 @@ export function recoveryPath(command: IntegrationCommand, mode: 'retry' | 'recon
   switch (command.command_type) {
     case 'purchases.receipt.request':
       return `v1/receipt-requests/${command.entity_id}/${mode === 'retry' ? 'retry' : 'reconcile'}`
+    case 'purchases.receipt.return':
+      // Inventory recognises the key: a lost answer is recovered by sending the same request.
+      return mode === 'retry' ? `v1/receipt-requests/${command.entity_id}/retry-return` : null
     case 'purchases.bill.post':
       // Books recognises the key, so a lost answer is recovered by sending it again.
       return mode === 'retry' ? `v1/bills/${command.entity_id}/post` : null

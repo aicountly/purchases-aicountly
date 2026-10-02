@@ -116,15 +116,21 @@ final class InventoryClient extends ApiClient
      * Doing that per line is the loop the cross-service rules call out; this is
      * the hoisted version, and it is why nothing here is ever stored locally.
      *
+     * Inventory reads `item_ids` (ItemsController::bulkLookup) and answers inv_items rows:
+     * item_id, item_name, item_sku, unit_id, unit_symbol, hsn_sac, item_grp_id,
+     * default_warehouse_id, … — never `ids`, which it ignores, answering an empty list. That is
+     * how a purchase order's PDF came to print "Item #123" for every line.
+     *
      * @param list<int> $itemIds
      */
     public function bulkLookupItems(Context $ctx, array $itemIds): array
     {
+        $itemIds = array_values(array_unique(array_filter(array_map('intval', $itemIds), static fn (int $id) => $id > 0)));
         if ($itemIds === []) {
             return ['ok' => true, 'status' => 200, 'body' => ['data' => []], 'error' => null];
         }
 
-        return $this->call('POST', 'v1/items/bulk-lookup', ['ids' => array_values(array_unique($itemIds))] + $ctx->asBody());
+        return $this->call('POST', 'v1/items/bulk-lookup', ['item_ids' => $itemIds] + $ctx->asBody());
     }
 
     public function warehouses(Context $ctx): array
@@ -145,6 +151,46 @@ final class InventoryClient extends ApiClient
     public function batches(Context $ctx, int $itemId): array
     {
         return $this->call('GET', 'v1/batches' . self::query(['item_id' => $itemId, 'limit' => 200] + $ctx->asQuery()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tracking identities a goods receipt names (Inventory 3f66a41, C6). A document line names
+    // its serials as serial IDS and its batch as batch_id: a serial number sent as text is
+    // refused (422), and a batch number in metadata is never a batch. So the numbers are
+    // registered first — with this product's key (Inventory 2880977 grants it register-only
+    // rights on serials and batches), else as the person recording the receipt (ReceiptTracking).
+    // -----------------------------------------------------------------------
+
+    /** Batches of an item whose number contains $batchNo (the caller picks the exact one). */
+    public function findBatches(Context $ctx, int $itemId, string $batchNo): array
+    {
+        return $this->call('GET', 'v1/batches' . self::query(['item_id' => $itemId, 'q' => $batchNo, 'limit' => 100] + $ctx->asQuery()));
+    }
+
+    /** 201 with the batch; 409 conflict when the item already has a batch of that number. */
+    public function createBatch(Context $ctx, int $itemId, string $batchNo): array
+    {
+        return $this->call('POST', 'v1/batches', ['item_id' => $itemId, 'batch_no' => $batchNo] + $ctx->asBody(), true);
+    }
+
+    /**
+     * SerialsController::bulkCreate: 201 {created[{serial_id, serial_no}], skipped[{serial_no,
+     * reason, status?}]}. A number the item already has is skipped as already_registered, with
+     * its status; it is not an error.
+     *
+     * @param list<string> $serialNos
+     */
+    public function registerSerials(Context $ctx, int $itemId, ?int $warehouseId, ?int $batchId, array $serialNos): array
+    {
+        return $this->call('POST', 'v1/serials/bulk', array_filter([
+            'item_id' => $itemId, 'warehouse_id' => $warehouseId, 'batch_id' => $batchId, 'serial_nos' => array_values($serialNos),
+        ], static fn ($v) => $v !== null) + $ctx->asBody(), true);
+    }
+
+    /** Serials of an item whose number starts with $serialNo (the caller picks the exact one). */
+    public function findSerials(Context $ctx, int $itemId, string $serialNo): array
+    {
+        return $this->call('GET', 'v1/serials' . self::query(['item_id' => $itemId, 'q' => $serialNo, 'q_mode' => 'prefix', 'limit' => 100] + $ctx->asQuery()));
     }
 
     public function bom(Context $ctx, int $bomId): array
@@ -233,6 +279,20 @@ final class InventoryClient extends ApiClient
     public function reverseDocument(Context $ctx, int $documentId, string $reason, string $idempotencyKey): array
     {
         return $this->call('POST', 'v1/inventory-documents/' . $documentId . '/reverse', ['reason' => $reason] + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
+    }
+
+    /**
+     * Replace a posted document with a new version in one Inventory transaction (reverse + create
+     * + post). For a goods receipt nothing has billed, the payload is the receipt for the quantity
+     * KEPT — the whole receipt, nothing is copied from the old one but its type — and the answer
+     * (201, or 200 on a replay) is the replacement, carrying replaced_document_id. A receipt any
+     * bill has settled is 409 invalid_state.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function reviseDocument(Context $ctx, int $documentId, array $payload, string $idempotencyKey): array
+    {
+        return $this->call('POST', 'v1/inventory-documents/' . $documentId . '/revise', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
     }
 
     public function document(Context $ctx, int $documentId): array

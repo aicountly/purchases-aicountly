@@ -6,6 +6,7 @@ namespace Aicountly\Api\Clients;
 
 use Aicountly\Api\CrossServiceCallContext;
 use Aicountly\Api\Env;
+use Aicountly\Api\IdempotencyKey;
 
 /**
  * Base for every outbound call to another AICOUNTLY product.
@@ -41,6 +42,24 @@ abstract class ApiClient
      * @var array<string, array{ok:bool, status:int, body:?array, error:?string}>
      */
     private array $memo = [];
+
+    /**
+     * CLI ONLY: answers in place of the network, for a test that has to see the exact URL and
+     * headers a deployed base produces — https://contacts.aicountly.com, say — without sending
+     * anything anywhere. Under a web SAPI it is never set and never read.
+     *
+     * @var (callable(string $method, string $url, list<string> $headers, ?array $body): array)|null
+     */
+    private static $interceptor = null;
+
+    /** @param (callable(string, string, list<string>, ?array): array)|null $answer */
+    public static function intercept(?callable $answer): void
+    {
+        if (PHP_SAPI !== 'cli') {
+            return;
+        }
+        self::$interceptor = $answer;
+    }
 
     /** Product name this client talks to: books | inventory | manage | contacts. */
     abstract public function service(): string;
@@ -137,8 +156,14 @@ abstract class ApiClient
         $wire[] = 'X-Source-App: ' . $this->selfName();
         foreach ($headers as $name => $value) {
             if ($value !== '') {
-                $wire[] = $name . ': ' . $value;
+                $wire[] = $name . ': ' . $this->wireHeaderValue((string) $name, (string) $value);
             }
+        }
+
+        if (PHP_SAPI === 'cli' && self::$interceptor !== null) {
+            $answer = (self::$interceptor)($method, $url, $wire, $body);
+
+            return (is_array($answer) ? $answer : []) + ['ok' => false, 'status' => 0, 'body' => null, 'error' => 'intercepted'];
         }
 
         $options = [
@@ -183,6 +208,20 @@ abstract class ApiClient
         }
 
         return $result;
+    }
+
+    /**
+     * A header value as it goes on the wire. Only the Idempotency-Key is touched: it is sized to
+     * the width the product being called keeps it in — every call, every product, whatever built
+     * the key — so no write can reach Books with a key Books refuses (IdempotencyKey).
+     */
+    private function wireHeaderValue(string $name, string $value): string
+    {
+        if (strcasecmp($name, 'Idempotency-Key') !== 0) {
+            return $value;
+        }
+
+        return IdempotencyKey::forWire($value, '', IdempotencyKey::limitFor($this->service()));
     }
 
     /**

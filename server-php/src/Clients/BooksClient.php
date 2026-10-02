@@ -6,6 +6,7 @@ namespace Aicountly\Api\Clients;
 
 use Aicountly\Api\Context;
 use Aicountly\Api\Env;
+use Aicountly\Api\IdempotencyKey;
 
 /**
  * Live reads and writes against books.aicountly.com.
@@ -170,6 +171,9 @@ final class BooksClient extends ApiClient
      */
     public function createAndPostVoucher(Context $ctx, int $vchTypeId, array $payload, string $idempotencyKey): array
     {
+        // The step rides on the stored key and the pair is sized to Books' 64 characters on the
+        // way out (ApiClient → IdempotencyKey), so the draft and the post never share a key and
+        // neither is refused for its length. See wireKeys().
         $draft = $this->createVoucherDraft($ctx, $vchTypeId, $payload, $idempotencyKey . ':draft');
         if (!$draft['ok']) {
             return $draft;
@@ -187,6 +191,21 @@ final class BooksClient extends ApiClient
     }
 
     /**
+     * The Idempotency-Keys Books receives for a command's stored key: the draft's and the post's,
+     * exactly as createAndPostVoucher() puts them on the wire. For a report that has to say which
+     * key Books saw — never for building a request, which goes through request() like any other.
+     *
+     * @return array{draft: string, post: string}
+     */
+    public static function wireKeys(string $storedKey): array
+    {
+        return [
+            'draft' => IdempotencyKey::forWire($storedKey, ':draft', IdempotencyKey::BOOKS),
+            'post'  => IdempotencyKey::forWire($storedKey, ':post', IdempotencyKey::BOOKS),
+        ];
+    }
+
+    /**
      * What this Books can do for an integration — the stock effects it accepts per voucher
      * type, and whether it refuses one it does not know. An older Books answers 404.
      */
@@ -198,6 +217,18 @@ final class BooksClient extends ApiClient
     public function voucher(Context $ctx, int $voucherId): array
     {
         return $this->call('GET', 'vouchers/' . $voucherId . self::query($ctx->asQuery()));
+    }
+
+    /**
+     * Voucher drafts of one type and status in this year, newest first, each with the payload it
+     * was saved from — the only place Books keeps an integration's source_app /
+     * source_document_* (DraftsController::index; at most 100 rows).
+     */
+    public function drafts(Context $ctx, int $vchTypeId, string $status, int $limit = 100): array
+    {
+        return $this->call('GET', 'vouchers/drafts' . self::query([
+            'vch_type_id' => $vchTypeId, 'status' => $status, 'limit' => max(1, min(100, $limit)),
+        ] + $ctx->asQuery()));
     }
 
     public function cancelVoucher(Context $ctx, int $voucherId, string $reason, string $idempotencyKey): array

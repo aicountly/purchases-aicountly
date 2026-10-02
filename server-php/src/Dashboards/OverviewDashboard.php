@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Aicountly\Api\Dashboards;
 
 use Aicountly\Api\Db;
-use Aicountly\Api\Permissions;
+use Aicountly\Api\Domain\ApprovalAccess;
 
 /**
  * Dashboard 1 — Overview.
@@ -243,25 +243,18 @@ final class OverviewDashboard extends Dashboard
      */
     private function myApprovalQueue(): int
     {
-        $granted = Permissions::granted($this->ctx, $this->auth);
-        if ($granted === []) {
+        [$decidable, $bind] = ApprovalAccess::decidable($this->ctx, $this->auth);
+        if ($decidable === null) {
             return 0;
         }
 
-        $placeholders = [];
-        $params = ['me' => $this->auth->uuid];
-        foreach (array_values($granted) as $index => $permission) {
-            $placeholders[] = ':perm' . $index;
-            $params['perm' . $index] = $permission;
-        }
-
         return $this->count(
-            'SELECT COUNT(*) FROM purchase_approval_requests
-             WHERE cmp_id = :ctx_cmp_id AND fy_id = :ctx_fy_id
-               AND status = \'PENDING\'
-               AND requested_by <> :me
-               AND (required_permission IS NULL OR required_permission IN (' . implode(', ', $placeholders) . '))',
-            $params,
+            "SELECT COUNT(*) FROM purchase_approval_requests a
+             WHERE a.cmp_id = :ctx_cmp_id AND a.fy_id = :ctx_fy_id
+               AND a.status = 'PENDING'
+               AND a.requested_by <> :me
+               AND {$decidable}",
+            $bind + ['me' => $this->auth->uuid],
         );
     }
 
@@ -295,6 +288,9 @@ final class OverviewDashboard extends Dashboard
                 'my_approvals' => $myApprovals,
                 'pipeline'     => $pipeline,
                 'currency'     => $this->documentCurrency() ?? 'INR',
+                // What the reader may see: the rules state money only to those who may see it.
+                'values_visible' => $this->canSeeValues(),
+                'can_match'      => $this->can('match.view'),
             ],
         );
 
@@ -421,28 +417,36 @@ final class OverviewDashboard extends Dashboard
     {
         $items = [];
 
-        foreach ($this->rows(
+        // Approvals the reader may DECIDE — the kinds they approve, a stage whose permission
+        // they hold, never their own (ApprovalAccess, as v1/approvals). The value, and the reason
+        // that states it, only with permission to view that document.
+        [$decidable, $bind] = ApprovalAccess::decidable($this->ctx, $this->auth);
+        foreach ($decidable === null ? [] : $this->rows(
             "SELECT a.approval_id, a.entity_type, a.entity_id, a.reason_kind, a.reason_detail,
                     a.actual_value::text AS actual_value, a.created_at,
-                    r.requisition_no, p.po_no, p.supplier_name_snapshot
+                    r.requisition_no, p.po_no
              FROM purchase_approval_requests a
              LEFT JOIN purchase_requisitions r ON a.entity_type = 'requisition'    AND r.requisition_id = a.entity_id
              LEFT JOIN purchase_orders       p ON a.entity_type = 'purchase_order' AND p.po_id          = a.entity_id
              WHERE a.cmp_id = :ctx_cmp_id AND a.fy_id = :ctx_fy_id AND a.status = 'PENDING'
-               AND a.requested_by <> :me
+               AND a.requested_by <> :me AND {$decidable}
              ORDER BY a.actual_value DESC NULLS LAST, a.created_at ASC
              LIMIT 5",
-            ['me' => $this->auth->uuid],
+            $bind + ['me' => $this->auth->uuid],
         ) as $row) {
             $reference = $row['po_no'] ?? $row['requisition_no'] ?? ('#' . $row['entity_id']);
+            $sees = ApprovalAccess::seesValues($this->ctx, $this->auth, (string) $row['entity_type']);
             $items[] = [
                 'id'        => 'approval-' . $row['approval_id'],
                 'kind'      => 'approval',
                 'severity'  => 'warning',
                 'severity_label' => 'Approval',
                 'title'     => $reference . ' needs your approval',
-                'detail'    => (string) ($row['reason_detail'] ?? $row['reason_kind']),
-                'amount'    => Decimal::parse($row['actual_value'] ?? null),
+                'detail'    => $sees
+                    ? (string) ($row['reason_detail'] ?? $row['reason_kind'])
+                    : 'Waiting for your approval (' . str_replace('_', ' ', (string) $row['reason_kind']) . ').',
+                'amount'    => $sees ? Decimal::parse($row['actual_value'] ?? null) : null,
+                'values_withheld' => $sees ? null : ApprovalAccess::viewPermission((string) $row['entity_type']),
                 'source'    => 'Purchases',
                 'age_days'  => BooksReader::daysBetween(substr((string) $row['created_at'], 0, 10), gmdate('Y-m-d')),
                 'route'     => '/approvals',
@@ -451,7 +455,10 @@ final class OverviewDashboard extends Dashboard
             ];
         }
 
-        foreach ($this->rows(
+        // Late deliveries name an order and its supplier: only to someone who may view orders,
+        // and the money still to come only to someone who may see values.
+        $seesValues = $this->canSeeValues();
+        foreach (!$this->can('po.view') ? [] : $this->rows(
             "SELECT p.po_id, p.po_no, p.supplier_name_snapshot, p.promised_date,
                     SUM(GREATEST(l.ordered_qty - l.received_qty, 0) * l.agreed_rate)::text AS remaining_value
              FROM purchase_orders p
@@ -472,7 +479,7 @@ final class OverviewDashboard extends Dashboard
                 'severity_label' => 'Late delivery',
                 'title'    => $row['po_no'] . ' is ' . Format::days((string) $late) . ' past its promised date',
                 'detail'   => ($row['supplier_name_snapshot'] ?? 'This supplier') . ' promised ' . Format::date((string) $row['promised_date']) . ' and part of the order has not arrived.',
-                'amount'   => Decimal::parse($row['remaining_value'] ?? null),
+                'amount'   => $seesValues ? Decimal::parse($row['remaining_value'] ?? null) : null,
                 'source'   => 'Purchases',
                 'age_days' => $late,
                 'route'    => '/purchase-orders/' . $row['po_id'],
@@ -509,8 +516,11 @@ final class OverviewDashboard extends Dashboard
             }
         }
 
-        foreach ($this->duplicateCandidates(3) as $candidate) {
-            $items[] = $candidate;
+        // Bills that look alike: for someone who works on bills.
+        if ($this->can('bill.enter') || $this->can('match.view')) {
+            foreach ($this->duplicateCandidates(3) as $candidate) {
+                $items[] = $candidate;
+            }
         }
 
         // Rank by money at stake, then by age. An inbox in insertion order is an
@@ -533,7 +543,8 @@ final class OverviewDashboard extends Dashboard
         return $this->panel([
             'items'    => array_slice($items, 0, 12),
             'currency' => $this->documentCurrency() ?? 'INR',
-            'basis'    => 'Approvals you can decide, late deliveries, open match exceptions and possible duplicate bills, ranked by the amount at stake.',
+            'basis'    => 'Approvals you can decide, late deliveries, open match exceptions and possible duplicate bills — each only where your permissions reach — ranked by the amount at stake you may see.',
+            'values_visible' => $seesValues,
         ]);
     }
 
