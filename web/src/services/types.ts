@@ -630,6 +630,7 @@ export interface ClaimResolution {
 }
 
 /** A company contact from Aicountly Contacts, read live — never stored here. */
+/** A contact in Aicountly Contacts as the linked supplier's card shows it (read live, never stored). */
 export interface SupplierContact {
   id: string
   display_name: string
@@ -637,4 +638,33 @@ export interface SupplierContact {
   emails: string[]
   phones: string[]
   tax_ids: Array<{ type: string; value: string }>
+  state: 'active' | 'archived' | 'merged' | 'deleted'
+  archived_at: string | null
+}
+
+/** GET v1/suppliers/{acc}/contact: the link Contacts holds for this Books ledger, and where it stands. */
+export interface SupplierContactLink {
+  linked: boolean
+  state: SupplierContact['state'] | null
+  contact: SupplierContact | null
+  /** For a merged contact: the one it was merged into, to link instead. */
+  survivor: SupplierContact | null
+  reference_id: string | null
+  message: string | null
+}
+
+/** A candidate to link: enough to tell contacts apart, masked — full details only once linked. */
+export interface SupplierContactCandidate {
+  id: string
+  display_name: string
+  organization_name: string | null
+  email_hint: string | null
+  phone_hint: string | null
+  tax_ids: Array<{ type: string; value: string }>
+  state: SupplierContact['state']
+}
+
+export interface SupplierContactCandidates {
+  data: SupplierContactCandidate[]
+  meta: { searched_by: string; page: number; per_page: number; total: number; total_pages: number }
 }
