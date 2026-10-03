@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { useAuth } from './auth/AuthProvider'
 import { PurchasesProvider, usePurchases } from './context/PurchasesContext'
 import { AppShell } from './shell/AppShell'
+import { DeepLinkScopeGate } from './deepLink/DeepLinkScopeGate'
 import ChooseCompany from './pages/ChooseCompany'
 import Reports from './pages/Reports'
 import Statements from './pages/Statements'
@@ -109,6 +110,7 @@ export default function App() {
 
   return (
     <PurchasesProvider>
+      <DeepLinkScopeGate>
       <BrowserRouter>
         <PageViews />
         <Routes>
@@ -201,6 +203,7 @@ export default function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      </DeepLinkScopeGate>
     </PurchasesProvider>
   )
 }

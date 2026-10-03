@@ -1,0 +1,8 @@
+{
+    "error": {
+        "code": "forbidden",
+        "message": "This summary needs the \"reports.view\" permission in this product.",
+        "permission": "reports.view"
+    },
+    "message": "This summary needs the \"reports.view\" permission in this product."
+}

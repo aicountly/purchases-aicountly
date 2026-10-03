@@ -65,3 +65,17 @@ The payment leg (PO → bill → payment) stays in Books: Purchases holds no pay
 - Paths are Purchases' own; no capabilities endpoint.
 - `open-commitment` takes no period (current state).
 - Errors also carry the fleet's `error.details` object.
+
+## Refusals and outages (captured from the real handlers, OPS-APPS2)
+
+| File | What it is |
+| --- | --- |
+| `purchases.error-forbidden.json` | 403, `error.code` `forbidden`, `error.permission` names the permission the read needs (reports.view). Captured from the real permission check. |
+| `purchases.error-auth-unavailable.json` | 503 + `Retry-After` header (and `error.details.retry_after`), `error.code` `auth_unavailable` — my.aicountly.com could not check the session. Never a 401: retry, do not sign the person out. Captured over HTTP from the real front controller on `v1/analytics/open-commitment` with the portal answering 503. |
+| `purchases.error-unknown-parameter.json` | 400 naming the parameter (already published). |
+
+The suite checks each committed capture still has the shape its handler emits; `CAPTURE_INSIGHTS_CONTRACTS=1` regenerates them.
+
+## Deep links (MNY-15)
+
+Routes Insights may link to, and how `?cmp_id&fy_id&bo_id` in the URL is verified with Manage, applied or refused (never swapped) and kept through sign-in: [routes.md](routes.md).

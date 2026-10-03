@@ -146,6 +146,7 @@ check('PO to bill: orders raised in the period — ordered, received, billed, an
     assertSame([200, []], [$status, $body['data']['rows']], 'an empty period: no rows, not zeros');
     [$status, $body] = insightsCall(fn () => AnalyticsController::poToBill(), 'stub-ses-key.role-0.as-clerk', ['cmp_id' => '88', 'fy_id' => '6', 'from' => '2026-09-01', 'to' => '2026-09-30']);
     assertSame([403, 'reports.view'], [$status, $body['error']['permission'] ?? null], 'a member without reports.view is refused, naming it');
+    insightsCapture('purchases.error-forbidden', $body);
 });
 
 check('the portal\'s answer is classified valid / invalid / unavailable; an outage is 503 auth_unavailable, a refusal 401 (MNY-18)', function () {
@@ -225,6 +226,10 @@ check('over HTTP: the front controller sends 503 + Retry-After on a portal outag
         [$status, $headers, $body] = $get('v1/permissions?cmp_id=88&fy_id=6');
         assertSame([503, 'auth_unavailable'], [$status, $body['error']['code'] ?? null], 'the API: 503');
         assertTrue(ctype_digit($headers['retry-after'] ?? ''), 'with Retry-After');
+        // An Insights read during the outage, captured from the real front controller (I-OPSAN request).
+        [$status, $headers, $body] = $get('v1/analytics/open-commitment?cmp_id=88&fy_id=6');
+        assertSame([503, 'auth_unavailable', true], [$status, $body['error']['code'] ?? null, ctype_digit($headers['retry-after'] ?? '')], 'an Insights read: 503 + Retry-After');
+        insightsCapture('purchases.error-auth-unavailable', $body);
         [$status, $headers] = $get('session');
         assertSame(503, $status, '/session: 503');
         assertTrue(isset($headers['retry-after']), 'with Retry-After');
