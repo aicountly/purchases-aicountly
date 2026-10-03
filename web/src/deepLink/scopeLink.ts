@@ -75,7 +75,7 @@ export function withoutScopeParams(pathname: string, search: string, hash: strin
  */
 export function judgeLinkScope(link: LinkScope | 'malformed', facts: ScopeFacts | null): ScopeVerdict {
   if (link === 'malformed') {
-    return { kind: 'refuse', reason: 'malformed', message: 'This link names a company, year or branch that is not a valid id, so it was not opened.' }
+    return { kind: 'refuse', reason: 'malformed', message: 'This link names a company, year or branch that is not a valid id, so it was not opened. Nothing was changed.' }
   }
   if (facts === null) {
     return { kind: 'refuse', reason: 'company', message: `This link opens company ${link.cmp_id}, which your sign-in cannot open. Nothing was changed.` }
