@@ -96,7 +96,14 @@ final class Auth
             return null;
         }
 
-        $session = Portal::validateSesKey($sesKey);
+        $checked = Portal::checkSesKey($sesKey);
+        if ($checked['state'] === 'unavailable') {
+            // The portal could not say (down, slow, 5xx, unreadable). That is not
+            // "sign in again": 503 + Retry-After, so the SPA keeps the session and
+            // retries instead of discarding a good token (MNY-18 / I-16).
+            Http::authUnavailable($checked['retry_after']);
+        }
+        $session = $checked['session'];
         if ($session === null) {
             return null;
         }

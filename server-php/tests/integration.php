@@ -3178,6 +3178,9 @@ check('the export endpoint answers with a real PDF when asked for one', function
     }
 });
 
+// Insights alignment 2026-10: portal outage (MNY-18) and the analytics Insights binds.
+require __DIR__ . '/insights_contract.php';
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

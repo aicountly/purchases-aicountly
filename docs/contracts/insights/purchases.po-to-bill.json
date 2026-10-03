@@ -1,0 +1,50 @@
+{
+    "data": {
+        "rows": [
+            {
+                "currency": "INR",
+                "orders": 2,
+                "orders_fully_billed": 0,
+                "orders_partly_billed": 1,
+                "orders_not_billed": 1,
+                "ordered_value": "122000.0000",
+                "received_value": "61000.0000",
+                "billed_value": "25000.0000",
+                "received_not_billed_value": "36000.0000",
+                "billed_pc": "20.49",
+                "bill_requests": {
+                    "posted": 1,
+                    "in_progress": 0,
+                    "exception": 0,
+                    "failed": 0
+                }
+            }
+        ]
+    },
+    "meta": {
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "period": {
+            "from": "2026-09-01",
+            "to": "2026-09-30"
+        },
+        "currency": null,
+        "currency_per_row": true,
+        "basis": {
+            "accounting": "operational",
+            "tax_inclusive": false,
+            "returns_netted": false,
+            "posted_only": false,
+            "rows": "Purchases' own order record. Cohort: purchase orders dated in [from, to], stamped with this financial year, issued onwards (drafts, unapproved and cancelled excluded). Values are quantity × agreed rate (before line discounts and tax): ordered, received (Inventory-confirmed), billed (quantity on bills Smart Books posted). bill_requests counts the bills raised against these orders by state; only POSTED bills are in Books. Not an accounting figure; never add to Books'."
+        },
+        "source": "purchases",
+        "scope": {
+            "cmp_id": 88,
+            "fy_id": 6,
+            "bo_id": 0
+        },
+        "read_only": true,
+        "api_version": "1"
+    }
+}

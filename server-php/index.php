@@ -6,7 +6,7 @@ declare(strict_types=1);
  * Purchases API — front controller.
  *
  * Deployed to <document root>/api, so it is same-origin with the React app on
- * both purchases.aicountly.com and purchases.gh.aicountly.com.
+ * both purchase.aicountly.com and purchase.gh.aicountly.com (singular — the deployed hosts; the plural names are aliases).
  *
  * Routes:
  *   GET  /api/health          liveness + which environment answered
@@ -221,7 +221,16 @@ if ($path === 'session') {
         send_json(401, ['message' => 'Missing bearer session key.']);
     }
 
-    $session = Portal::validateSesKey($sesKey);
+    $checked = Portal::checkSesKey($sesKey);
+    if ($checked['state'] === 'unavailable') {
+        // The portal could not say. Not a sign-out: 503 + Retry-After (MNY-18).
+        header('Retry-After: ' . max(1, (int) $checked['retry_after']));
+        send_json(503, [
+            'error'   => ['code' => 'auth_unavailable', 'message' => 'Sign-in could not be checked right now. Please retry in a moment.'],
+            'message' => 'Sign-in could not be checked right now. Please retry in a moment.',
+        ]);
+    }
+    $session = $checked['session'];
     if ($session === null) {
         send_json(401, ['message' => 'Invalid or expired session.']);
     }

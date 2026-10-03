@@ -1,0 +1,39 @@
+{
+    "data": {
+        "rows": [
+            {
+                "currency": "INR",
+                "open_orders": 1,
+                "open_lines": 2,
+                "commitment_value": "61000.0000",
+                "received_not_billed_value": "36000.0000",
+                "overdue_orders": 1,
+                "oldest_open_po_date": "2026-09-01"
+            }
+        ]
+    },
+    "meta": {
+        "total": 1,
+        "returned": 1,
+        "truncated": false,
+        "as_of": "2026-10-03T04:20:32Z",
+        "currency": null,
+        "currency_per_row": true,
+        "basis": {
+            "accounting": "operational",
+            "kind": "balance (as at the request, not a past date)",
+            "tax_inclusive": false,
+            "returns_netted": false,
+            "posted_only": false,
+            "rows": "Purchases' own order record, as at the moment of the request (not a past date). Open orders = issued, acknowledged or partly received. commitment_value = Σ (ordered − received) × agreed rate, before line discounts and tax — the definition of Purchases' \"Open commitment\" card. received_not_billed_value = Σ (received − billed) × agreed rate on open AND closed orders: goods in that Books has no purchase voucher for yet. overdue = open orders with a line past its promised date. Scope: company and financial year (orders are stamped with the year they were raised in); a branch also sees company-level (bo 0) orders. Not an accounting figure; never add to Books'."
+        },
+        "source": "purchases",
+        "scope": {
+            "cmp_id": 88,
+            "fy_id": 6,
+            "bo_id": 0
+        },
+        "read_only": true,
+        "api_version": "1"
+    }
+}

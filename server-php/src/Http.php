@@ -90,6 +90,26 @@ final class Http
         self::error(401, 'unauthorized', $message);
     }
 
+    /**
+     * "Sign-in could not be checked right now" — NOT "sign in again".
+     *
+     * The SPA treats a 401 as a spent token and starts a re-login; a my.aicountly
+     * that is down, slow or answering 5xx is not a statement about anybody's
+     * token, so it is a 503 with Retry-After, which keeps the session and retries.
+     * Same code and shape as the rest of the fleet (`auth_unavailable`).
+     */
+    public static function authUnavailable(int $retryAfter = 5): never
+    {
+        if (PHP_SAPI !== 'cli' && !headers_sent()) {
+            header('Retry-After: ' . max(1, $retryAfter));
+        }
+        $message = 'Sign-in could not be checked right now. Please retry in a moment.';
+        self::json(503, [
+            'error'   => ['code' => 'auth_unavailable', 'message' => $message, 'details' => ['retryable' => true, 'retry_after' => max(1, $retryAfter)]],
+            'message' => $message,
+        ]);
+    }
+
     public static function conflict(string $message, array $details = []): never
     {
         self::error(409, 'conflict', $message, $details);
