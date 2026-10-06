@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
     "typecheck": "tsc -b",
     "preview": "vite preview",
     "test:ui": "node tests/dashboards.mjs",

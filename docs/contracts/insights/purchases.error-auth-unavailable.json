@@ -1,0 +1,11 @@
+{
+    "error": {
+        "code": "auth_unavailable",
+        "message": "Sign-in could not be checked right now. Please retry in a moment.",
+        "details": {
+            "retryable": true,
+            "retry_after": 5
+        }
+    },
+    "message": "Sign-in could not be checked right now. Please retry in a moment."
+}

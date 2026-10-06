@@ -21,6 +21,7 @@ import {
 } from './hostnames'
 import { clearAllTokens, clearSession, getAuthToken, getSesKey, saveSession } from './tokens'
 import { getApiBaseUrl } from '../config'
+import { rememberDestination, takeDestination } from '../deepLink/scopeLink'
 
 /** Portal convention for "come back here afterwards". */
 const RETURN_PARAM = 'returnUrl'
@@ -112,7 +113,16 @@ export function readAuthCallback(): AuthCallback {
  * navigation here would restart the app mid-login.
  */
 export function clearCallbackFromUrl(): void {
-  window.history.replaceState(null, '', `${window.location.origin}/`)
+  // Back to where the person was going when sign-in started (a deep link, MNY-15), else home.
+  const destination = typeof sessionStorage === 'undefined' ? null : takeDestination(sessionStorage)
+  window.history.replaceState(null, '', `${window.location.origin}${destination ?? '/'}`)
+}
+
+/** Keep the page (and its ?cmp_id&fy_id&bo_id) the person opened, through the portal round trip. */
+function keepDestination(): void {
+  if (typeof sessionStorage === 'undefined') return
+  const { pathname, search, hash } = window.location
+  rememberDestination(sessionStorage, pathname, search, hash, CALLBACK_PATH)
 }
 
 function buildCallbackUrl(): string {
@@ -181,6 +191,7 @@ export function redirectToPortalSso(): boolean {
   if (isLogoutInProgress()) return false
   if (!allowRedirect()) return false
 
+  keepDestination()
   const portal = resolveLoginPortalOrigin()
   const productKey = resolveProductKeyFromHost()
   const returnUrl = encodeURIComponent(buildCallbackUrl())
@@ -201,6 +212,7 @@ export function redirectToPortalSso(): boolean {
 export function redirectToPortalLoginForm(): void {
   if (isLogoutInProgress()) return
 
+  keepDestination()
   const portal = resolveLoginPortalOrigin()
   const returnUrl = encodeURIComponent(buildCallbackUrl())
   window.location.replace(`${portal}/?${RETURN_PARAM}=${returnUrl}&prompt=login`)

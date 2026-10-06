@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aicountly\Api;
 
 use Aicountly\Api\Controllers\AccessController;
+use Aicountly\Api\Controllers\AnalyticsController;
 use Aicountly\Api\Controllers\BillsController;
 use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
@@ -162,6 +163,10 @@ final class Routes
         $router->post('v1/suppliers/{id}/status', [SuppliersController::class, 'setStatus']);
         $router->get('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);
         $router->post('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);
+
+        // Read-only operational summaries for AICOUNTLY Insights (docs/contracts/insights/).
+        $router->get('v1/analytics/open-commitment', [AnalyticsController::class, 'openCommitment']);
+        $router->get('v1/analytics/po-to-bill', [AnalyticsController::class, 'poToBill']);
 
         // The five dashboards. The view is in the path so a link to one is a
         // link to that one, and Back behaves.
