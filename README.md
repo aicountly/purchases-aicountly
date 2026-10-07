@@ -80,6 +80,13 @@ template. There are two of them, and they work in opposite ways:
 | `VITE_PRODUCT_KEY` | Portal product key. Derived from the hostname when unset |
 | `VITE_PORTAL_LOGIN_URL` | Login portal override. Local development only |
 
+The API's database is set in `server-php/.env`: its **name and username come from
+Console > SaaS Database Details** (`CONSOLE_API_URL` + `CONSOLE_DB_DETAILS_KEY`, the
+`sdb_` key generated on this deployment's row), while host, port and password stay
+in that file. `DB_NAME` / `DB_USER` are a local-development fallback and are not read
+while both Console variables are set. `php server-php/bin/db-check.php` shows where
+the connection comes from and whether it works.
+
 Only `VITE_`-prefixed variables reach the browser bundle, and Vite inlines them
 at build time, so **treat every one of them as public**. Never put a secret,
 token, or password in a `VITE_` variable.

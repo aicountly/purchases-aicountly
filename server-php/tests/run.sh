@@ -39,6 +39,11 @@ ENVEOF
 
 php "$ROOT/bin/migrate.php" > /dev/null
 
+# Where the database name and username come from (Console's SaaS Database Details, or DB_NAME / DB_USER) and what is
+# said when they cannot be had: the resolver, /api/health, bin/db-check.php and bin/migrate.php. Needs the migrated
+# database above; the cases that take a migration record away put it back.
+php "$ROOT/tests/console_database.php"
+
 # Several workers, so the concurrency tests reach it at the same time; the stub
 # serialises its own state with a file lock, as the real services do per key.
 STUB_PULSE_SERVICE_KEY="$PULSE_KEY" PHP_CLI_SERVER_WORKERS=6 php -S "127.0.0.1:$STUB_PORT" "$ROOT/tests/stub/router.php" > /dev/null 2>&1 &
