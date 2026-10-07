@@ -42,7 +42,9 @@ check() {
 }
 
 # It is the Purchases API (fatal). usable:false means the database is unreachable or its schema is
-# missing: configuration on the server, not this deploy, so it only warns.
+# missing: configuration on the server, not this deploy, so it only warns. A console_* reason in
+# .database.reason means the database name and username could not be had from Console
+# (CONSOLE_API_URL / CONSOLE_DB_DETAILS_KEY in api/.env): run php bin/db-check.php in api/ on the host.
 check json "Purchases API (${target})" "${base}/api/health" \
   '.app == "Purchases"' \
   '.usable == true'
