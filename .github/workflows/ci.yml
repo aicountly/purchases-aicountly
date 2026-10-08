@@ -11,10 +11,11 @@ name: CI
 # deploy cannot ship a commit whose suite is red. This workflow only tests and builds: it
 # never deploys, uploads to a host or calls a live service — the integration suite talks to
 # a throwaway PostgreSQL service container and a local stub (tests/stub) only.
+# Manual only since 2026-10-08 (this replaces any "runs on every pull request / push"
+# wording above): no push or pull_request trigger, to save GitHub Actions minutes. Run
+# the same suite locally before merging, or here from the Actions tab (workflow_dispatch);
+# a deploy runs it first when its run_ci_gate box is ticked (workflow_call).
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
   workflow_call:
 
