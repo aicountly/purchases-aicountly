@@ -9,16 +9,21 @@ signs or stores a credential of its own.
 
 | Token | Lifetime | Storage | Use |
 |-------|----------|---------|-----|
-| `auth_token` | Long-lived | `localStorage` + a `.aicountly.com` cookie | Mint / refresh a `ses_key` |
+| `auth_token` | Long-lived | `localStorage` (this origin only) | Mint / refresh a `ses_key` |
 | `ses_key` | ~15 minutes | **Memory only** | `Authorization: Bearer` on product APIs |
 
 `ses_key` must **never** be written to `localStorage` or `sessionStorage`. In
 this app it lives in a module variable in `web/src/auth/tokens.ts` and dies with
 the page.
 
-The `auth_token` cookie is scoped to `.aicountly.com` on purpose:
-`localStorage` is origin-scoped, so without the cookie a user arriving from
-another AICOUNTLY product would have to sign in again.
+The shared, JavaScript-readable `.aicountly.com` `auth_token` cookie is
+**retired**: any script on any `*.aicountly.com` page could read it. It is never
+written or read any more. Cross-product sign-in is the portal hand-off —
+`my.aicountly.com/login/authentication_jump/<product_key>`, backed by the
+portal's own httpOnly `AIC_AUTH_TOKEN` cookie — so a user arriving from another
+AICOUNTLY product still signs in without retyping anything. A leftover cookie
+from an older release is purged (on `*.aicountly.com` only) at start-up and on
+sign-out.
 
 ## Login flow
 
@@ -34,10 +39,11 @@ another AICOUNTLY product would have to sign in again.
    `Bearer auth_token` → `ses_key`.
 5. Dashboard.
 
-Logout clears both tokens and the shared cookie, tells the portal to invalidate
-the `auth_token`, and navigates to `{portal}/login/logout` so the portal's own
-session cookie goes too. Skipping that last step leaves the portal session
-alive and the next visit signs the user straight back in.
+Logout clears both tokens (and purges any leftover legacy `auth_token`
+cookie), tells the portal to invalidate the `auth_token`, and navigates to
+`{portal}/login/logout` so the portal's own session cookie goes too. Skipping
+that last step leaves the portal session alive and the next visit signs the
+user straight back in.
 
 ## Host mapping
 
