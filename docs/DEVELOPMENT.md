@@ -118,6 +118,17 @@ the product works exactly as before, without the widget or the "Discuss in Conne
 
 `test:ui` uses Playwright's Chromium. Where one is already installed, point at
 it with `PURCHASE_CHROMIUM_PATH`; otherwise `npx playwright install chromium`.
+Both browser suites reset the database and the stub's files through
+`server-php/tests/reset.php`, which clears the stub state in `TMPDIR` — run them
+with the same `TMPDIR` the stub was started with. On ports of your own:
+
+```bash
+PURCHASE_APP_URL=http://127.0.0.1:<app> PURCHASE_API_URL=http://127.0.0.1:<api> \
+PURCHASE_CHROMIUM_PATH=/path/to/chromium TMPDIR=<stub state dir> npm --prefix web run test:ui
+```
+
+They are not wired into CI (the repository's workflows are manual-only); run them
+before a release. As of 2026-10-11: `test:ui` 36/36, `test:remediation` 14/14.
 
 The integration suite **rewrites `server-php/.env`** with its own test
 configuration. Restore your local one afterwards.

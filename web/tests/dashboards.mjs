@@ -115,7 +115,7 @@ for (const mm of ['04', '05', '06', '07']) {
       // The last supplier slips from month three on. A sparkline that only ever
       // draws a flat line is not evidence that gaps and declines render.
       const late = sIndex === SUPPLIERS.length && month > 2 && n !== 3
-      await apiPost(`v1/purchase-orders/${po.po_id}/receive`, { received_at: `2026-${mm}-${late ? 27 : 18}` })
+      await apiPost(`v1/purchase-orders/${po.po_id}/receive`, { received_at: `2026-${mm}-${late ? 27 : 18}`, client_token: `seed-${po.po_id}` })
     }
   }
 }
@@ -166,12 +166,17 @@ await ctx.addInitScript(() => {
 })
 const page = await ctx.newPage()
 const settle = () => page.waitForTimeout(600)
+// The dashboards are reached from the shell's sidebar since the 2026-09-23 rebuild (the in-page
+// switcher is gone): Dashboards = overview, Goods receipts = procurement, Supplier reports =
+// suppliers, AI insights = ai-insights. Bills & Payables has its own screen and no sidebar entry.
+const NAV_LABEL = { overview: 'Dashboards', procurement: 'Goods receipts', suppliers: 'Supplier reports', 'ai-insights': 'AI insights' }
+const navLink = (view) => page.locator('.app-shell__sidebar').getByRole('link', { name: NAV_LABEL[view], exact: true })
 
 await page.goto(`${BASE}/dashboard/overview`, { waitUntil: 'networkidle' })
 await settle()
 
-await check('the switcher puts the view in the URL', async () => {
-  await page.locator('.purchase-switcher').getByRole('button', { name: 'Procurement', exact: true }).click()
+await check('the sidebar puts the view in the URL', async () => {
+  await navLink('procurement').click()
   await settle()
   eq(new URL(page.url()).pathname, '/dashboard/procurement', 'pathname')
   ok(await page.getByRole('heading', { name: 'Procurement workspace' }).isVisible(), 'heading changed')
@@ -216,7 +221,7 @@ await check('the period control changes the figures and the URL together', async
   eq(new URL(page.url()).searchParams.get('preset'), 'last_7_days', 'preset in the URL')
   // The server resolves the preset into dates and echoes them back, so the
   // screen can never disagree with the range its figures were computed for.
-  ok((await page.locator('.purchase-scope-line').textContent())?.includes('–'), 'the resolved range is shown')
+  ok((await page.locator('.purchase-meta__period').first().textContent())?.includes('–'), 'the resolved range is shown')
 })
 
 await check('an unknown view redirects rather than erroring', async () => {
@@ -262,8 +267,11 @@ await check('switching views never renders one view against another view payload
   page.on('pageerror', onError)
 
   for (const view of ['procurement', 'suppliers', 'bills-payables', 'ai-insights', 'overview']) {
-    const label = { procurement: 'Procurement', suppliers: 'Suppliers', 'bills-payables': 'Bills & Payables', 'ai-insights': 'AI Insights', overview: 'Overview' }[view]
-    await page.locator('.purchase-switcher').getByRole('button', { name: label, exact: true }).click()
+    if (view === 'bills-payables') {
+      await page.goto(`${BASE}/dashboard/bills-payables`, { waitUntil: 'networkidle' })
+    } else {
+      await navLink(view).click()
+    }
     await settle()
     eq(new URL(page.url()).pathname, `/dashboard/${view}`, `pathname for ${view}`)
     ok((await page.locator('h1').count()) === 1, `${view} still rendered a heading`)
@@ -296,7 +304,7 @@ await check('a KPI and the records behind it agree', async () => {
   const onCard = Number.parseInt(((await card.locator('.purchase-metric__value').textContent()) || '0').replace(/[^0-9]/g, ''), 10)
   ok(Number.isFinite(onCard) && onCard > 0, 'the card shows a count')
 
-  await card.getByRole('button').click()
+  await card.locator('.purchase-metric__link').click()
   await settle()
   eq(new URL(page.url()).searchParams.get('view'), 'open_orders', 'the workbench is filtered to open orders')
 
@@ -352,6 +360,17 @@ await check('the procurement workspace never scrolls sideways, from a laptop dow
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
     ok(overflow <= 1, `the page overflowed by ${overflow}px at ${width}px wide`)
+  }
+  await page.setViewportSize({ width: 1440, height: 950 })
+})
+
+await check('suppliers, orders and AI insights never scroll sideways on a phone (F310)', async () => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  for (const path of ['/suppliers', '/purchase-orders', '/dashboard/ai-insights?preset=this_year']) {
+    await page.goto(`${BASE}${path}`, { waitUntil: 'networkidle' })
+    await settle()
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
+    ok(overflow <= 1, `${path} overflowed by ${overflow}px at 390px wide`)
   }
   await page.setViewportSize({ width: 1440, height: 950 })
 })
@@ -545,7 +564,7 @@ await check('a chart offers its figures as a table', async () => {
 await check('every dashboard is reachable by keyboard alone', async () => {
   await page.goto(`${BASE}/dashboard/overview`, { waitUntil: 'networkidle' })
   await settle()
-  await page.locator('.purchase-switcher').getByRole('button', { name: 'Suppliers', exact: true }).focus()
+  await navLink('suppliers').focus()
   await page.keyboard.press('Enter')
   await settle()
   eq(new URL(page.url()).pathname, '/dashboard/suppliers', 'switched by keyboard')
@@ -598,7 +617,7 @@ await check('a KPI carries its shape and the previous period under it', async ()
 
   const card = page.locator('.purchase-metric', { hasText: 'Purchase value' }).first()
   ok(await card.locator('.purchase-metric__spark').isVisible(), 'the sparkline drew')
-  ok(((await card.locator('.purchase-metric__footer').textContent()) || '').length > 0, 'the footer states the comparison')
+  ok(((await card.locator('.purchase-metric__compare').textContent()) || '').length > 0, 'the card states the comparison')
 
   // The short form is on the card; the exact figure is the tooltip, so nothing
   // rounded is ever the only figure on the screen.
@@ -650,19 +669,18 @@ await check('Ask Aicountly AI is a drawer, and its state is in the URL', async (
   eq(new URL(page.url()).searchParams.get('ask'), null, 'and closing takes it out again')
 })
 
-await check('the monitoring pill reports what actually answered', async () => {
+await check('the live chip reports what actually answered', async () => {
   await page.goto(`${BASE}/dashboard/ai-insights?preset=this_year`, { waitUntil: 'networkidle' })
   await settle()
 
-  const pill = page.locator('.purchase-monitor__pill')
-  const label = ((await pill.textContent()) || '').trim()
+  // Rule-based insights over live data: the chip says "Insights", never "AI monitoring" (F305),
+  // and goes amber naming what did not answer.
+  const chip = page.locator('.purchase-live').first()
+  const label = ((await chip.textContent()) || '').replace(/\s+/g, ' ').trim()
   ok(/Insights\s*(live|limited)/.test(label), `a real state, got "${label}"`)
-
-  await pill.click()
-  await page.waitForTimeout(250)
-  const popover = page.locator('.purchase-monitor__popover')
-  ok(await popover.isVisible(), 'the sources are one click away')
-  ok(((await popover.textContent()) || '').includes('Purchases'), 'and this product is named among them')
+  ok(!/AI monitoring/i.test(label), 'no "AI" claim for rule-based insights')
+  const title = (await chip.getAttribute('title')) || ''
+  ok(title.length > 0, 'the chip says what it is reading')
 })
 
 await check('access administration bootstraps, assigns and shows its own rules', async () => {
@@ -884,7 +902,7 @@ await check('the supplier charts are drawn from the data, with the figures behin
 
   // And the same figures exist as a table, which is what a screen reader and a
   // printout get.
-  const donutPanel = page.locator('section.purchase-panel').filter({ hasText: 'Concentration exposure' }).first()
+  const donutPanel = page.locator('section.purchase-panel').filter({ hasText: 'Spend concentration' }).first()
   await donutPanel.locator('.purchase-chart__toggle button').first().click()
   await page.waitForTimeout(300)
   ok((await donutPanel.locator('table').count()) > 0, 'the donut has a table view')
@@ -907,6 +925,9 @@ await check('a sparkline breaks at months it cannot rate rather than drawing zer
   await page.goto(`${BASE}/dashboard/suppliers?preset=this_year`, { waitUntil: 'networkidle' })
   await settle()
 
+  // The trend column is in the full table ("View all").
+  await page.locator('section.purchase-panel').filter({ hasText: 'Top suppliers performance' }).first().getByRole('button', { name: /^(View all|More columns)$/ }).click()
+  await settle()
   const sparks = page.locator('.purchase-spark')
   ok((await sparks.count()) >= 1, 'the scorecard carries a trend column')
 
