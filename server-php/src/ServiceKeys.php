@@ -69,6 +69,12 @@ final class ServiceKeys
         return null;
     }
 
+    /** Whether SERVICE_KEY_COMPANIES names any company for this product at all. */
+    public static function hasCompanyBinding(string $app): bool
+    {
+        return self::listFor('SERVICE_KEY_COMPANIES', $app) !== null;
+    }
+
     /** Whether a product key may act for this company: only one SERVICE_KEY_COMPANIES lists for it. */
     public static function allowsCompany(string $app, int $cmpId): bool
     {

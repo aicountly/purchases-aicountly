@@ -16,6 +16,7 @@ DB_PASS="${TEST_DB_PASS:-purchases_test}"
 DB_HOST="${TEST_DB_HOST:-127.0.0.1}"
 DB_PORT="${TEST_DB_PORT:-5432}"
 STUB_PORT="${STUB_PORT:-8792}"
+API_PORT="${API_PORT:-8793}"
 # Purchases' own AI Pulse gateway key, for the test API's .env; the stub Pulse insists on it.
 PULSE_KEY="test-pulse-gateway-key"
 
@@ -35,6 +36,8 @@ CONTACTS_API_BASE=http://127.0.0.1:$STUB_PORT/api
 BOOKS_SERVICE_KEY=test-books-key
 INVENTORY_SERVICE_KEY=test-inventory-key
 PULSE_SERVICE_KEY=$PULSE_KEY
+SERVICE_KEYS=books:test-books-service-key-0001,insights:test-insights-service-key-01
+BOOKS_EVENTS_SIGNING_SECRET=test-books-events-secret-0123456789
 ENVEOF
 
 php "$ROOT/bin/migrate.php" > /dev/null
@@ -48,7 +51,11 @@ php "$ROOT/tests/console_database.php"
 # serialises its own state with a file lock, as the real services do per key.
 STUB_PULSE_SERVICE_KEY="$PULSE_KEY" PHP_CLI_SERVER_WORKERS=6 php -S "127.0.0.1:$STUB_PORT" "$ROOT/tests/stub/router.php" > /dev/null 2>&1 &
 STUB_PID=$!
-trap 'kill $STUB_PID 2>/dev/null || true' EXIT
+# The Purchases API itself, through its real front controller, for the routes other products call
+# over HTTP (Books' voucher events, E8-BK-POST A16).
+PHP_CLI_SERVER_WORKERS=2 php -S "127.0.0.1:$API_PORT" -t "$ROOT" "$ROOT/index.php" > /dev/null 2>&1 &
+API_PID=$!
+trap 'kill $STUB_PID $API_PID 2>/dev/null || true' EXIT
 
 # Wait for the stub rather than sleeping a guessed amount.
 for _ in $(seq 1 40); do
@@ -58,7 +65,7 @@ done
 
 # Both suites always run; the script fails if either did.
 status=0
-php "$ROOT/tests/integration.php" || status=$?
+PURCHASES_E2E_BASE="http://127.0.0.1:$API_PORT" BOOKS_EVENTS_SIGNING_SECRET_FOR_TESTS=test-books-events-secret-0123456789 php "$ROOT/tests/integration.php" || status=$?
 php "$ROOT/tests/ai_gateway.php" || status=$?
 php "$ROOT/tests/remediation.php" || status=$?
 # Against a REAL Contacts when CONTACTS_CONTRACT_BASE is set (the e2e harness); skips otherwise.
