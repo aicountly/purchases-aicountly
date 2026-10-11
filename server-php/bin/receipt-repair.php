@@ -176,7 +176,7 @@ function buildReport(?int $cmpFilter, bool $askInventory): array
                 array_agg(status ORDER BY request_id) AS statuses
            FROM purchase_bill_requests b
           WHERE status <> 'CANCELLED' AND supplier_invoice_no IS NOT NULL" . sprintf($cmpSql, 'b') . '
-          GROUP BY cmp_id, supplier_account_id, lower(supplier_invoice_no) HAVING COUNT(*) > 1',
+          GROUP BY cmp_id, supplier_account_id, lower(supplier_invoice_no), invoice_part HAVING COUNT(*) > 1',
     ) as $row) {
         $out['duplicate_invoices'][] = [
             'cmp_id' => (int) $row['cmp_id'], 'supplier_account_id' => (int) $row['supplier_account_id'], 'supplier_invoice_no' => $row['invoice'],
@@ -417,13 +417,13 @@ function applyPlan(string $file, string $actor, string $reason, ?int $cmpId): in
                     case 'create_invoice_index':
                         $dupes = Db::scalar(
                             "SELECT COUNT(*) FROM (SELECT 1 FROM purchase_bill_requests WHERE status <> 'CANCELLED' AND supplier_invoice_no IS NOT NULL
-                              GROUP BY cmp_id, supplier_account_id, lower(supplier_invoice_no) HAVING COUNT(*) > 1) d",
+                              GROUP BY cmp_id, supplier_account_id, lower(supplier_invoice_no), invoice_part HAVING COUNT(*) > 1) d",
                         );
                         if ((int) $dupes > 0) {
                             return 'skipped: ' . $dupes . ' duplicate supplier invoice group(s) remain';
                         }
                         Db::run("CREATE UNIQUE INDEX IF NOT EXISTS uq_purchase_bills_supplier_invoice
-                                   ON purchase_bill_requests (cmp_id, supplier_account_id, lower(supplier_invoice_no))
+                                   ON purchase_bill_requests (cmp_id, supplier_account_id, lower(supplier_invoice_no), invoice_part)
                                    WHERE status <> 'CANCELLED' AND supplier_invoice_no IS NOT NULL");
 
                         return 'applied';

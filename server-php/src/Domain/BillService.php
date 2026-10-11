@@ -95,6 +95,9 @@ final class BillService
             Http::validationFailed('The due date cannot be before the invoice date.', ['field' => 'due_date']);
         }
         $postingDate = $this->postingDate($input['posting_date'] ?? null, $invoiceDate);
+        // A part of a supplier invoice that spans orders or kinds of goods receipt (F170): the
+        // invoice number stays the supplier's; part 2 onwards says why.
+        [$invoicePart, $partReason] = self::invoicePart($input);
 
         $poId = self::id($input['po_id'] ?? null);
         $lines = $this->normaliseLines($input['lines'] ?? [], $poId);
@@ -115,7 +118,7 @@ final class BillService
         $gstinReason = $this->gstinReason($ledger, $supplierGstin, $input);
         [$reverseCharge, $rcmBasis] = self::reverseCharge($input, $ledger, $lines);
 
-        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input, $supplierGstin, $openGrnConfirmation, $gstinReason, $reverseCharge, $rcmBasis): int {
+        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input, $supplierGstin, $openGrnConfirmation, $gstinReason, $reverseCharge, $rcmBasis, $invoicePart, $partReason): int {
             if ($poId !== null) {
                 $po = PoProgress::lock($poId, $this->ctx->cmpId);
                 if ($po === null) {
@@ -129,17 +132,25 @@ final class BillService
 
             // A duplicate supplier invoice number is the oldest payables fraud and the
             // commonest honest mistake. Caught here, and by a unique index behind it.
-            $duplicate = Db::first(
-                "SELECT request_id FROM purchase_bill_requests
+            $parts = Db::all(
+                "SELECT request_id, invoice_part FROM purchase_bill_requests
                  WHERE cmp_id = :cmp AND supplier_account_id = :supplier
-                   AND lower(supplier_invoice_no) = lower(:invoice) AND status <> 'CANCELLED'",
+                   AND lower(supplier_invoice_no) = lower(:invoice) AND status <> 'CANCELLED'
+                 ORDER BY invoice_part",
                 ['cmp' => $this->ctx->cmpId, 'supplier' => $supplierId, 'invoice' => $invoiceNo],
             );
-            if ($duplicate !== null) {
-                Http::conflict(
-                    'A bill with that invoice number has already been entered for this supplier.',
-                    ['existing_request_id' => (int) $duplicate['request_id']],
-                );
+            foreach ($parts as $existing) {
+                if ((int) $existing['invoice_part'] === $invoicePart) {
+                    Http::conflict(
+                        $invoicePart === 1
+                            ? 'A bill with that invoice number has already been entered for this supplier. If this invoice covers another order or another kind of goods receipt, enter it as part 2 of the same invoice and say why.'
+                            : sprintf('Part %d of this supplier invoice has already been entered.', $invoicePart),
+                        ['existing_request_id' => (int) $existing['request_id'], 'invoice_part' => $invoicePart],
+                    );
+                }
+            }
+            if ($invoicePart > 1 && !in_array(1, array_map(static fn ($r) => (int) $r['invoice_part'], $parts), true)) {
+                Http::validationFailed('Enter part 1 of this supplier invoice first; a later part belongs to an invoice already entered.', ['field' => 'invoice_part']);
             }
 
             try {
@@ -151,6 +162,8 @@ final class BillService
                     'bill_kind'             => $kind,
                     'supplier_account_id'   => $supplierId,
                     'supplier_invoice_no'   => $invoiceNo,
+                    'invoice_part'          => $invoicePart,
+                    'invoice_part_reason'   => $partReason,
                     'supplier_invoice_date' => $invoiceDate,
                     'supplier_gstin'        => $supplierGstin,
                     'supplier_gstin_reason' => $gstinReason,
@@ -1314,6 +1327,8 @@ final class BillService
                    AND o.supplier_invoice_date = b.supplier_invoice_date
                    AND o.request_id < b.request_id
                    AND o.status <> 'CANCELLED'
+                   -- Parts of one supplier invoice are not duplicates of each other (F170).
+                   AND NOT (lower(o.supplier_invoice_no) = lower(b.supplier_invoice_no) AND o.invoice_part <> b.invoice_part)
                  ORDER BY o.request_id DESC LIMIT 1
              ) duplicate ON TRUE
              WHERE {$clause}
@@ -1577,6 +1592,11 @@ final class BillService
         }
         $confirmation = $bill['open_grn_confirmation'] ?? null;
         $confirmation = is_string($confirmation) ? Db::jsonColumn($confirmation) : $confirmation;
+        // Part 2 onwards of one supplier invoice (F170): the bill reference stays the supplier's
+        // invoice number, and Books is told why it appears again (its duplicate register records it).
+        if ((int) ($bill['invoice_part'] ?? 1) > 1) {
+            $payload['supplier_invoice_duplicate_reason'] = sprintf('Part %d of supplier invoice %s (Aicountly Purchases bill %d): %s', (int) $bill['invoice_part'], (string) $bill['supplier_invoice_no'], (int) $bill['request_id'], (string) ($bill['invoice_part_reason'] ?? ''));
+        }
         if ($inventoryLines !== [] && $plan['stock_effect'] === 'on_invoice' && is_array($confirmation) && !empty($confirmation['confirmed'])) {
             // Said by the person who entered the bill, against the receipts Inventory named (A09);
             // Books carries it to Inventory, where it stays on the stock document.
@@ -1962,6 +1982,31 @@ final class BillService
         }
 
         return $lines;
+    }
+
+    /**
+     * Which part of the supplier's invoice this bill is (1 when not split) and, for part 2 onwards,
+     * why it is split — at least 10 characters (F170).
+     *
+     * @param array<string, mixed> $input
+     * @return array{0: int, 1: ?string}
+     */
+    private static function invoicePart(array $input): array
+    {
+        $raw = $input['invoice_part'] ?? 1;
+        if (!is_numeric($raw) || (int) $raw < 1 || (int) $raw > 20 || (string) (int) $raw !== trim((string) $raw)) {
+            Http::validationFailed('The invoice part is a whole number from 1 to 20.', ['field' => 'invoice_part']);
+        }
+        $part = (int) $raw;
+        if ($part === 1) {
+            return [1, null];
+        }
+        $reason = self::text($input['invoice_part_reason'] ?? null);
+        if ($reason === null || mb_strlen($reason) < 10) {
+            Http::validationFailed('Say why this supplier invoice is entered in parts (for example: it covers two purchase orders).', ['field' => 'invoice_part_reason']);
+        }
+
+        return [$part, $reason];
     }
 
     private static function truthy(mixed $value): bool

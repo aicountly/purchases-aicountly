@@ -516,6 +516,9 @@ export function BillEditor() {
   const { scope } = usePurchases()
 
   const [invoiceNo, setInvoiceNo] = useState('')
+  // One supplier invoice entered as several bills (F170): the number stays the supplier's.
+  const [invoicePart, setInvoicePart] = useState('1')
+  const [partReason, setPartReason] = useState('')
   // The GSTIN printed on the invoice, only when it is not the one on the supplier's ledger.
   const [supplierGstin, setSupplierGstin] = useState('')
   // Why the invoice's GSTIN is not the one on the supplier's ledger — asked only when they differ (F122).
@@ -595,6 +598,7 @@ export function BillEditor() {
             po_id: po.po_id,
             bill_kind: 'po',
             supplier_invoice_no: invoiceNo.trim(),
+            ...(Number(invoicePart) > 1 ? { invoice_part: Number(invoicePart), invoice_part_reason: partReason.trim() } : {}),
             ...dates,
             narration: narration || undefined,
             lines: [
@@ -685,6 +689,16 @@ export function BillEditor() {
           <Field label="Supplier invoice number" hint="The same invoice cannot be booked twice — here, in Billing or in Smart Books.">
             <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} />
           </Field>
+          {po && (
+            <Field label="Part of the invoice" hint="When one supplier invoice covers several orders, enter each order's bill as a part of the same invoice number.">
+              <Input type="number" min="1" max="20" step="1" value={invoicePart} onChange={(e) => setInvoicePart(e.target.value)} />
+            </Field>
+          )}
+          {po && Number(invoicePart) > 1 && (
+            <Field label="Why is this invoice entered in parts?" hint="Sent to Smart Books with the bill (at least 10 characters).">
+              <Input value={partReason} onChange={(e) => setPartReason(e.target.value)} />
+            </Field>
+          )}
           <Field label="Supplier GSTIN on the invoice (optional)" hint="Only when it differs from the one on their ledger in Smart Books. Its state decides how the GST is split.">
             <Input value={supplierGstin} maxLength={15} onChange={(e) => setSupplierGstin(e.target.value.toUpperCase())} />
           </Field>

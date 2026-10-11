@@ -1432,6 +1432,27 @@ check('F163 (match): freight the order agreed, billed on a line declared as frei
     truthy(str_contains(json_encode(latestExceptions((int) $plain['request_id'])), 'not on the purchase order'), 'an undeclared line is still not on the order');
 });
 
+check('F170: one supplier invoice covering two orders is entered as parts — both post to Books under the supplier\'s own invoice number', function () use ($ctx, $owner) {
+    reset();
+    $bills = new BillService($ctx, $owner);
+    $orders = [];
+    foreach ([1, 2] as $n) {
+        $po = orderOf($ctx, $owner, [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100, 'warehouse_id' => 3]]);
+        receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10);
+        $orders[] = $po;
+    }
+    $billOf = static fn (array $po, array $extra = []) => $bills->enter($extra + ['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'INV-SPLIT', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 10, 'rate' => 100]]]);
+    $first = $billOf($orders[0]);
+    same(409, refused(fn () => $billOf($orders[1]), 'part 2', 'the same number again, unsplit')['status'], 'the same invoice again is refused, pointing at parts');
+    same(422, refused(fn () => $billOf($orders[1], ['invoice_part' => 2]), '', 'part 2 without a reason')['status'], 'a part needs a reason');
+    $second = $billOf($orders[1], ['invoice_part' => 2, 'invoice_part_reason' => 'One invoice for two purchase orders.']);
+    same(409, refused(fn () => $billOf($orders[1], ['invoice_part' => 2, 'invoice_part_reason' => 'One invoice for two purchase orders.']), 'already been entered', 'part 2 twice')['status'], 'a part is entered once');
+    $bills->post((int) $first['request_id']);
+    $bills->post((int) $second['request_id']);
+    $refs = array_values(array_map(static fn ($v) => $v['bill']['bill_ref'] ?? null, array_filter(booksVouchers(), static fn ($v) => is_array($v) && ($v['bill']['bill_ref'] ?? null) !== null)));
+    same(['INV-SPLIT', 'INV-SPLIT'], $refs, 'both Books vouchers carry the supplier\'s own invoice number');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);
