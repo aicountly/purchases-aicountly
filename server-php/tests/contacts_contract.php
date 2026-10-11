@@ -4,6 +4,7 @@
  *
  *   CONTACTS_CONTRACT_BASE=http://127.0.0.1:19800/api \
  *   CONTACTS_CONTRACT_FAULTY_BASE=http://127.0.0.1:19805/api \
+ *   CONTACTS_CONTRACT_FAULT_CMD="/path/to/fault.sh --tag <t> contacts" \
  *   MANAGE_API_BASE=http://127.0.0.1:19801 \
  *   SES_A=… SES_B=… SES_D=… php tests/contacts_contract.php
  *
@@ -220,13 +221,36 @@ check('a member is held to their Contacts role: a viewer is refused by role, an 
     echo "        (Contacts role of B in {$cmp}: {$role})\n";
 });
 
+// The outage case arms its OWN fault and puts it back (E8-BIL F488): it used to assume somebody had
+// already set the proxy to 503, so it failed (or passed for the wrong reason) on a fresh stack.
+// CONTACTS_CONTRACT_FAULT_CMD is the harness's fault command up to the mode, e.g.
+// "ops/harness/bin/fault.sh --tag e8bih_ contacts" (or the e2e "bin/fault.sh --agent <a> contacts").
 $faulty = getenv('CONTACTS_CONTRACT_FAULTY_BASE') ?: '';
-if ($faulty !== '') {
-    check('Contacts down (fault proxy 503) is "unavailable", retryable — not "no contact"', function () use ($ctx, $ownerA, $ledger, $faulty) {
+$faultCmd = getenv('CONTACTS_CONTRACT_FAULT_CMD') ?: '';
+$arm = static function (string $mode) use ($faultCmd): bool {
+    exec($faultCmd . ' ' . escapeshellarg($mode) . ' 2>&1', $out, $code);
+
+    return $code === 0;
+};
+if ($faulty !== '' && $faultCmd === '') {
+    echo "  skip  Contacts down (fault proxy 503): set CONTACTS_CONTRACT_FAULT_CMD so the check can arm and reset the fault itself\n";
+} elseif ($faulty !== '') {
+    check('Contacts down (fault proxy 503) is "unavailable", retryable — not "no contact"', function () use ($ctx, $ownerA, $ledger, $faulty, $arm) {
+        same(true, $arm('503'), 'the fault proxy armed to 503');
         putenv('CONTACTS_API_BASE=' . $faulty);
         try {
             $r = refused(fn () => (new SupplierContactService($ctx, $ownerA))->contactFor($ledger), 'contacts_unavailable', 'outage');
             same(true, (bool) ($r['details']['retryable'] ?? false), 'retryable');
+        } finally {
+            $arm('ok');
+            putenv('CONTACTS_API_BASE=' . getenv('CONTACTS_CONTRACT_BASE'));
+        }
+    });
+    check('and through the same proxy once it is put back, the contact reads again', function () use ($ctx, $ownerA, $ledger, $faulty) {
+        putenv('CONTACTS_API_BASE=' . $faulty);
+        try {
+            (new SupplierContactService($ctx, $ownerA))->contactFor($ledger);
+            same(true, true, 'answered after the fault was reset');
         } finally {
             putenv('CONTACTS_API_BASE=' . getenv('CONTACTS_CONTRACT_BASE'));
         }
