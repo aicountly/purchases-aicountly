@@ -35,6 +35,14 @@ final class Context
     private static array $answers = [];
 
     /**
+     * The company's registered-office GST state as Manage reported it (companyinfo ro_state), when
+     * it is a GST state code — per company, from the same answer that confirmed access.
+     *
+     * @var array<int, ?string>
+     */
+    private static array $companyStates = [];
+
+    /**
      * The financial year's dates as Manage reported them, by "cmp:fy", for checks that
      * need them (a bill's posting date). Only for a year Manage confirmed.
      *
@@ -90,6 +98,10 @@ final class Context
             self::$answers[$key] = $this->askManage($auth);
         }
         $company = self::$answers[$key]['company'];
+        $roState = trim((string) ($company['ro_state'] ?? ''));
+        self::$companyStates[$this->cmpId] = preg_match('/^\d{1,2}$/', $roState) === 1 && (int) $roState >= 1 && ((int) $roState <= 38 || (int) $roState === 97)
+            ? str_pad($roState, 2, '0', STR_PAD_LEFT)
+            : null;
 
         // The year and branch are claims too, and the same answer settles them. A year that
         // is not this company's would scope every query to rows that belong to nobody, and
@@ -195,10 +207,21 @@ final class Context
         return new self($cmpId, $fyId, max(0, $boId));
     }
 
+    /**
+     * The company's own GST state (its registered office), for a company-level document — one
+     * entered under "All branches" (bo_id 0), which has no branch GSTIN to take it from (A13).
+     * Null when Manage did not report one as a GST state code, or was not asked on this request.
+     */
+    public function companyStateCode(): ?string
+    {
+        return self::$companyStates[$this->cmpId] ?? null;
+    }
+
     /** Drop the memoised company checks. Tests only — a request never needs it. */
     public static function forgetVerified(): void
     {
         self::$answers = [];
+        self::$companyStates = [];
         self::$fyRanges = [];
     }
 

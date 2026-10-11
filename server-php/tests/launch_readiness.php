@@ -834,6 +834,43 @@ check('F420: what a short-close stopped waiting for can be reopened, and the ord
     same('RECEIVED', (new Domain\PurchaseOrderService($ctx, $owner))->find((int) $po['po_id'])['status'], 'and received in full');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nA13 — a GST bill entered under All branches\n";
+
+check('A13: under All branches Purchase tells Books the company\'s GST state (Manage\'s registered office), so the bill posts; with none known the refusal says what to do, never "branch #0"', function () use ($owner) {
+    reset();
+    $scope = Context::of(88, 6, 0);
+    $scope->assertAllowed($owner);
+    same('29', $scope->companyStateCode(), 'Manage\'s ro_state, read from the same answer that confirmed access');
+    $po = orderOf($scope, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($scope, $owner, (int) $po['po_id'], $lineId, 10);
+    stubMode(['books_company_state_unknown' => true]);
+    $b = (new BillService($scope, $owner))->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'BO0-1', 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => $lineId, 'qty' => 10, 'rate' => 250, 'tax_cat_id' => 18]]]);
+    same('POSTED', (new BillService($scope, $owner))->post((int) $b['request_id'])['status'], 'posts at bo_id 0');
+    same('29', IntegrationCommand::latest(88, BillService::COMMAND_BILL, 'bill_request', (int) $b['request_id'])['request_payload']['company_state_code'] ?? null, 'with company_state_code');
+
+    // A company that never gave Manage a state or GSTIN: refused by Books, said as what to do.
+    reset();
+    Context::forgetVerified();
+    stubMode(['books_company_state_unknown' => true, 'manage_no_ro_state' => true]);
+    $scope = Context::of(88, 6, 0);
+    $scope->assertAllowed($owner);
+    same(null, $scope->companyStateCode(), 'nothing reported');
+    $po = orderOf($scope, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($scope, $owner, (int) $po['po_id'], $lineId, 10);
+    $b = (new BillService($scope, $owner))->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'BO0-2', 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => $lineId, 'qty' => 10, 'rate' => 250, 'tax_cat_id' => 18]]]);
+    $r = refused(fn () => (new BillService($scope, $owner))->post((int) $b['request_id']), 'GST state', 'no company state anywhere');
+    stubMode([]);
+    truthy(!str_contains($r['message'], 'branch #0'), 'never names branch #0: ' . $r['message']);
+    truthy(str_contains($r['message'], 'Manage') && str_contains($r['message'], 'branch it belongs to'), 'names the remedies');
+    // A refused bill holds nothing and cancels in one step.
+    same('CANCELLED', (new BillService($scope, $owner))->cancel((int) $b['request_id'], ['reason' => 'Re-enter under the Pune branch'])['status'], 'cancelled in one step');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

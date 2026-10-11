@@ -1483,6 +1483,15 @@ final class BillService
         if (($supply['supply_nature'] ?? null) !== null) {
             $payload['supply_nature'] = $supply['supply_nature'];
         }
+        if ((int) $bill['bo_id'] === 0) {
+            // A company-level bill (entered under All branches) has no branch GSTIN for Books to take
+            // the company's GST state from: say it — the registered office's, as Manage reports it —
+            // so the CGST/SGST-or-IGST split is known (A13). Absent, Books resolves it itself.
+            $companyState = Context::of((int) $bill['cmp_id'], (int) $bill['fy_id'], 0)->companyStateCode();
+            if ($companyState !== null) {
+                $payload['company_state_code'] = $companyState;
+            }
+        }
         $confirmation = $bill['open_grn_confirmation'] ?? null;
         $confirmation = is_string($confirmation) ? Db::jsonColumn($confirmation) : $confirmation;
         if ($inventoryLines !== [] && $plan['stock_effect'] === 'on_invoice' && is_array($confirmation) && !empty($confirmation['confirmed'])) {

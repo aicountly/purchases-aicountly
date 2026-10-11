@@ -131,6 +131,13 @@ final class PlaceOfSupply
     public static function explainRefusal(string $booksMessage, array $payload, string $resend): string
     {
         $message = trim($booksMessage) === '' ? 'Smart Books refused it.' : trim($booksMessage);
+        // The COMPANY's state unknown for a company-level bill: Books' words name "branch #0", which
+        // no one can set. Said as what to do instead (A13).
+        if ((int) ($payload['bo_id'] ?? -1) === 0 && preg_match('/branch #0|company\'s \(branch\'s\) GST state|company state/i', $message) === 1) {
+            return 'Smart Books does not know this company\'s GST state, so it cannot split the GST on a bill entered under All branches. '
+                . 'Set the company\'s GSTIN or registered-office state in AICOUNTLY Manage and ' . lcfirst($resend)
+                . ' — or cancel this bill and enter it again under the branch it belongs to.';
+        }
         $sentWithout = trim((string) ($payload['party']['pos_state_code'] ?? '')) === '';
         $aboutSupply = preg_match('/place of supply|pos[_ ]state|state code|gst[_ ]?split|split the gst|company state|branch state/i', $message) === 1;
         if (!$sentWithout || !$aboutSupply) {

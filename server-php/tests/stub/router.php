@@ -487,6 +487,9 @@ if (str_contains($path, '/companyinfo')) {
         'comp_id' => $cmpId,
         'cmp_id' => $cmpId,
         'comp_name' => 'Stub Trading Co',
+        // The registered office's state (Manage: ghm_company_address.state_id), a GST state code
+        // here; mode manage_no_ro_state answers as a company that never filled it in.
+        'ro_state' => empty($modes['manage_no_ro_state']) ? '29' : '',
         // Manage sends its years newest first; the launcher relies on that
         // ordering to preselect the current one.
         'fy_list' => [
@@ -1345,6 +1348,19 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
     // is unknown — no party.pos_state_code — is a 422 and nothing is posted. Every categorised line
     // counts as GST-rated here. Mode books_before_c1 answers as Books did before it: posted, no GST.
     $posState = trim((string) ($voucherPayload['party']['pos_state_code'] ?? ''));
+    // The company's state, as CommercialVoucherComposer resolves it: the payload's
+    // company_state_code, else the branch's (or, for bo_id 0, the company's) GST profile in Manage.
+    // Mode books_company_state_unknown answers as a Books that could resolve neither.
+    $companyStateSent = trim((string) ($voucherPayload['company_state_code'] ?? ''));
+    $categorisedLines = array_filter(array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []), static fn ($l) => !empty($l['tax_cat_id']) && abs((float) ($l['amount'] ?? 0)) >= 0.00005);
+    if (!empty($modes['books_company_state_unknown']) && $companyStateSent === '' && $categorisedLines !== [] && $posState !== '') {
+        $boId = (int) ($voucherPayload['bo_id'] ?? 0);
+        http_response_code(422);
+        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => sprintf(
+            '%d line(s) carry GST, but the company\'s (branch\'s) GST state is not known, so Books cannot tell whether to charge CGST + SGST or IGST. Nothing was posted (it would have posted with no GST). Set the GSTIN or state of branch #%d in AICOUNTLY Manage, or send company_state_code, and retry.',
+            count($categorisedLines), $boId)]]);
+        exit;
+    }
     $categorised = array_filter(array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []), static fn ($l) => !empty($l['tax_cat_id']) && abs((float) ($l['amount'] ?? 0)) >= 0.00005);
     $origin = strtolower(trim((string) ($headers['x-saas-origin'] ?? '')));
     if (empty($modes['books_before_c1']) && $origin !== '' && $origin !== 'books' && $categorised !== [] && $posState === '') {
