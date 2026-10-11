@@ -21,8 +21,14 @@ permissions:
 
 jobs:
   php:
-    name: server-php (syntax + integration suite on PostgreSQL)
+    name: server-php (syntax + integration suite on PostgreSQL) (PHP ${{ matrix.php }})
     runs-on: ubuntu-latest
+    # E8-OPS (F175/F345/F421): the host runtime is a cPanel MultiPHP setting (8.2 observed on Books, 8.4
+    # preferred by the migration step), so the suite runs on both ends of that range.
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.4']
     services:
       postgres:
         image: postgres:16
@@ -42,7 +48,7 @@ jobs:
 
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'   # the app needs 8.1+ (readonly properties) and pdo_pgsql
+          php-version: ${{ matrix.php }}
           coverage: none
           extensions: pdo_pgsql, pgsql, curl, mbstring
 
@@ -53,6 +59,13 @@ jobs:
       # real front controller with `php -S`, and runs tests/integration.php against them.
       - name: Integration suite (server-php/tests/run.sh)
         run: bash server-php/tests/run.sh
+
+      # E8-OPS: the ops kit end to end on the service PostgreSQL — migration lock, staged release
+      # (snapshot -> migrate -> switch -> scheduled jobs), restore drill, health and receiver preflight.
+      - name: Ops kit (server-php/tests/ops/run.sh)
+        env:
+          DB_ADMIN_URL: postgresql://purchases_test:purchases_test@127.0.0.1:5432/purchases_test
+        run: bash server-php/tests/ops/run.sh
 
   web:
     name: web (typecheck + build)
@@ -71,6 +84,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # E8-OPS (F421): known-vulnerable runtime dependencies fail the gate (dev tooling is not shipped).
+      - name: Dependency audit (runtime)
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Typecheck and build
         run: npm run build

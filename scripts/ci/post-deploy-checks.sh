@@ -15,8 +15,8 @@
 #   EXPECTED_ENTRY     the hashed entry script of the build just deployed, e.g.
 #                      assets/index-C5tx8mVh.js from web/dist/index.html. Empty (checking without
 #                      a deploy): the page's <title> is checked instead.
-#   EXPECTED_REVISION  the commit just deployed. The Purchases API does not report the revision it
-#                      runs, so it is not compared; the entry script stands for the build.
+#   EXPECTED_REVISION  the commit just deployed; the API reports it (REVISION, written by
+#                      bin/ops/release.sh) and it must match (E8-OPS, F162).
 #   VERIFY_BASE_URL    tests only: check this origin (e.g. http://127.0.0.1:18777) instead of the
 #                      environment's real one.
 set -uo pipefail
@@ -32,9 +32,6 @@ verify="$(cd "$(dirname "$0")" && pwd)/verify-live.sh"
 entry="${EXPECTED_ENTRY:-}"
 
 echo "Checking Purchases ${target} at ${base}"
-if [ -n "${EXPECTED_REVISION:-}" ]; then
-  echo "The Purchases API does not report its revision, so ${EXPECTED_REVISION} is not compared; the web entry script stands for the build."
-fi
 
 failed=0
 # check <verify-live.sh arguments...>: one check; a failure is counted, the rest still run.
@@ -49,6 +46,21 @@ check() {
 check json "Purchases API (${target})" "${base}/api/health" \
   '.app == "Purchases"' \
   '.usable == true'
+
+# E8-OPS (F162): the API reports the commit bin/ops/release.sh wrote to REVISION; it must be this one.
+if [ -n "${EXPECTED_REVISION:-}" ]; then
+  check json "Purchases revision (${target})" "${base}/api/health" ".revision == \"${EXPECTED_REVISION}\""
+fi
+
+# E8-OPS (F005/F128/F199/F262): in PRODUCTION a deploy is not done until the app is usable, the
+# settings its cross-app journeys need are present (health: config / books_delivery, booleans only)
+# and its background job has run (bin/ops/release.sh installs it and runs it once). Fatal there;
+# a warning on sandbox, whose configuration may legitimately lag.
+if [ "$target" = production ]; then
+  check json "Purchases ready (${target})" "${base}/api/health" '.usable == true and .ready == true'
+else
+  check json "Purchases ready (${target})" "${base}/api/health" '.app == "Purchases"' '.ready == true'
+fi
 
 # The web root serves the build just deployed, or at least the Purchases page (fatal).
 if [ -n "$entry" ]; then

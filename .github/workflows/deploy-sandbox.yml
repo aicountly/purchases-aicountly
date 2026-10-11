@@ -4,9 +4,10 @@
 # MANUAL ONLY. The single trigger is workflow_dispatch — merging or pushing
 # never deploys. Add no push/pull_request/schedule triggers to this file.
 #
-# What it does: builds web/ on the runner, rsyncs the built dist/ over SSH to
-# the cPanel document root, then rsyncs server-php/ to the api/ folder inside
-# that same document root. No source, no node_modules, and no .env ever reach
+# What it does: builds web/ on the runner; checks the receivers this release calls
+# (scripts/ops/preflight-receivers.sh); uploads server-php/ to a stage folder and runs
+# bin/ops/release.sh on the server (snapshot, migrate, switch api/, scheduled jobs);
+# then rsyncs the built dist/ to the document root. No source, no node_modules, and no .env ever reach
 # the server.
 # ---------------------------------------------------------------------------
 name: Deploy to cPanel Sandbox
@@ -18,6 +19,14 @@ on:
         description: Run the GitHub test gate before deploying (off = the suite was run locally before merge)
         type: boolean
         default: false
+      skip_snapshot:
+        description: Skip the pre-migration database snapshot (emergency only; recorded in the summary)
+        type: boolean
+        default: false
+      preflight_override_reason:
+        description: Deploy even if a receiver preflight fails — say why (empty = preflight failures stop the deploy)
+        type: string
+        default: ''
 
 # Never let two deploys to the same target overlap.
 concurrency:
@@ -43,7 +52,12 @@ jobs:
     if: ${{ !cancelled() && !failure() }}
     name: Build and deploy to Sandbox
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    environment:
+      # E8-OPS (F096): a protected GitHub environment — required reviewers and the deployment-branch
+      # rule are set in Settings > Environments > sandbox (an operator step; see docs/DEPLOYMENT.md).
+      name: sandbox
+      url: https://purchase.gh.aicountly.com
 
     steps:
       - name: Check out repository
@@ -53,6 +67,7 @@ jobs:
       # configured. Without this an unset secret would silently expand to an
       # empty string, and `rsync --delete` against "user@host:/" would target
       # the filesystem root instead of the document root.
+
       - name: Validate deployment configuration
         env:
           SSH_HOST: ${{ secrets.SANDBOX_SSH_HOST }}
@@ -156,6 +171,8 @@ jobs:
           SSH_HOST: ${{ secrets.SANDBOX_SSH_HOST }}
           SSH_PORT: ${{ secrets.SANDBOX_SSH_PORT }}
           SSH_USER: ${{ secrets.SANDBOX_SSH_USER }}
+          KNOWN_HOSTS: ${{ secrets.SANDBOX_SSH_KNOWN_HOSTS }}
+          ALLOW_KEYSCAN: ${{ vars.DEPLOY_ALLOW_KEYSCAN }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
@@ -177,15 +194,28 @@ jobs:
           echo "Public key that must appear in the cPanel user's ~/.ssh/authorized_keys:"
           sed 's/^/    /' ~/.ssh/deploy_key.pub
 
-          # Pin the host key so deploys fail closed rather than trusting
-          # whatever answers on that address.
-          if ! ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
-            echo "::error::ssh-keyscan could not reach the host on the configured port."
-            sed 's/^/    /' /tmp/keyscan.err
+          # E8-OPS (F096): the host key is PINNED. SANDBOX_SSH_KNOWN_HOSTS holds the server's known_hosts
+          # line(s) (ssh-keyscan -p <port> <host>, checked against the host's own fingerprint once, by a
+          # person). Trusting whatever answers on first contact (keyscan) is allowed only when the repo
+          # variable DEPLOY_ALLOW_KEYSCAN is true, and then the fingerprint is printed for comparison.
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" | sed 's/\r$//' > ~/.ssh/known_hosts
+            echo "Using the pinned host key(s) from SANDBOX_SSH_KNOWN_HOSTS:"
+            ssh-keygen -l -f ~/.ssh/known_hosts | sed 's/^/    /'
+          elif [ "$ALLOW_KEYSCAN" = "true" ]; then
+            echo "::warning::SANDBOX_SSH_KNOWN_HOSTS is not set; trusting the key the host presents now (DEPLOY_ALLOW_KEYSCAN=true). Pin it."
+            if ! ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
+              echo "::error::ssh-keyscan could not reach the host on the configured port."
+              sed 's/^/    /' /tmp/keyscan.err
+              exit 1
+            fi
+            ssh-keygen -l -f ~/.ssh/known_hosts | sed 's/^/    /'
+          else
+            echo "::error::SANDBOX_SSH_KNOWN_HOSTS is not set. Store the server's known_hosts line(s) in that secret (ssh-keyscan -p <port> <host>, verified against the host), or set the repository variable DEPLOY_ALLOW_KEYSCAN=true to trust the key presented now."
             exit 1
           fi
           if [ ! -s ~/.ssh/known_hosts ]; then
-            echo "::error::The host returned no SSH host key. Check SANDBOX_SSH_HOST and SANDBOX_SSH_PORT."
+            echo "::error::No SSH host key to trust. Check SANDBOX_SSH_KNOWN_HOSTS / SANDBOX_SSH_HOST."
             exit 1
           fi
           chmod 600 ~/.ssh/known_hosts
@@ -210,6 +240,7 @@ jobs:
 
       # Authenticate before touching the document root, so a key problem is
       # reported as a key problem rather than as an rsync exit code.
+
       - name: Verify SSH authentication
         run: |
           if ssh deploy-target 'echo connected' > /tmp/ssh.out 2>/tmp/ssh.err; then
@@ -266,6 +297,76 @@ jobs:
           HINT
           exit 1
 
+      # E8-OPS (A24): every receiver this release calls must already serve what it needs, BEFORE any
+      # file goes live (scripts/ops/receivers.txt, derived from the code by console-react-app
+      # ops/estate/contract-graph.py). Asked from the server (VERIFY_SSH), as the host's WAF graylists
+      # runners. A failure stops the deploy unless preflight_override_reason says why it may go ahead.
+      - name: Receiver preflight
+        env:
+          VERIFY_SSH: ssh deploy-target
+          OVERRIDE_REASON: ${{ inputs.preflight_override_reason }}
+        run: |
+          if bash scripts/ops/preflight-receivers.sh sandbox; then
+            exit 0
+          fi
+          if [ -n "$OVERRIDE_REASON" ]; then
+            echo "::warning::Receiver preflight failed and was overridden: $OVERRIDE_REASON"
+            echo "Receiver preflight OVERRIDDEN: $OVERRIDE_REASON" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error::A receiver is not ready for this release. Deploy it first (docs/DEPLOYMENT.md, deploy order), or re-run with preflight_override_reason."
+          exit 1
+
+      # E8-OPS (F096/F159): the API is uploaded to a STAGE folder outside the document root (relative to
+      # the SSH user's home). Nothing a visitor can reach changes in this step.
+      - name: Upload server-php to the release stage
+        run: |
+          ssh deploy-target 'mkdir -p .aicountly-deploy/purchases-sandbox/stage && chmod 700 .aicountly-deploy'
+          rsync -az --delete \
+            --include='.env.example' \
+            --exclude='.env' \
+            --exclude='.env.*' \
+            --exclude='.git*' \
+            --filter='H /tests/' \
+            --chmod=D755,F644 \
+            -e ssh \
+            server-php/ "deploy-target:.aicountly-deploy/purchases-sandbox/stage/"
+          echo "Uploaded server-php to ~/.aicountly-deploy/purchases-sandbox/stage/"
+
+      # E8-OPS (F096, F159, F160): bin/ops/release.sh, ON THE SERVER — pre-migration snapshot (pg_dump through
+      # the app's own connection), migrations FROM THE STAGE while the old code still serves (expand-only),
+      # then the code switch (rsync stage -> api/, keeping api/.env), REVISION, one first run of the
+      # background job and the crontab block from bin/ops/jobs.txt. Any failure before the switch leaves
+      # the live code untouched. Snapshots: ~/aicountly-backups/purchases-sandbox (newest 14 kept).
+      - name: "Release: snapshot, migrate, switch, scheduled jobs"
+        env:
+          REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
+          PHP_BIN: ${{ secrets.SANDBOX_PHP_BIN }}
+          SKIP_SNAPSHOT: ${{ inputs.skip_snapshot }}
+        run: |
+          snapshot=required
+          if [ "$SKIP_SNAPSHOT" = "true" ]; then
+            snapshot=skip
+            echo "::warning::The pre-migration snapshot was skipped for this deploy (skip_snapshot)."
+            echo "Pre-migration snapshot SKIPPED by $GITHUB_ACTOR" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          rc=0
+          ssh deploy-target "bash .aicountly-deploy/purchases-sandbox/stage/bin/ops/release.sh --stage=.aicountly-deploy/purchases-sandbox/stage --live='$REMOTE_ROOT/api' --revision='$GITHUB_SHA' --backup-dir=aicountly-backups/purchases-sandbox --snapshot=$snapshot ${PHP_BIN:+--php='$PHP_BIN'}" || rc=$?
+          case "$rc" in
+            0)  echo "Released $GITHUB_SHA." ;;
+            10) echo "::error::The stage upload is incomplete (no index.php or release.conf). Nothing changed."; exit 1 ;;
+            11) echo "::error::api/.env does not exist on the server. Create it from api/.env.example first. Nothing changed."; exit 1 ;;
+            12) echo "::error::No PHP 8.1+ with pdo_pgsql on the server. Set SANDBOX_PHP_BIN. Nothing changed."; exit 1 ;;
+            13) echo "::error::The pre-migration snapshot failed (output above). Nothing was migrated; the live code is untouched."; exit 1 ;;
+            14) echo "::error::A migration failed (output above); nothing of that file was applied and the live code is untouched."; exit 1 ;;
+            15) echo "::error::An applied migration has been edited since. Add a new migration instead. The live code is untouched."; exit 1 ;;
+            16) echo "::error::Another migration run holds the lock. Nothing changed; re-run when it has finished."; exit 1 ;;
+            17) echo "::error::The code switch failed after the schema was migrated (expand-only, so the old code still works). Re-run the deploy."; exit 1 ;;
+            18) echo "::error::The code is live but the scheduled jobs could not be installed (output above)."; exit 1 ;;
+            *)  echo "::error::Release failed (exit $rc). See the output above."; exit 1 ;;
+          esac
+
+      # E8-OPS: the web build goes live only after the API it calls (release above).
       - name: Deploy web build to the document root
         env:
           REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
@@ -297,147 +398,6 @@ jobs:
             -e ssh \
             web/dist/ "deploy-target:$REMOTE_ROOT/"
 
-      - name: Deploy server-php to the api folder
-        env:
-          REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
-        run: |
-          # The API's .env is created once by hand on the server and read at
-          # runtime on every request, unlike the web build. It must never be
-          # uploaded and must never be deleted, hence the excludes below
-          # combined with --delete.
-          #
-          # .env.example IS shipped, and the include has to come first because
-          # rsync takes the first matching rule. It is the file someone copies
-          # to api/.env, and telling them to copy a template that was never
-          # uploaded is an instruction nobody can follow. It holds placeholders
-          # only, and the .htaccess deployed beside it 404s every dotfile, so
-          # it is not readable over HTTP.
-          #
-          # tests/ is dev-only and is never sent. The filter is a sender-side
-          # hide (H), not an --exclude, so --delete also removes a copy that an
-          # earlier deploy left on the server; an --exclude would protect it.
-          rsync -avz --delete \
-            --include='.env.example' \
-            --exclude='.env' \
-            --exclude='.env.*' \
-            --exclude='.git*' \
-            --filter='H /tests/' \
-            --chmod=D755,F644 \
-            -e ssh \
-            server-php/ "deploy-target:$REMOTE_ROOT/api/"
-
-          echo "Deployed server-php to \$REMOTE_ROOT/api/"
-          echo "::notice::If this is the first API deploy, copy api/.env.example to api/.env on the server and fill it in. The template is deployed; the real .env is never uploaded and never deleted."
-
-      # --------------------------------------------------------------------
-      # Schema
-      #
-      # Applies pending migrations ON THE SERVER, against the database that
-      # api/.env points at, using the migration files the previous step just
-      # uploaded. It runs on every deploy rather than being remembered, because
-      # it is a no-op when nothing is pending -- "Up to date." and exit 0.
-      #
-      # migrate.php runs each file in its own transaction and records it by
-      # name and checksum, so a half-applied migration cannot exist and a
-      # second run cannot double-apply one. Editing a file that has already
-      # been applied is refused (exit 2) rather than silently ignored.
-      #
-      # This step FAILS THE DEPLOY. New code against an old schema is a broken
-      # app that still answers 200 on /health, which is the most confusing
-      # possible outcome; better to go red here.
-      # --------------------------------------------------------------------
-      - name: Run database migrations
-        env:
-          REMOTE_ROOT: ${{ secrets.SANDBOX_SSH_REMOTE_ROOT }}
-          PHP_BIN: ${{ secrets.SANDBOX_PHP_BIN }}
-        run: |
-          rc=0
-          ssh deploy-target "REMOTE_ROOT='$REMOTE_ROOT' PHP_BIN='${PHP_BIN:-}' bash -s" <<'REMOTE' || rc=$?
-          set -u
-
-          cd "$REMOTE_ROOT/api" 2>/dev/null || exit 91
-          [ -f .env ] || exit 92
-
-          # cPanel hosts carry several PHP builds and the one on PATH is often
-          # the oldest. This app needs 8.1+ (readonly properties) and pdo_pgsql,
-          # so a candidate is accepted only if it has both -- otherwise the
-          # first migration dies on a parse error or "could not find driver".
-          php_ok() {
-            [ -x "$1" ] || return 1
-            v=$("$1" -r 'echo PHP_VERSION_ID;' 2>/dev/null) || return 1
-            case "$v" in ''|*[!0-9]*) return 1 ;; esac
-            [ "$v" -ge 80100 ] || return 1
-            "$1" -m 2>/dev/null | grep -qix 'pdo_pgsql' || return 1
-          }
-
-          PHP=""
-          if [ -n "${PHP_BIN:-}" ]; then
-            php_ok "$PHP_BIN" || exit 93
-            PHP="$PHP_BIN"
-          else
-            for c in /opt/cpanel/ea-php84/root/usr/bin/php \
-                     /opt/cpanel/ea-php83/root/usr/bin/php \
-                     /opt/cpanel/ea-php82/root/usr/bin/php \
-                     /opt/cpanel/ea-php81/root/usr/bin/php \
-                     /usr/local/bin/php /usr/bin/php; do
-              if php_ok "$c"; then PHP="$c"; break; fi
-            done
-            if [ -z "$PHP" ]; then
-              p=$(command -v php 2>/dev/null) || true
-              if [ -n "$p" ] && php_ok "$p"; then PHP="$p"; fi
-            fi
-          fi
-          [ -n "$PHP" ] || exit 94
-
-          echo "Using $PHP ($("$PHP" -r 'echo PHP_VERSION;'))"
-          echo ""
-
-          # Listed first so the log says what is about to change, then applied.
-          "$PHP" bin/migrate.php --status || true
-          echo ""
-          "$PHP" bin/migrate.php
-          REMOTE
-
-          case "$rc" in
-            0)
-              echo "Schema is up to date."
-              ;;
-            2)
-              echo "::error::A migration that has already been applied has been edited since. migrate.php refuses to re-apply it, because the file and the database now disagree. Add a new migration instead of changing an applied one."
-              exit 1
-              ;;
-            91)
-              echo "::error::No api/ directory under SANDBOX_SSH_REMOTE_ROOT on the server. The previous step should have created it -- check the rsync output above."
-              exit 1
-              ;;
-            92)
-              echo "::error::api/.env does not exist on the server, so migrate.php has no database to connect to. Copy api/.env.example to api/.env and fill it in -- the template sits right next to it; the real .env is never uploaded."
-              exit 1
-              ;;
-            93)
-              echo "::error::SANDBOX_PHP_BIN does not point at a usable PHP. It needs to be 8.1 or newer and have the pdo_pgsql extension."
-              exit 1
-              ;;
-            94)
-              echo "::error::Found no PHP 8.1+ with pdo_pgsql on the server. Set the SANDBOX_PHP_BIN secret to the full path of one, e.g. /opt/cpanel/ea-php84/root/usr/bin/php."
-              exit 1
-              ;;
-            *)
-              echo "::error::Migrations failed (exit $rc). The failing file and its error are in the output above; nothing from that file was applied."
-              exit 1
-              ;;
-          esac
-
-      # Is the live site really Purchases, and the build just deployed? The host's
-      # anti-bot page ("One moment, please...") answers some requests from
-      # GitHub's runners with HTTP 200, so a status code proves nothing. These
-      # checks need the app's real answer: its health JSON (no credentials needed)
-      # and this build's entry script on the web root. When the runner is shown
-      # the anti-bot page, the request is repeated from the server over SSH
-      # (deploy-target, still configured here). The paths that must not be
-      # served are asked from the server only, never the runner: the host's WAF
-      # graylists a runner that asks for them, and its SSH with it. A wrong
-      # answer fails the deploy.
       - name: Verify the live app
         env:
           VERIFY_SSH: ssh deploy-target
