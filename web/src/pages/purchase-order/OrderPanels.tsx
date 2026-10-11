@@ -43,6 +43,8 @@ export function ReceiveGoodsPanel({
   const [token] = useState(newToken)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // UNCERTAIN is not "not recorded": Inventory may hold the GRN and the answer was lost (F482).
+  const [uncertain, setUncertain] = useState(false)
   const [dcNo, setDcNo] = useState('')
   const [dcDate, setDcDate] = useState('')
   const [vehicle, setVehicle] = useState('')
@@ -101,6 +103,7 @@ export function ReceiveGoodsPanel({
       })
       onDone()
     } catch (err) {
+      setUncertain(err instanceof ApiError && err.code === 'inventory_uncertain')
       setError(err instanceof ApiError ? err.message : String(err))
     } finally {
       setBusy(false)
@@ -115,7 +118,15 @@ export function ReceiveGoodsPanel({
             ? "This delivery is recorded in Inventory as its own goods receipt (GRN): the goods are in stock from now, at the order's rate until the supplier's bill trues the cost up. The bill will not receive them again."
             : "This delivery is recorded in Inventory as its own goods receipt (GRN). The goods wait on Inventory's pending register and go into stock when the supplier's bill is posted — once, from this receipt."}
         </Notice>
-        {error && <Notice tone="danger" title="The delivery was not recorded" onDismiss={() => setError(null)}>{error}</Notice>}
+        {error && (
+          <Notice
+            tone={uncertain ? 'warning' : 'danger'}
+            title={uncertain ? 'The delivery may have been recorded' : 'The delivery was not recorded'}
+            onDismiss={() => setError(null)}
+          >
+            {error}
+          </Notice>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.6rem' }}>
           <Field label="Supplier delivery challan no."><Input value={dcNo} onChange={(e) => setDcNo(e.target.value)} /></Field>

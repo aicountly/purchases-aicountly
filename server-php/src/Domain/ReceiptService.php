@@ -244,17 +244,12 @@ final class ReceiptService
             Http::conflict('This receipt was recorded under its order\'s identity before receipts had their own. Use the receipt repair report to review it.');
         }
 
-        $response = $this->inventory()->documentBySource(
-            Context::of((int) $receipt['cmp_id'], (int) $receipt['fy_id'], (int) $receipt['bo_id']),
-            'purchases',
-            self::SOURCE_TYPE,
-            $requestId,
-        );
-        if (!$response['ok'] && (int) $response['status'] !== 404) {
-            Http::error(503, 'inventory_unavailable', 'Inventory could not be asked about this receipt just now. Nothing has changed; try again.');
+        $found = $this->bySource($receipt);
+        if ($found['state'] === 'unreadable') {
+            Http::error(503, 'inventory_unavailable', 'Inventory could not be asked about this receipt just now, or answered in a way that cannot be read. Nothing has changed; try again.', ['retryable' => true, 'detail' => $found['why']]);
         }
 
-        $document = self::documentFrom($response);
+        $document = $found['document'];
         $command = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_RECEIPT, 'receipt_request', $requestId);
 
         if ($document === null) {
@@ -307,6 +302,36 @@ final class ReceiptService
         $receipt = $this->findReceipt($requestId);
         if ($receipt === null) {
             Http::notFound('That receipt does not exist.');
+        }
+
+        // A receipt that was ever sent is withdrawn only once Inventory has said it holds nothing
+        // under this receipt's identity (F007): an answer recorded as "nothing written" may have
+        // been wrong — a server error after commit, under the rules before October 2026 — and
+        // withdrawing it then leaves an orphan GRN, and recording the delivery again a second one.
+        $sent = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_RECEIPT, 'receipt_request', $requestId);
+        if ($sent !== null && (int) ($sent['attempts'] ?? 0) > 0 && $receipt['applied_at'] === null
+            && in_array($sent['status'], [IntegrationCommand::FAILED, IntegrationCommand::BLOCKED], true)
+            && $receipt['source_document_type'] === self::SOURCE_TYPE) {
+            $found = $this->bySource($receipt);
+            if ($found['state'] === 'unreadable') {
+                Http::error(503, 'inventory_unavailable', 'Inventory could not confirm that it holds nothing for this receipt, so it has not been withdrawn. Nothing has changed; try again.', ['retryable' => true, 'detail' => $found['why'], 'request_id' => $requestId]);
+            }
+            if ($found['state'] === 'found') {
+                $document = $found['document'];
+                $problem = $this->mismatch($document, $receipt);
+                if ($problem === null && $sent['status'] === IntegrationCommand::FAILED) {
+                    // It was recorded after all. Count it once, from what Inventory holds.
+                    $this->applyOnce($requestId, $document, 'reconcile');
+                    IntegrationCommand::completeByReconcile((int) $sent['command_id'], self::reference($document));
+                }
+                Http::error(409, 'receipt_in_inventory', sprintf(
+                    'Inventory holds %s for this receipt, so it was not withdrawn.%s',
+                    ($document['document_no'] ?? null) ? 'GRN ' . $document['document_no'] : 'a document',
+                    $problem === null && $sent['status'] === IntegrationCommand::FAILED
+                        ? ' It is now recorded on the order. To send the goods back, give them back or reverse the GRN.'
+                        : ' Have it looked at in Inventory before withdrawing anything here.',
+                ), ['request_id' => $requestId, 'inventory_document_id' => $document['document_id'] ?? null, 'retryable' => false]);
+            }
         }
 
         Db::transaction(function () use ($requestId, $reason, &$receipt): void {
@@ -458,7 +483,7 @@ final class ReceiptService
             match ($outcome) {
                 'blocked'   => $message,
                 'uncertain' => 'Inventory did not confirm this receipt. It may have been recorded: press Reconcile to check, or Retry — neither can record it twice.',
-                default     => 'Could not reach Inventory to record this receipt. Nothing has been received — press Retry.',
+                default     => 'Inventory did not record this receipt (' . $message . '). Nothing has been received — press Retry.',
             },
             ['request_id' => $requestId, 'retryable' => $outcome !== 'blocked', 'detail' => $message],
         );
@@ -843,6 +868,54 @@ final class ReceiptService
     private function inventory(): InventoryClient
     {
         return (new InventoryClient())->withService($this->auth->uuid);
+    }
+
+    /**
+     * What Inventory holds under this receipt's identity, as one of three answers:
+     *
+     *   found       a JSON answer naming a document (the live one, when it lists several)
+     *   absent      Inventory's own "not found": 404 with error.code not_found, or an empty list
+     *   unreadable  anything else — a timeout, a 5xx, a 2xx that is not JSON (a splash page, a
+     *               WAF), a bare 404 from something that is not Inventory's route. Never read as
+     *               "never recorded" (F234).
+     *
+     * @param array<string, mixed> $receipt
+     * @return array{state: 'found'|'absent'|'unreadable', document: ?array<string, mixed>, why: string}
+     */
+    private function bySource(array $receipt): array
+    {
+        $response = $this->inventory()->documentBySource(
+            Context::of((int) $receipt['cmp_id'], (int) $receipt['fy_id'], (int) $receipt['bo_id']),
+            'purchases',
+            self::SOURCE_TYPE,
+            (int) $receipt['request_id'],
+        );
+
+        return self::sourceAnswer($response);
+    }
+
+    /**
+     * @param array{ok:bool, status:int, body:?array, error:?string} $response
+     * @return array{state: 'found'|'absent'|'unreadable', document: ?array<string, mixed>, why: string}
+     */
+    public static function sourceAnswer(array $response): array
+    {
+        $body = is_array($response['body'] ?? null) ? $response['body'] : null;
+        if ($response['ok']) {
+            if ($body === null || !array_key_exists('data', $body)) {
+                return ['state' => 'unreadable', 'document' => null, 'why' => 'Inventory answered ' . (int) $response['status'] . ' with something that is not its JSON.'];
+            }
+            $document = self::documentFrom($response);
+
+            return $document === null
+                ? ['state' => 'absent', 'document' => null, 'why' => 'Inventory lists no live document for it.']
+                : ['state' => 'found', 'document' => $document, 'why' => ''];
+        }
+        if ((int) $response['status'] === 404 && (string) ($body['error']['code'] ?? '') === 'not_found') {
+            return ['state' => 'absent', 'document' => null, 'why' => 'Inventory has no document for it.'];
+        }
+
+        return ['state' => 'unreadable', 'document' => null, 'why' => (string) ($response['error'] ?? ('HTTP ' . (int) $response['status']))];
     }
 
     /**

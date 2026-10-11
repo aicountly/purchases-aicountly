@@ -585,6 +585,31 @@ final class PurchaseOrderService
             $entities[] = ['purchase_return', (int) $return['return_id']];
         }
         $row['commands'] = IntegrationCommand::forEntities($this->ctx, $entities);
+
+        // A receipt left REQUESTED or POSTING by an attempt that died (a deploy restart, a worker
+        // killed mid-call) holds its quantity against the order until somebody acts. Once no live
+        // lease protects it, Reconcile (asks Inventory) and Retry (same key, same body) are safe
+        // and offered (F301). No cron: the person on the order decides.
+        $leases = [];
+        foreach ($row['commands'] as $command) {
+            if ($command['entity_type'] === 'receipt_request' && $command['command_type'] === ReceiptService::COMMAND_RECEIPT) {
+                $leases[(int) $command['entity_id']] = $command;
+            }
+        }
+        foreach ($row['receipts'] as $i => $receipt) {
+            $stuck = false;
+            if ($receipt['applied_at'] === null && in_array($receipt['status'], ['REQUESTED', 'POSTING'], true)) {
+                $command = $leases[(int) $receipt['request_id']] ?? null;
+                if ($command === null) {
+                    $stuck = strtotime((string) $receipt['updated_at']) < time() - IntegrationCommand::LEASE_SECONDS;
+                } elseif ($command['status'] === IntegrationCommand::POSTING) {
+                    $stuck = $command['lease_expires_at'] === null || strtotime((string) $command['lease_expires_at']) < time();
+                } else {
+                    $stuck = in_array($command['status'], [IntegrationCommand::PENDING, IntegrationCommand::FAILED, IntegrationCommand::UNCERTAIN], true);
+                }
+            }
+            $row['receipts'][$i]['recoverable'] = $stuck;
+        }
         // Prepared, sent, acknowledged — three facts, each with who, when and how.
         $row['communications'] = Db::all(
             'SELECT communication_id, kind, channel, recipient, source, evidence, note, document_fingerprint, occurred_on, recorded_by, created_at

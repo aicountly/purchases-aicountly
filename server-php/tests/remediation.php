@@ -300,7 +300,7 @@ check('Inventory being down leaves the receipt retryable, and its quantity reser
     $po = orderOf($ctx, $owner);
     $lineId = (int) $po['lines'][0]['line_id'];
 
-    stubFail('inventory-documents/post', 503);
+    stubFail('inventory-documents/post', 503, false, 'company_access_unavailable');
     refused(fn () => receive($ctx, $owner, (int) $po['po_id'], $lineId, 80), 'press Retry', 'Inventory down');
     stubRecover();
 
@@ -384,7 +384,7 @@ check('a cancel and a Retry of the same failed receipt never leave a GRN for a c
     for ($round = 0; $round < 3; $round++) {
         reset();
         $po = orderOf($ctx, $owner);
-        stubFail('inventory-documents/post', 503);
+        stubFail('inventory-documents/post', 503, false, 'company_access_unavailable');
         refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10), 'press Retry', 'first send fails');
         stubRecover();
         $requestId = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests');
@@ -404,7 +404,7 @@ check('a cancel and a Retry of the same failed receipt never leave a GRN for a c
 check('a cancelled receipt cannot be sent again, and its command leaves the open work', function () use ($ctx, $owner) {
     reset();
     $po = orderOf($ctx, $owner);
-    stubFail('inventory-documents/post', 503);
+    stubFail('inventory-documents/post', 503, false, 'company_access_unavailable');
     refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10), 'press Retry', 'first send fails');
     stubRecover();
     $requestId = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests');
@@ -456,7 +456,7 @@ check('an abandoned attempt\'s lease expires, and the next attempt takes it with
 check('a purchase order\'s strip shows the commands of its receipts and bills', function () use ($ctx, $owner) {
     reset();
     $po = orderOf($ctx, $owner);
-    stubFail('inventory-documents/post', 503);
+    stubFail('inventory-documents/post', 503, false, 'company_access_unavailable');
     refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10), 'press Retry', 'a failed GRN');
     stubRecover();
 
@@ -761,7 +761,7 @@ check('a physical return\'s debit note waits for Inventory to confirm the dispat
     $returns->approveReturn($id, ['note' => 'The owner approves a return they raised.']);
 
     refused(fn () => $returns->requestDebitNote($id), 'Send the goods back first', 'debit note before the dispatch');
-    stubFail('inventory-documents/post', 503);
+    stubFail('inventory-documents/post', 503, false, 'company_access_unavailable');
     refused(fn () => $returns->dispatchReturn($id), 'press Retry', 'Inventory down');
     stubRecover();
     refused(fn () => $returns->requestDebitNote($id), 'Send the goods back first', 'debit note after a failed dispatch');
@@ -890,7 +890,7 @@ check('a claim settles only when its debit note is in Books, partly along the wa
     $claims = new Domain\ReturnClaimService($ctx, $owner);
 
     $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 3000, 'adjustment_acc_id' => 7310]);
-    stubFail('/vouchers/drafts', 503);
+    stubFail('/vouchers/drafts', 503, false, 'company_access_unavailable');
     refused(fn () => $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']), 'press Retry', 'Books down');
     stubRecover();
     same('FAILED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution says it failed');
@@ -934,7 +934,7 @@ check('a replacement completes on a recorded GRN of the claim\'s order, once', f
     $r = $resolutions->propose($claimId, ['kind' => 'replacement', 'amount' => 2500]);
     $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
 
-    stubFail('inventory-documents/post', 503);
+    stubFail('inventory-documents/post', 503, false, 'company_access_unavailable');
     refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10), 'press Retry', 'a GRN Inventory has not recorded');
     stubRecover();
     $pending = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
@@ -2261,7 +2261,7 @@ check('a return Inventory could not take is withdrawn, and the GRN is billable a
     ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 40);
     $requestId = (int) $receipt['request_id'];
     $returns = new Domain\ReceiptReturnService($ctx, $owner);
-    stubFail('/reverse', 503);
+    stubFail('/reverse', 503, false, 'company_access_unavailable');
     same(502, refused(fn () => $returns->returnUnbilled($requestId, ['reason' => 'Supplier collecting']), 'Retry', 'Inventory is down')['status'], 'a failure to retry');
     stubRecover();
     refused(fn () => $returns->withdraw($requestId, []), 'Say why', 'withdrawing needs a reason');

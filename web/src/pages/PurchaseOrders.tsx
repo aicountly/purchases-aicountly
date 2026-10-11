@@ -428,6 +428,12 @@ export function PurchaseOrderDetail() {
                         <Button tone="ghost" disabled={busy} onClick={() => setUndoing({ receipt: row, mode: 'reverse' })}>Reverse</Button>
                       )}
                     </span>
+                  ) : row.applied_at === null && row.recoverable && can('receipt.request') ? (
+                    // Left half-sent by an attempt that died: no live lease protects it any more.
+                    <span style={{ display: 'flex', gap: '0.3rem' }} data-testid="receipt-recover">
+                      <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/reconcile`)}>Reconcile</Button>
+                      <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/retry`)}>Retry</Button>
+                    </span>
                   ) : row.applied_at === null && ['FAILED', 'UNCERTAIN', 'BLOCKED'].includes(row.status) && can('receipt.request') ? (
                     <span style={{ display: 'flex', gap: '0.3rem' }}>
                       {row.status === 'UNCERTAIN' && <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/reconcile`)}>Reconcile</Button>}

@@ -17,6 +17,8 @@ import { Button, Notice, StatusBadge } from '../ui'
  *   BLOCKED    it was reached and refused. Retrying unchanged would be refused the
  *              same way, so no Retry is offered; the document has to change.
  *   CANCELLED  withdrawn before it reached the other product. Not shown.
+ *   POSTING    being sent; once its lease has run out the attempt died, and Reconcile and
+ *              Retry are offered as for UNCERTAIN.
  */
 export function CommandStrip({
   commands,
@@ -44,12 +46,12 @@ export function CommandStrip({
           title={describe(command)}
           action={
             <div style={{ display: 'flex', gap: '0.4rem' }}>
-              {command.status === 'UNCERTAIN' && onReconcile && (
+              {(command.status === 'UNCERTAIN' || leaseExpired(command)) && onReconcile && (
                 <Button tone="secondary" disabled={busy} onClick={() => onReconcile(command)}>
                   Reconcile
                 </Button>
               )}
-              {(command.status === 'FAILED' || command.status === 'UNCERTAIN') && onRetry && (
+              {(command.status === 'FAILED' || command.status === 'UNCERTAIN' || leaseExpired(command)) && onRetry && (
                 <Button tone="secondary" disabled={busy} onClick={() => onRetry(command)}>
                   Retry
                 </Button>
@@ -82,15 +84,28 @@ export function CommandStrip({
               {onResend && resendable(command) && ' Put right what Smart Books refused, then Send again: it goes as a new request, built from the document as it stands now.'}
             </p>
           )}
-          {command.status === 'POSTING' && (
+          {command.status === 'POSTING' && !leaseExpired(command) && (
             <p style={{ margin: '0.4rem 0 0', fontSize: '0.82rem', color: 'var(--muted)' }}>
               Being sent right now. Refresh in a moment.
+            </p>
+          )}
+          {leaseExpired(command) && (
+            <p style={{ margin: '0.4rem 0 0', fontSize: '0.82rem', color: 'var(--muted)' }}>
+              The attempt that was sending this stopped before it heard back, so it may already be recorded. Reconcile asks without
+              sending; Retry sends the same request, which cannot be recorded twice.
             </p>
           )}
         </Notice>
       ))}
     </div>
   )
+}
+
+/** A command an attempt claimed and never settled: its lease has run out, so another attempt may take it (F301). */
+export function leaseExpired(command: IntegrationCommand): boolean {
+  if (command.status !== 'POSTING') return false
+  if (!command.lease_expires_at) return true
+  return new Date(command.lease_expires_at).getTime() < Date.now()
 }
 
 const WHAT: Record<string, string> = {

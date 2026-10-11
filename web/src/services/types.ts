@@ -197,6 +197,8 @@ export interface IntegrationCommand {
   last_error: string | null
   external_reference: Record<string, unknown> | string | null
   last_attempt_at: string | null
+  /** When the attempt holding a POSTING command loses its claim; past it, the attempt is presumed dead. */
+  lease_expires_at?: string | null
   completed_at: string | null
 }
 
@@ -239,6 +241,8 @@ export interface ReceiptRequest {
   pending_return?: { kind: 'return' | 'reverse'; reason: string | null } | string | null
   return_history?: Array<{ kind: string; action: string | null; reason: string | null; applied_at: string }> | string | null
   reversed_at?: string | null
+  /** REQUESTED/POSTING with no live lease: an attempt died; Reconcile and Retry are safe (F301). */
+  recoverable?: boolean
 }
 
 export interface ReceiptAppliedLine {

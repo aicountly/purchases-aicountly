@@ -541,7 +541,7 @@ check('refuses to receive more than was ordered', function () use ($ctx, $auth) 
     );
 });
 
-check('an unreachable Inventory leaves the receipt retryable on the same key', function () use ($ctx, $auth) {
+check('a server error from Inventory leaves the receipt UNCERTAIN, retryable on the same key (it may have been recorded)', function () use ($ctx, $auth) {
     resetDatabase();
     $orders = new PurchaseOrderService($ctx, $auth);
     $po = $orders->create(poInput());
@@ -551,7 +551,7 @@ check('an unreachable Inventory leaves the receipt retryable on the same key', f
     stubFail('inventory-documents', 500);
     assertThrows(
         static fn () => (new ReceiptService($ctx, $auth))->request((int) $po['po_id'], []),
-        'press Retry',
+        'may have been recorded',
         'receipt during an outage',
     );
     stubRecover();
@@ -560,10 +560,10 @@ check('an unreachable Inventory leaves the receipt retryable on the same key', f
         'SELECT * FROM purchase_integration_commands WHERE command_type = :t ORDER BY command_id DESC LIMIT 1',
         ['t' => ReceiptService::COMMAND_RECEIPT],
     );
-    assertSame('FAILED', $command['status'], 'FAILED, so it can be retried');
+    assertSame('UNCERTAIN', $command['status'], 'UNCERTAIN: a 500 after the request arrived proves nothing was not written');
     $firstKey = $command['idempotency_key'];
 
-    $requestId = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'FAILED' ORDER BY request_id DESC LIMIT 1");
+    $requestId = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'UNCERTAIN' ORDER BY request_id DESC LIMIT 1");
     (new ReceiptService($ctx, $auth))->retry($requestId);
 
     $keys = array_values(array_unique(array_filter(array_map(

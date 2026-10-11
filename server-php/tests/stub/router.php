@@ -43,6 +43,19 @@ $control = is_file($controlFile) ? (json_decode((string) file_get_contents($cont
 // `after: true` does the work and THEN fails the response — the lost-response case: the
 // other product recorded the document, the caller never heard. Handled at the end.
 $failAfter = !empty($control['path']) && str_contains($path, (string) $control['path']) && !empty($control['after']);
+if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter && !empty($control['html'])) {
+    // Something in front of the receiver answering in its place — a splash page, a WAF, a
+    // proxy's error page: not the receiver's JSON, whatever the status says (F234).
+    http_response_code((int) ($control['status'] ?? 200));
+    header('Content-Type: text/html');
+    echo '<!doctype html><html><body><h1>Please wait</h1></body></html>';
+    exit;
+}
+if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter && !empty($control['bare'])) {
+    // A bare status with no body: a route the receiver does not have, behind a proxy.
+    http_response_code((int) ($control['status'] ?? 404));
+    exit;
+}
 if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter) {
     http_response_code((int) ($control['status'] ?? 500));
     // `message` lets a test answer with the receiver's own words (Books' refusal of a key it
@@ -59,8 +72,15 @@ if ($failAfter) {
     register_shutdown_function(static function () use ($control): void {
         ob_end_clean();
         http_response_code((int) ($control['status'] ?? 504));
+        if (!empty($control['html'])) {
+            header('Content-Type: text/html');
+            echo '<!doctype html><html><body>Bad gateway</body></html>';
+
+            return;
+        }
         header('Content-Type: application/json');
-        echo json_encode(['error' => ['code' => 'stub_lost_response', 'message' => 'Response lost after the work was done'], 'message' => 'Response lost']);
+        $lost = (string) ($control['message'] ?? 'Response lost after the work was done');
+        echo json_encode(['error' => ['code' => (string) ($control['code'] ?? 'stub_lost_response'), 'message' => $lost], 'message' => $lost]);
     });
 }
 

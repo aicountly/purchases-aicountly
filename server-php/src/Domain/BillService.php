@@ -451,6 +451,26 @@ final class BillService
             Http::validationFailed('Say why this bill is being cancelled.', ['field' => 'reason']);
         }
 
+        // A bill whose post FAILED is withdrawn only once Smart Books shows no voucher for this
+        // supplier's invoice (F007): "nothing written" may have been a server error after Books
+        // committed, under the rules before October 2026. A refusal (BLOCKED) is Books' own
+        // definite answer and needs no second look. Asked before any lock is taken.
+        $entered = $this->find($requestId);
+        $sent = $entered === [] ? null : IntegrationCommand::latest($this->ctx->cmpId, self::COMMAND_BILL, 'bill_request', $requestId);
+        if ($sent !== null && $sent['status'] === IntegrationCommand::FAILED && (int) ($sent['attempts'] ?? 0) > 0) {
+            $held = $this->booksHolds($entered);
+            if ($held['state'] === 'unreadable') {
+                Http::error(503, 'books_unavailable', 'Smart Books could not confirm that it holds no voucher for this bill, so it has not been cancelled. Nothing has changed; try again.', ['request_id' => $requestId, 'retryable' => true, 'detail' => $held['why']]);
+            }
+            if ($held['state'] === 'found') {
+                Http::error(409, 'books_holds_bill', sprintf(
+                    'Smart Books holds voucher %s for this supplier\'s invoice %s, so the bill was not cancelled. Post it again: the same request cannot post twice, and the bill is settled from what Books recorded.',
+                    $held['voucher_no'] ?? ('#' . ($held['voucher_id'] ?? '?')),
+                    $entered['supplier_invoice_no'],
+                ), ['request_id' => $requestId, 'books_voucher_id' => $held['voucher_id'], 'retryable' => true]);
+            }
+        }
+
         Db::transaction(function () use ($requestId, $reason): void {
             $bill = Db::first(
                 'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
@@ -483,6 +503,37 @@ final class BillService
         Audit::record($this->ctx, $this->auth, 'bill.cancelled', 'bill_request', $requestId, null, ['status' => 'CANCELLED'], $reason);
 
         return $this->find($requestId);
+    }
+
+    /**
+     * Whether Smart Books' purchase register shows a voucher for this bill — the supplier's invoice
+     * number as its bill reference, for this supplier, in the bill's year.
+     *
+     * @param array<string, mixed> $bill
+     * @return array{state: 'found'|'absent'|'unreadable', voucher_id: ?int, voucher_no: ?string, why: string}
+     */
+    private function booksHolds(array $bill): array
+    {
+        $scope = Context::of((int) $bill['cmp_id'], (int) $bill['fy_id'], 0);
+        $reference = trim((string) $bill['supplier_invoice_no']);
+        $register = (new BooksClient())->withSession($this->auth->sesKey())->registers($scope, [
+            'vch_type_id' => BooksClient::VCH_PURCHASE, 'bill_ref' => $reference,
+        ]);
+        $rows = $register['ok'] && is_array($register['body'] ?? null) ? ($register['body']['data'] ?? null) : null;
+        if (!is_array($rows)) {
+            return ['state' => 'unreadable', 'voucher_id' => null, 'voucher_no' => null, 'why' => (string) ($register['error'] ?? ('HTTP ' . (int) $register['status']))];
+        }
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $party = (int) ($row['party_acc_id'] ?? $row['acc_id'] ?? 0);
+            if (strcasecmp(trim((string) ($row['bill_ref'] ?? '')), $reference) === 0 && ($party === 0 || $party === (int) $bill['supplier_account_id'])) {
+                return ['state' => 'found', 'voucher_id' => isset($row['vch_txn_id']) ? (int) $row['vch_txn_id'] : null, 'voucher_no' => isset($row['vch_number']) ? (string) $row['vch_number'] : null, 'why' => ''];
+            }
+        }
+
+        return ['state' => 'absent', 'voucher_id' => null, 'voucher_no' => null, 'why' => ''];
     }
 
     /** @param array<string, mixed> $po locked order row */

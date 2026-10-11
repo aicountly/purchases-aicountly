@@ -249,6 +249,22 @@ function vouchersPosted(): int
     return count(booksVouchers());
 }
 
+/** Any stub control: path, status, after, code, message, html, bare. */
+function stubControl(array $control): void
+{
+    file_put_contents(sys_get_temp_dir() . '/stub-control.json', json_encode($control));
+}
+
+function receiptRow(int $requestId): array
+{
+    return Db::first('SELECT * FROM purchase_receipt_requests WHERE request_id = :id', ['id' => $requestId]) ?? [];
+}
+
+function receiptCommand(int $requestId): array
+{
+    return IntegrationCommand::find(88, ReceiptService::COMMAND_RECEIPT, 'receipt_request', $requestId) ?? [];
+}
+
 $ctx = ctx();
 $owner = person();
 
@@ -424,6 +440,163 @@ check('F265: nobody accepts a variance on a bill they entered; a financial-adjus
     $r = refused(fn () => (new Domain\ClaimResolutionService($ctx, $settler))->approve((int) $res['resolution_id']), 'permission', 'claim.settle alone');
     same(403, $r['status'], 'a debit note with nothing going back needs return.financial_adjustment');
     unset($claims);
+});
+
+// ---------------------------------------------------------------------------
+echo "\nF007 / F283 / F212 / F234 / F301 — what an answer proves\n";
+
+check('F283: classify() — 5xx after a write is UNCERTAIN, a pre-write gate or stock_busy is FAILED, a non-JSON 2xx proves nothing', function () {
+    $r = static fn (bool $ok, int $status, ?array $body = null, ?string $error = null) => ['ok' => $ok, 'status' => $status, 'body' => $body, 'error' => $error];
+    $err = static fn (string $code, array $details = []) => ['error' => ['code' => $code, 'message' => 'x'] + ($details === [] ? [] : ['details' => $details])];
+    $table = [
+        ['completed', $r(true, 200, ['data' => []])],
+        ['uncertain', $r(true, 200, null)],                                   // splash page / WAF
+        ['uncertain', $r(false, 0)],                                          // no answer
+        ['uncertain', $r(false, 504, $err('gateway_timeout'))],
+        ['uncertain', $r(false, 500, $err('internal_error'))],                // fatal after commit
+        ['uncertain', $r(false, 500, $err('books_handoff_unresolved'))],      // Inventory committed, Books did not
+        ['uncertain', $r(false, 502, null, 'HTTP 502')],                      // gateway HTML
+        ['uncertain', $r(false, 503, null, 'HTTP 503')],                      // bare 503
+        ['failed', $r(false, 503, $err('company_access_unavailable'))],      // gate before any write
+        ['failed', $r(false, 409, $err('stock_busy', ['retryable' => true]))], // F212: nothing changed
+        ['failed', $r(false, 409, $err('some_lock', ['retryable' => true]))],
+        ['uncertain', $r(false, 409, $err('request_in_progress'))],
+        ['uncertain', $r(false, 409, ['status' => 409, 'error' => 409, 'messages' => ['error' => 'This voucher is already being posted. Refresh in a moment and try again.']], 'This voucher is already being posted. Refresh in a moment and try again.')],
+        ['failed', $r(false, 401, $err('unauthorised'))],
+        ['failed', $r(false, 403, $err('forbidden'))],
+        ['failed', $r(false, 429, $err('rate_limited'))],
+        ['blocked', $r(false, 409, $err('conflict'))],
+        ['blocked', $r(false, 422, $err('period_locked'))],
+        ['blocked', $r(false, 409, ['status' => 409, 'error' => 409, 'messages' => ['error' => 'Duplicate supplier invoice']], 'Duplicate supplier invoice')],
+    ];
+    foreach ($table as $i => [$expected, $response]) {
+        same($expected, IntegrationCommand::classify($response), 'row ' . $i . ' (' . $response['status'] . ' ' . json_encode($response['body']) . ')');
+    }
+});
+
+check('F007: Inventory commits the GRN and answers 500 — the receipt is UNCERTAIN, cannot be withdrawn, and Reconcile counts it once', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    stubControl(['path' => 'inventory-documents/post', 'status' => 500, 'after' => true, 'code' => 'books_handoff_unresolved', 'message' => 'Recorded; the Books hand-off did not finish.']);
+    $r = refused(fn () => receive($ctx, $owner, (int) $po['po_id'], $lineId, 10), 'may have been recorded', 'a 500 after commit');
+    stubRecover();
+    same('inventory_uncertain', $r['code'], 'reported as not confirmed, never "nothing received"');
+    $requestId = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
+    same('UNCERTAIN', receiptRow($requestId)['status'], 'the receipt says so');
+    refused(fn () => (new ReceiptService($ctx, $owner))->cancel($requestId, ['reason' => 'Try again']), 'Reconcile it first', 'Withdraw while the outcome is unknown');
+    $after = (new ReceiptService($ctx, $owner))->reconcile($requestId);
+    same('10.0000', (string) $after['lines'][0]['received_qty'], 'counted once from what Inventory holds');
+    same(1, count(inventoryState()['by_id']), 'one GRN in Inventory');
+});
+
+check('F007: a receipt recorded FAILED under the old rules while Inventory holds its GRN is not withdrawn — it is counted once instead', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    stubControl(['path' => 'inventory-documents/post', 'status' => 500, 'after' => true]);
+    refused(fn () => receive($ctx, $owner, (int) $po['po_id'], $lineId, 10), '', 'the lost answer');
+    stubRecover();
+    $requestId = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
+    // What the classification before October 2026 left behind: a 5xx recorded as FAILED.
+    Db::run("UPDATE purchase_integration_commands SET status = 'FAILED' WHERE entity_type = 'receipt_request' AND entity_id = :id", ['id' => $requestId]);
+    Db::run("UPDATE purchase_receipt_requests SET status = 'FAILED' WHERE request_id = :id", ['id' => $requestId]);
+    $r = refused(fn () => (new ReceiptService($ctx, $owner))->cancel($requestId, ['reason' => 'Supplier will resend']), 'receipt_in_inventory', 'withdrawing a receipt Inventory holds');
+    same(409, $r['status'], '409');
+    same('ACCEPTED', receiptRow($requestId)['status'], 'it is counted on the order now');
+    same('COMPLETED', receiptCommand($requestId)['status'], 'and its command is settled by reconcile');
+    same('10.0000', (string) Db::scalar('SELECT received_qty FROM purchase_order_lines WHERE line_id = :id', ['id' => $lineId]), 'once');
+    // Inventory unreadable: nothing is withdrawn either.
+    reset();
+    $po = orderOf($ctx, $owner);
+    stubControl(['path' => 'inventory-documents/post', 'status' => 503, 'code' => 'company_access_unavailable']);
+    refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 5), 'press Retry', 'a gate refusal');
+    $requestId = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
+    stubControl(['path' => 'inventory-documents/by-source', 'status' => 200, 'html' => true]);
+    same(503, refused(fn () => (new ReceiptService($ctx, $owner))->cancel($requestId, ['reason' => 'x']), 'could not confirm', 'by-source answered HTML')['status'], 'unreadable: 503');
+    stubRecover();
+    same('CANCELLED', (new ReceiptService($ctx, $owner))->cancel($requestId, ['reason' => 'Supplier will resend'])['receipt']['status'], 'Inventory says it holds nothing: withdrawn');
+});
+
+check('F234: Reconcile against a splash page or a bare 404 leaves the receipt UNCERTAIN and answers 503; Inventory\'s own not_found sets FAILED', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    stubControl(['path' => 'inventory-documents/post', 'status' => 504]);
+    refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 5), '', 'timeout');
+    $requestId = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
+    foreach ([['status' => 200, 'html' => true], ['status' => 404, 'bare' => true], ['status' => 502, 'html' => true]] as $shape) {
+        stubControl(['path' => 'inventory-documents/by-source'] + $shape);
+        same(503, refused(fn () => (new ReceiptService($ctx, $owner))->reconcile($requestId), 'cannot be read', json_encode($shape))['status'], json_encode($shape) . ' is unreadable');
+        same('UNCERTAIN', receiptRow($requestId)['status'], json_encode($shape) . ' leaves it UNCERTAIN');
+    }
+    stubRecover();
+    same('FAILED', (new ReceiptService($ctx, $owner))->reconcile($requestId)['receipt']['status'], 'Inventory\'s JSON 404 not_found: never recorded, Retry will send it');
+});
+
+check('F212: Inventory\'s 409 stock_busy leaves the receipt retryable (FAILED, not BLOCKED), and a retry on the same key records it', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    stubControl(['path' => 'inventory-documents/post', 'status' => 409, 'code' => 'stock_busy', 'message' => 'This document is being changed by another operation right now. Nothing was changed — try again in a moment.']);
+    $r = refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 5), 'press Retry', 'a busy lock');
+    stubRecover();
+    $requestId = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
+    same('FAILED', receiptCommand($requestId)['status'], 'retryable');
+    $key = receiptCommand($requestId)['idempotency_key'];
+    $after = (new ReceiptService($ctx, $owner))->retry($requestId);
+    same('5.0000', (string) $after['lines'][0]['received_qty'], 'recorded on retry');
+    same($key, receiptCommand($requestId)['idempotency_key'], 'on the same key');
+    unset($r);
+});
+
+check('F007 (bills): Books posts and answers 500 — the bill is UNCERTAIN, cannot be cancelled, and Retry settles it from the one voucher', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 10);
+    $b = bill($ctx, $owner, (int) $po['po_id'], [['po_line_id' => $lineId, 'qty' => 10, 'rate' => 250]]);
+    stubControl(['path' => '/post', 'status' => 500, 'after' => true]);
+    refused(fn () => (new BillService($ctx, $owner))->post((int) $b['request_id']), 'may have been posted', 'a 500 after Books posted');
+    stubRecover();
+    same('UNCERTAIN', Db::scalar('SELECT status FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $b['request_id']]), 'UNCERTAIN');
+    refused(fn () => (new BillService($ctx, $owner))->cancel((int) $b['request_id'], ['reason' => 'x']), 'Retry it to learn', 'cancel while the outcome is unknown');
+    same('POSTED', (new BillService($ctx, $owner))->post((int) $b['request_id'])['status'], 'Retry replays the post');
+    same(1, vouchersPosted(), 'one voucher');
+
+    // A bill FAILED under the old rules while Books holds its voucher is not cancelled.
+    reset();
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 10);
+    $b = bill($ctx, $owner, (int) $po['po_id'], [['po_line_id' => $lineId, 'qty' => 10, 'rate' => 250]], 'LEGACY-1');
+    stubControl(['path' => '/post', 'status' => 500, 'after' => true]);
+    refused(fn () => (new BillService($ctx, $owner))->post((int) $b['request_id']), '', 'lost answer');
+    stubRecover();
+    Db::run("UPDATE purchase_integration_commands SET status = 'FAILED' WHERE entity_type = 'bill_request'");
+    Db::run("UPDATE purchase_bill_requests SET status = 'FAILED' WHERE request_id = :id", ['id' => (int) $b['request_id']]);
+    $r = refused(fn () => (new BillService($ctx, $owner))->cancel((int) $b['request_id'], ['reason' => 'Entered twice']), 'books_holds_bill', 'cancelling a bill Books holds');
+    same(409, $r['status'], '409');
+    same('POSTED', (new BillService($ctx, $owner))->post((int) $b['request_id'])['status'], 'posting again settles it from the voucher Books recorded');
+    same(1, vouchersPosted(), 'still one voucher');
+});
+
+check('F301: a receipt left POSTING by a dead attempt is offered Reconcile and Retry once its lease has run out, and resolves', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    stubControl(['path' => 'inventory-documents/post', 'status' => 504, 'after' => true]);
+    refused(fn () => receive($ctx, $owner, (int) $po['po_id'], $lineId, 7), '', 'lost');
+    stubRecover();
+    $requestId = (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
+    // The worker died between claiming the command and hearing back: POSTING with a lease.
+    Db::run("UPDATE purchase_integration_commands SET status = 'POSTING', lease_token = 'dead', lease_expires_at = NOW() + INTERVAL '60 seconds' WHERE entity_type = 'receipt_request'");
+    Db::run("UPDATE purchase_receipt_requests SET status = 'POSTING' WHERE request_id = :id", ['id' => $requestId]);
+    $view = (new Domain\PurchaseOrderService($ctx, $owner))->find((int) $po['po_id']);
+    same(false, $view['receipts'][0]['recoverable'], 'not while the lease is live');
+    Db::run("UPDATE purchase_integration_commands SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE entity_type = 'receipt_request'");
+    $view = (new Domain\PurchaseOrderService($ctx, $owner))->find((int) $po['po_id']);
+    same(true, $view['receipts'][0]['recoverable'], 'offered once the lease has run out');
+    $after = (new ReceiptService($ctx, $owner))->reconcile($requestId);
+    same('7.0000', (string) $after['lines'][0]['received_qty'], 'Reconcile finds the GRN and counts it once');
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";
