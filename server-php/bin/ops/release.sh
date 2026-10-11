@@ -16,7 +16,7 @@
 #
 # Order — the live code is not touched until the schema it needs is in place:
 #   1. checks   stage has the front controller; live api/.env exists (first deploy: create it first)
-#   2. php      a PHP CLI that satisfies release.conf (version, pdo_pgsql)
+#   2. php      a PHP CLI that satisfies release.conf (MIN_PHP_ID; PHP_EXT, pdo_pgsql unless it names pgsql)
 #   3. env      the live .env is copied into the stage (0600) for the duration, removed on exit
 #   4. snapshot pg_dump of the live database through the app's own connection (bin/db-snapshot.php),
 #               BEFORE any migration. --snapshot=required (default) makes a failed snapshot fatal.
@@ -55,7 +55,7 @@ stage="$(cd "$stage" 2>/dev/null && pwd)" || exit 10
 conf="$stage/bin/ops/release.conf"
 [ -f "$conf" ] || { echo "release: $conf is missing"; exit 10; }
 # Defaults, overridden by release.conf (a file from the repository, not from the server).
-APP="" MIN_PHP_ID=80100 ENTRY="index.php" ENV_FILE=".env" MIGRATE="bin/migrate.php" SNAPSHOT="bin/db-snapshot.php"
+APP="" MIN_PHP_ID=80100 PHP_EXT="pdo_pgsql" ENTRY="index.php" ENV_FILE=".env" MIGRATE="bin/migrate.php" SNAPSHOT="bin/db-snapshot.php"
 PROTECT=() POST_SWITCH=() PREPARE_SH=() MIGRATE_STEPS=() POST_SWITCH_SH=()
 # shellcheck source=/dev/null
 . "$conf"
@@ -75,7 +75,7 @@ php_ok() {
   # Captured first: with pipefail, `php -m | grep -q` fails at random when grep exits on the match
   # while php is still writing (SIGPIPE, exit 141) — which read as "no PHP CLI found".
   local m; m=$("$1" -m 2>/dev/null) || return 1
-  case $'\n'"${m,,}"$'\n' in *$'\n'pdo_pgsql$'\n'*) return 0 ;; *) return 1 ;; esac
+  case $'\n'"${m,,}"$'\n' in *$'\n'"${PHP_EXT,,}"$'\n'*) return 0 ;; *) return 1 ;; esac
 }
 PHP=""
 if [ -n "$php_bin" ]; then
@@ -87,7 +87,7 @@ else
     if [ -n "$c" ] && php_ok "$c"; then PHP="$c"; break; fi
   done
 fi
-[ -n "$PHP" ] || { echo "release: no PHP CLI (>= $MIN_PHP_ID with pdo_pgsql) found; set --php"; exit 12; }
+[ -n "$PHP" ] || { echo "release: no PHP CLI (>= $MIN_PHP_ID with $PHP_EXT) found; set --php"; exit 12; }
 echo "release: ${APP} ${revision} using $PHP ($("$PHP" -r 'echo PHP_VERSION;'))"
 
 # The stage gets the live configuration only while this script runs.

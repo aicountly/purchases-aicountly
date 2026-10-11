@@ -131,6 +131,9 @@ applied=$(psql "$(dburl "$DB")" -qAt -c "SELECT COUNT(*) FROM ${MIGTABLE}")
 grep -q "# >>> aicountly-${APP} jobs: $WORK/live >>>" "$CRON" && ok "crontab block installed" || no "crontab block: $(cat "$CRON")"
 bash "$WORK/live/bin/ops/install-jobs.sh" --check --php="$(command -v php)" --api-dir="$WORK/live" >/dev/null && ok "install-jobs --check: installed block matches jobs.txt" || no "install-jobs --check"
 before="$(cat "$CRON")"
+# Snapshot names carry the second; a second release within the same second as the first would reuse the
+# name and leave one dump (a flake of this test, not of release.sh).
+sleep 1
 bash "$WORK/stage/bin/ops/release.sh" --stage="$WORK/stage" --live="$WORK/live" --revision="$REV" \
   --backup-dir="$WORK/backups" --php="$(command -v php)" >"$WORK/release2.out" 2>&1 || no "second release"
 [ "$before" = "$(cat "$CRON")" ] && [ "$(grep -c '>>> aicountly-' "$CRON")" = 1 ] && ok "second release: crontab unchanged, one block" || no "crontab not idempotent"
