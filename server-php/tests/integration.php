@@ -1348,8 +1348,9 @@ check('supplier concentration states the denominator it used', function () use (
 check('concentration refuses to add two currencies together', function () use ($ctx, $auth) {
     resetDatabase();
     $orders = new PurchaseOrderService($ctx, $auth);
-    $orders->create(poInput());
-    $orders->create(poInput(['currency_code' => 'USD', 'exchange_rate' => 83]));
+    // Issued: a draft is not purchase value (F373).
+    issuedOrder($orders, poInput());
+    issuedOrder($orders, poInput(['currency_code' => 'USD', 'exchange_rate' => 83]));
 
     // The orders are dated in September 2026 (poInput): ask for that month, not whichever month
     // the suite happens to run in — from 1 Oct 2026 the default period held no orders at all.
@@ -2006,7 +2007,7 @@ check('a forecast is refused rather than extrapolated from too little history', 
 
 check('the six figures at the top are the ones the screen is about', function () use ($ctx, $auth) {
     resetDatabase();
-    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+    issuedOrder(new PurchaseOrderService($ctx, $auth), poInput([
         'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 1000]],
     ]));
 
@@ -2026,7 +2027,7 @@ check('the six figures at the top are the ones the screen is about', function ()
 
 check('a card carries the short form and the exact figure, never only the short one', function () use ($ctx, $auth) {
     resetDatabase();
-    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+    issuedOrder(new PurchaseOrderService($ctx, $auth), poInput([
         'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 2845000]],
     ]));
 
@@ -2126,7 +2127,7 @@ check('every insight row says what kind of statement it is', function () use ($c
 
 check('the category split refuses rather than grouping the spend by something else', function () use ($ctx, $auth) {
     resetDatabase();
-    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+    issuedOrder(new PurchaseOrderService($ctx, $auth), poInput([
         'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100]],
     ]));
 
@@ -2500,6 +2501,16 @@ function callAccess(string $action, Context $ctx, Auth $auth, array $body = [], 
 }
 
 /** Give a user a profile directly, for tests that need a non-owner administrator. */
+/** An order taken through approval and issue: only issued orders are purchase value (F373). */
+function issuedOrder(PurchaseOrderService $orders, array $input): array
+{
+    $po = $orders->create($input);
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    return $po;
+}
+
 function grantProfile(Context $ctx, string $uuid, string $name, array $permissions): int
 {
     $profileId = (int) Db::insert('purchase_permission_profiles', [
@@ -2748,6 +2759,26 @@ check('the owner is never locked out by this rule', function () use ($ctx, $auth
     $result = callAccess('unassign', $ctx, $auth, [], [(string) $assignment['assignment_id']]);
     assertSame(200, $result['status'], 'the owner may remove it: their access comes from the portal');
     assertTrue(Permissions::allows($ctx, $auth, 'access.manage'), 'and they still have it');
+});
+
+check('F306: you cannot edit your own last access-management profile to drop it (or deactivate it)', function () use ($ctx) {
+    resetDatabase();
+
+    $admin = authFor('user-admin', 2);
+    grantProfile($ctx, 'user-admin', 'Access admin', ['access.manage', 'po.view']);
+    $profileId = (int) Db::scalar("SELECT profile_id FROM purchase_permission_profiles WHERE profile_name = 'Access admin'");
+
+    $result = callAccess('saveProfile', $ctx, $admin, ['profile_id' => $profileId, 'profile_name' => 'Access admin', 'permissions' => ['po.view']]);
+    assertSame(409, $result['status'], 'dropping access.manage from your own last grant is refused');
+    assertTrue(str_contains((string) $result['message'], 'your own last grant'), 'and says why: ' . $result['message']);
+    $result = callAccess('saveProfile', $ctx, $admin, ['profile_id' => $profileId, 'profile_name' => 'Access admin', 'permissions' => ['access.manage', 'po.view'], 'is_active' => false]);
+    assertSame(409, $result['status'], 'deactivating it is refused too');
+    assertTrue(Permissions::allows($ctx, $admin, 'access.manage'), 'the grant survives');
+
+    // With a second grant elsewhere it is allowed.
+    grantProfile($ctx, 'user-admin', 'Deputy admin', ['access.manage']);
+    $result = callAccess('saveProfile', $ctx, $admin, ['profile_id' => $profileId, 'profile_name' => 'Access admin', 'permissions' => ['po.view']]);
+    assertSame(200, $result['status'], 'allowed while another grant remains');
 });
 
 check('a profile in use cannot be deleted out from under people', function () use ($ctx, $auth) {

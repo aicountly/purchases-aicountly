@@ -641,7 +641,7 @@ final class OverviewDashboard extends Dashboard
                     "SELECT p.supplier_account_id, p.supplier_name_snapshot,
                             SUM(p.total_amount)::text AS amount, COUNT(*) AS order_count
                      FROM purchase_orders p
-                     WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'" . $filterSql . "
+                     WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED')" . $filterSql . "
                      GROUP BY p.supplier_account_id, p.supplier_name_snapshot
                      ORDER BY SUM(p.total_amount) DESC
                      LIMIT 6",
@@ -651,7 +651,7 @@ final class OverviewDashboard extends Dashboard
             );
             $base = $this->amount(
                 "SELECT COALESCE(SUM(p.total_amount), 0)::text FROM purchase_orders p
-                 WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'" . $filterSql,
+                 WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED')" . $filterSql,
                 $this->period->params() + $filterParams,
                 'p',
             );

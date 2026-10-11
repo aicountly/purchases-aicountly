@@ -95,7 +95,7 @@ final class SuppliersDashboard extends Dashboard
                        MAX(p.currency_code)                                AS currency_code,
                        COUNT(DISTINCT p.currency_code)                     AS currency_count
                 FROM purchase_orders p
-                WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'" . $filterSql . "
+                WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED')" . $filterSql . "
                 GROUP BY p.supplier_account_id
             ),
             lines AS (
@@ -110,7 +110,7 @@ final class SuppliersDashboard extends Dashboard
                        COALESCE(SUM(GREATEST(l.ordered_qty - l.received_qty, 0) * l.agreed_rate), 0) AS open_exposure
                 FROM purchase_order_lines l
                 JOIN purchase_orders p ON p.po_id = l.po_id
-                WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'" . $filterSql . "
+                WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED')" . $filterSql . "
                 GROUP BY p.supplier_account_id
             ),
             receipts AS (
@@ -197,7 +197,7 @@ final class SuppliersDashboard extends Dashboard
                 'active_suppliers',
                 'Suppliers bought from',
                 (string) count($performance),
-                'Suppliers with at least one uncancelled purchase order dated in ' . $this->period->label() . '.',
+                'Suppliers with at least one issued purchase order (drafts excluded) dated in ' . $this->period->label() . '.',
                 [
                     'direction' => Metric::NEUTRAL,
                     'comparison_unavailable_reason' => 'A supplier count for a previous period is not a like-for-like comparison unless the same suppliers are in both.',
@@ -253,7 +253,7 @@ final class SuppliersDashboard extends Dashboard
                 ? Metric::unavailable(
                     'concentration',
                     'Largest supplier share',
-                    'No uncancelled orders in this period, so there is no base to take a share of.',
+                    'No issued orders in this period, so there is no base to take a share of (drafts are not counted).',
                     'The largest single supplier\'s ordered value as a share of all ordered value in the period.',
                     ['format' => 'percent', 'direction' => Metric::LOWER_IS_BETTER],
                 )
@@ -1164,7 +1164,7 @@ final class SuppliersDashboard extends Dashboard
                     COUNT(*)                        AS line_count
              FROM purchase_order_lines l
              JOIN purchase_orders p ON p.po_id = l.po_id
-             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'
+             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED')
                AND l.item_id IS NOT NULL
              GROUP BY l.item_id
              HAVING COUNT(DISTINCT p.supplier_account_id) = 1 AND COUNT(*) >= 2

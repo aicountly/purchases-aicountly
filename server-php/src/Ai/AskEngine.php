@@ -407,12 +407,12 @@ final class AskEngine
     /** @return array<string, mixed> */
     private static function concentration(Context $ctx, Period $period): array
     {
-        // The same base and scope as the dashboards (F028): ordered value of every uncancelled
+        // The same base and scope as the dashboards (F028): ordered value of every issued
         // order in the period in the person's branch scope — not the sum of the ten listed, which
         // overstated every share.
         [$bo, $boParams] = self::branch($ctx, 'p.bo_id');
         $params = ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $period->params() + $boParams;
-        $where = "p.cmp_id = :cmp AND p.fy_id = :fy{$bo} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'";
+        $where = "p.cmp_id = :cmp AND p.fy_id = :fy{$bo} AND p.po_date BETWEEN :from AND :to AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED')";
         $rows = Db::all(
             "SELECT p.supplier_account_id, p.supplier_name_snapshot,
                     SUM(p.total_amount)::text AS value, COUNT(*) AS orders,
@@ -446,13 +446,13 @@ final class AskEngine
 
         return [
             'answer'  => $records === []
-                ? 'No uncancelled orders were raised in ' . $period->label() . ', so there is no concentration to report.'
+                ? 'No issued orders were raised in ' . $period->label() . ', so there is no concentration to report.'
                 : ($records[0]['supplier'] ?? 'The largest supplier') . ' accounts for '
                     . ($topShare === null ? 'an unstated share' : Format::percent($topShare, 1))
                     . ' of ' . Format::money($total, $currency) . ' ordered in ' . $period->label() . '.',
             'records' => $records,
             'sources' => [['id' => 'purchases', 'label' => 'Purchases orders', 'as_of' => gmdate('c')]],
-            'calculation' => 'Ordered value per supplier as a share of the total ordered value of every uncancelled order in the period (not just the suppliers listed), in the branch scope shown — the same base the dashboards use. The base is ordered value, not posted purchases — it measures commitment, which is what a buyer can still act on.',
+            'calculation' => 'Ordered value per supplier as a share of the total ordered value of every issued order in the period (not just the suppliers listed; drafts and orders awaiting approval are not counted), in the branch scope shown — the same base the dashboards use. The base is ordered value, not posted purchases — it measures commitment, which is what a buyer can still act on.',
             'uncertainty' => $mixed
                 ? 'Orders in this period are in more than one currency. The shares combine amounts that are not comparable; treat them as indicative only, or filter to one currency on the dashboard.'
                 : null,

@@ -403,6 +403,10 @@ final class AccessController extends Controller
             // permissions you cannot grant and add ones you can — the
             // escalation rule with an extra step.
             self::assertMayRewrite($existing, $permissions, $ctx, $auth);
+            // The self-lockout floor holds on this path too (F306): taking access management out of
+            // (or deactivating) the profile that is your own last grant of it is the same act as
+            // removing that assignment.
+            self::assertProfileEditKeepsAdmin($existing, $permissions, (bool) ($body['is_active'] ?? true), $ctx, $auth);
         }
 
         $clash = Db::first(
@@ -767,6 +771,48 @@ final class AccessController extends Controller
             Http::conflict(
                 'That is your own last grant of access management. Removing it would leave you unable to '
                 . 'undo it — give somebody else this permission first, or ask the company owner, who always has it.',
+            );
+        }
+    }
+
+    /**
+     * Refuse the profile edit that leaves its editor without access management, when it is their
+     * last grant of it — the rule assertNotLockingSelfOut applies to removing an assignment. The
+     * owner is exempt, as there: the portal gives them access whatever this product holds.
+     *
+     * @param array<string, mixed> $existing the profile as stored
+     * @param list<string> $next the permissions it is being given
+     */
+    private static function assertProfileEditKeepsAdmin(array $existing, array $next, bool $active, \Aicountly\Api\Context $ctx, \Aicountly\Api\Auth $auth): void
+    {
+        if ($auth->ownsCompany($ctx->cmpId)) {
+            return;
+        }
+        $current = array_values(array_filter(Db::jsonColumn($existing['permissions']), static fn ($p) => is_string($p)));
+        if (!in_array('access.manage', $current, true) || ($active && in_array('access.manage', $next, true))) {
+            return;
+        }
+        $profileId = (int) $existing['profile_id'];
+        $holdsThis = (int) Db::scalar(
+            'SELECT COUNT(*) FROM ' . Permissions::TABLE_ASSIGNMENTS . ' WHERE cmp_id = :cmp AND user_uuid = :uuid AND profile_id = :id',
+            ['cmp' => $ctx->cmpId, 'uuid' => $auth->uuid, 'id' => $profileId],
+        );
+        if ($holdsThis === 0) {
+            return;
+        }
+        $others = (int) Db::scalar(
+            'SELECT COUNT(*)
+             FROM ' . Permissions::TABLE_ASSIGNMENTS . ' a
+             JOIN ' . Permissions::TABLE_PROFILES . " p ON p.profile_id = a.profile_id
+             WHERE a.cmp_id = :cmp AND a.user_uuid = :uuid AND a.profile_id <> :id
+               AND p.is_active = TRUE AND p.permissions @> '[\"access.manage\"]'::jsonb",
+            ['cmp' => $ctx->cmpId, 'uuid' => $auth->uuid, 'id' => $profileId],
+        );
+        if ($others === 0) {
+            Http::conflict(
+                'This profile is your own last grant of access management. Taking it out would leave you unable to '
+                . 'undo it — give somebody else this permission first, or ask the company owner, who always has it.',
+                ['reason' => 'last_access_manager'],
             );
         }
     }

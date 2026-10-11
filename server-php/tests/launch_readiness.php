@@ -1155,7 +1155,9 @@ check('F028: Ask\'s concentration share is of all uncancelled ordered value (not
     $orders = new PurchaseOrderService($ctx, $owner);
     // Twelve suppliers: the two smallest fall outside the listed ten but are in the base.
     foreach (range(0, 11) as $i) {
-        $orders->create(poInput(['supplier_account_id' => 601 + $i, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 1000 - $i * 50, 'warehouse_id' => 3]]]));
+        $po = $orders->create(poInput(['supplier_account_id' => 601 + $i, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 1000 - $i * 50, 'warehouse_id' => 3]]]));
+        $orders->submit((int) $po['po_id']);
+        $orders->issue((int) $po['po_id']);
     }
     $period = Dashboards\Period::forDates('2026-09-01', '2026-09-30');
     $total = (string) Db::scalar("SELECT SUM(total_amount) FROM purchase_orders WHERE cmp_id = 88 AND status <> 'CANCELLED'");
@@ -1165,12 +1167,30 @@ check('F028: Ask\'s concentration share is of all uncancelled ordered value (not
     same(Dashboards\Decimal::percentOf(Dashboards\Decimal::of($top), Dashboards\Decimal::of($total), 1), $answer['records'][0]['share_pc'], 'the top share is of the whole base, as the dashboards compute it');
     // A branch-3 order is not in a branch-1 person's answer.
     $branch3 = $orders->create(poInput(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 99999, 'warehouse_id' => 3]]]));
+    $orders->submit((int) $branch3['po_id']);
+    $orders->issue((int) $branch3['po_id']);
     Db::run('UPDATE purchase_orders SET bo_id = 3 WHERE po_id = :id', ['id' => (int) $branch3['po_id']]);
     $branch1 = Ai\AskEngine::answer(Context::of(88, 6, 1), $owner, $period, 'supplier concentration', 'concentration');
     same($answer['records'][0]['share_pc'], $branch1['records'][0]['share_pc'], 'branch 1 sees the same shares: the branch-3 order is left out');
     same('Branch 1', $branch1['scope']['branch_label'], 'and the scope says so');
     $company = Ai\AskEngine::answer($ctx, $owner, $period, 'supplier concentration', 'concentration');
     truthy($company['records'][0]['share_pc'] !== $answer['records'][0]['share_pc'], 'the company-level answer includes it');
+});
+
+check('F373: a draft order is not purchase value — dashboards and Ask count issued orders only', function () use ($ctx, $owner) {
+    reset();
+    $orders = new PurchaseOrderService($ctx, $owner);
+    $issued = orderOf($ctx, $owner, [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100, 'warehouse_id' => 3]]);
+    $orders->create(poInput(['supplier_account_id' => 602, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 100, 'agreed_rate' => 100, 'warehouse_id' => 3]]]));
+    $period = Dashboards\Period::forDates('2026-09-01', '2026-09-30');
+    $answer = Ai\AskEngine::answer($ctx, $owner, $period, 'supplier concentration', 'concentration');
+    same(1, count($answer['records']), 'only the issued order\'s supplier: ' . json_encode($answer['records']));
+    same(100.0, (float) $answer['records'][0]['share_pc'], 'all of the issued value');
+    $_GET = ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0', 'preset' => 'custom', 'from' => '2026-09-01', 'to' => '2026-09-30'];
+    $suppliers = (new Dashboards\SuppliersDashboard($ctx, $owner, Dashboards\Period::fromRequest(), Dashboards\Filters::fromRequest()))->build();
+    $json = json_encode($suppliers);
+    truthy(!str_contains($json, '"supplier_account_id":602'), 'the draft-only supplier is not on the suppliers dashboard');
+    unset($issued);
 });
 
 echo "\n" . str_repeat('-', 60) . "\n";
