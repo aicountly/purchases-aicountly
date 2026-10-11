@@ -106,7 +106,7 @@ final class PurchaseOrdersController extends Controller
     public static function receive(string $id): void
     {
         [$auth, $ctx] = self::enter();
-        Http::data((new ReceiptService($ctx, $auth))->request((int) $id, Http::body()));
+        Http::data((new ReceiptService($ctx, $auth))->request((int) $id, Http::body(), true));
     }
 
     public static function retryReceipt(string $id): void

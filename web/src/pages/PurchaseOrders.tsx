@@ -13,6 +13,7 @@ import { ItemPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
 import * as decimal from '../utils/decimal'
+import { localToday } from '../utils/localDate'
 
 const STATUSES = ['', 'DRAFT', 'APPROVAL_PENDING', 'APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED']
 
@@ -556,7 +557,7 @@ export function PurchaseOrderEditor() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [supplier, setSupplier] = useState<{ id: number; name: string; status?: string } | null>(null)
-  const [poDate, setPoDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [poDate, setPoDate] = useState(() => localToday())
   const [promisedDate, setPromisedDate] = useState('')
   const [paymentTerms, setPaymentTerms] = useState('')
   const [freight, setFreight] = useState('0')

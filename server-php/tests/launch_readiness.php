@@ -995,6 +995,111 @@ check('F274: open items keep debit notes, advances and ON ACCOUNT apart; the tot
     unset($po);
 });
 
+// ---------------------------------------------------------------------------
+echo "\nF120 / F009 / F281 / F388 / F482 — what a goods receipt sends and refuses\n";
+
+function lastReceiptId(): int
+{
+    return (int) Db::scalar('SELECT request_id FROM purchase_receipt_requests ORDER BY request_id DESC LIMIT 1');
+}
+
+check('F120: a USD order at 83 sends Inventory the GRN line in rupees (830), with the dollar figures beside it', function () use ($ctx, $owner) {
+    reset();
+    $orders = new PurchaseOrderService($ctx, $owner);
+    $po = $orders->create(poInput(['currency_code' => 'USD', 'exchange_rate' => 83, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 5, 'agreed_rate' => 10, 'warehouse_id' => 3]]]));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+    $po = $orders->find((int) $po['po_id']);
+    receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 5);
+    $line = receiptCommand(lastReceiptId())['request_payload']['lines'][0];
+    same(830.0, (float) $line['rate'], 'valued at the rupee rate');
+    same(4150.0, (float) $line['amount'], 'and the rupee amount (the accrual is in rupees)');
+    same(10.0, (float) $line['fc_rate'], 'the dollar rate travels as fc_rate');
+    same(50.0, (float) $line['fc_amount'], 'and the dollar amount as fc_amount');
+    same(83.0, (float) $line['exchange_rate'], 'at the order\'s exchange rate');
+    $inr = orderOf($ctx, $owner);
+    receive($ctx, $owner, (int) $inr['po_id'], (int) $inr['lines'][0]['line_id'], 1);
+    $plain = receiptCommand(lastReceiptId())['request_payload']['lines'][0];
+    same(250.0, (float) $plain['rate'], 'a rupee order is sent as it was');
+    truthy(!isset($plain['fc_rate']), 'with no foreign-currency figures');
+});
+
+check('F009: an expiry-tracked item is received into a batch with its expiry — none named, or no expiry, is refused before anything is recorded', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['tracked_items' => ['201' => ['batch' => 1, 'expiry' => 1]]]);
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $poId = (int) $po['po_id'];
+    same(422, refused(fn () => receive($ctx, $owner, $poId, $lineId, 5), 'name the batch', 'no batch')['status'], 'no batch is 422');
+    $r = refused(fn () => (new ReceiptService($ctx, $owner))->request($poId, ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 5, 'batch_no' => 'PNT-J2-B']]]), 'expiry date', 'batch without expiry');
+    same(422, $r['status'], 'a batch with no expiry is 422');
+    $r = refused(fn () => (new ReceiptService($ctx, $owner))->request($poId, ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 5, 'batch_no' => 'PNT-OLD', 'expiry_date' => '2026-09-01']]]), 'expired', 'an expired batch');
+    same(422, $r['status'], 'an already-expired batch is not received into stock');
+    same(0, (int) Db::scalar('SELECT COUNT(*) FROM purchase_receipt_requests'), 'nothing was recorded');
+    (new ReceiptService($ctx, $owner))->request($poId, ['received_at' => '2026-09-18', 'lines' => [['line_id' => $lineId, 'qty' => 5, 'batch_no' => 'PNT-J2-C', 'mfg_date' => '2026-08-01', 'expiry_date' => '2027-07-31']]]);
+    $batches = json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-serials.json'), true)['batches'] ?? [];
+    $batch = array_values(array_filter($batches, static fn ($b) => $b['batch_no'] === 'PNT-J2-C'))[0] ?? [];
+    stubMode([]);
+    same('2027-07-31', $batch['expiry_date'] ?? null, 'Inventory created the batch with its expiry');
+    same('2026-08-01', $batch['mfg_date'] ?? null, 'and its manufacturing date');
+    same('ACCEPTED', receiptRow(lastReceiptId())['status'], 'and the receipt was recorded');
+});
+
+check('F281: a second receipt of the same delivery challan on the order is refused naming the first GRN; a confirmed split delivery with a reason is allowed; the HTTP API needs a token', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $poId = (int) $po['po_id'];
+    receive($ctx, $owner, $poId, $lineId, 10, ['supplier_dc_no' => 'DC-100', 'client_token' => 'form-1']);
+    $first = receiptRow(lastReceiptId());
+    $r = refused(fn () => receive($ctx, $owner, $poId, $lineId, 10, ['supplier_dc_no' => 'dc-100', 'client_token' => 'form-2']), $first['receipt_no'], 'same DC on a new form');
+    same(409, $r['status'], 'the duplicate challan is 409');
+    same('duplicate_supplier_dc', $r['code'], 'and says why');
+    same(1, (int) Db::scalar('SELECT COUNT(*) FROM purchase_receipt_requests'), 'no second GRN');
+    refused(fn () => receive($ctx, $owner, $poId, $lineId, 10, ['supplier_dc_no' => 'DC-100', 'client_token' => 'form-3', 'confirm_duplicate_dc' => true, 'duplicate_dc_reason' => 'short']), 'confirm it', 'a reason too short');
+    receive($ctx, $owner, $poId, $lineId, 10, ['supplier_dc_no' => 'DC-100', 'client_token' => 'form-4', 'confirm_duplicate_dc' => true, 'duplicate_dc_reason' => 'Second truck under the same challan, checked at the gate.']);
+    same('Second truck under the same challan, checked at the gate.', receiptRow(lastReceiptId())['duplicate_dc_reason'], 'the confirmed split delivery is recorded with its reason');
+    // Over HTTP a receipt without a token is refused, so two identical untokened bodies cannot both become GRNs.
+    [$status, $body] = endpoint(function () use ($poId, $lineId) {
+        Controllers\PurchaseOrdersController::receive((string) $poId);
+    }, $owner);
+    same(422, $status, 'no token over HTTP is 422: ' . json_encode($body));
+    same('client_token_required', $body['error']['code'] ?? null, 'and says a token is needed');
+});
+
+check('F482: the same client token with a different body is refused 409, not answered with the first receipt', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $poId = (int) $po['po_id'];
+    receive($ctx, $owner, $poId, $lineId, 10, ['client_token' => 'tok-1']);
+    receive($ctx, $owner, $poId, $lineId, 10, ['client_token' => 'tok-1']);
+    same(1, (int) Db::scalar('SELECT COUNT(*) FROM purchase_receipt_requests'), 'the same body again is its receipt, once');
+    $r = refused(fn () => receive($ctx, $owner, $poId, $lineId, 30, ['client_token' => 'tok-1']), 'already used', 'same token, 30 instead of 10');
+    same(409, $r['status'], 'a different body under the token is 409');
+    same('client_token_reused', $r['code'], 'naming the reuse');
+    same(10.0, (float) (new PurchaseOrderService($ctx, $owner))->find($poId)['lines'][0]['received_qty'], 'the order counts the first receipt only');
+});
+
+check('F388: the receipt date is checked against the financial year and today, and defaults to the company\'s date; Inventory is sent fy_range', function () use ($ctx, $owner) {
+    reset();
+    $scope = Context::of(88, 6, 0);
+    $scope->assertAllowed($owner);
+    $po = orderOf($scope, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    $poId = (int) $po['po_id'];
+    foreach (['2026-03-31' => 'outside the financial year', '2099-01-01' => 'after today', '2026-02-30' => 'must be a date', 'yesterday' => 'must be a date'] as $date => $why) {
+        same(422, refused(fn () => receive($scope, $owner, $poId, $lineId, 1, ['received_at' => $date]), $why, $date)['status'], $date . ' is 422');
+    }
+    same(0, (int) Db::scalar('SELECT COUNT(*) FROM purchase_receipt_requests'), 'nothing was recorded, and nothing reached Inventory as a draft');
+    (new ReceiptService($scope, $owner))->request($poId, ['lines' => [['line_id' => $lineId, 'qty' => 1]]]);
+    $row = receiptRow(lastReceiptId());
+    same((new \DateTimeImmutable('now', new \DateTimeZone('Asia/Kolkata')))->format('Y-m-d'), (string) $row['received_at'], 'an undated receipt is dated by the company\'s calendar');
+    $range = (array) (receiptCommand((int) $row['request_id'])['request_payload']['fy_range'] ?? []);
+    ksort($range);
+    same(['fy_end' => '2027-03-31', 'fy_start' => '2026-04-01'], $range, 'Inventory checks the date against the year');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

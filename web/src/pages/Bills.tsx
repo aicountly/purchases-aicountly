@@ -11,6 +11,7 @@ import { ItemPicker, LedgerPicker, SupplierPicker } from '../components/LivePick
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
 import * as decimal from '../utils/decimal'
+import { localToday } from '../utils/localDate'
 
 const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'REJECTED', 'POSTING', 'UNCERTAIN', 'POSTED', 'FAILED', 'BLOCKED', 'CANCELLED']
 
@@ -517,7 +518,7 @@ export function BillEditor() {
   const [gstinDiffers, setGstinDiffers] = useState<string | null>(null)
   // '' = as the supplier's ledger implies (services from abroad are reverse charge); 'yes' / 'no' as marked (F220).
   const [reverseCharge, setReverseCharge] = useState<'' | 'yes' | 'no'>('')
-  const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [invoiceDate, setInvoiceDate] = useState(() => localToday())
   const [dueDate, setDueDate] = useState('')
   const [postingDate, setPostingDate] = useState('')
   const [quantities, setQuantities] = useState<Record<number, string>>({})

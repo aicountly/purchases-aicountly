@@ -3,6 +3,7 @@ import { Download } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
 import type { PoCommunication, PurchaseOrder, ReceiptAppliedLine, ReceiptRequest } from '../../services/types'
 import { useWarehouses } from '../../hooks/useWarehouses'
+import { localToday } from '../../utils/localDate'
 import { Button, Card, date, Field, Input, Notice, qty, Select, Textarea } from '../../ui'
 
 type Run = (path: string, body?: Record<string, unknown>) => Promise<boolean>
@@ -17,6 +18,8 @@ interface ReceiptDraftLine {
   rejection_reason: string
   warehouse_id: string
   batch_no: string
+  mfg_date: string
+  expiry_date: string
   serials: string
   inspection_note: string
 }
@@ -45,6 +48,11 @@ export function ReceiveGoodsPanel({
   const [error, setError] = useState<string | null>(null)
   // UNCERTAIN is not "not recorded": Inventory may hold the GRN and the answer was lost (F482).
   const [uncertain, setUncertain] = useState(false)
+  const [receivedAt, setReceivedAt] = useState(localToday)
+  // A second receipt of a challan already recorded on this order is refused (F281); the person
+  // may confirm a genuine split delivery under one challan, with a reason.
+  const [duplicateDc, setDuplicateDc] = useState(false)
+  const [dcReason, setDcReason] = useState('')
   const [dcNo, setDcNo] = useState('')
   const [dcDate, setDcDate] = useState('')
   const [vehicle, setVehicle] = useState('')
@@ -66,6 +74,8 @@ export function ReceiveGoodsPanel({
           rejection_reason: '',
           warehouse_id: String(l.warehouse_id ?? po.delivery_warehouse_id ?? ''),
           batch_no: '',
+          mfg_date: '',
+          expiry_date: '',
           serials: '',
           inspection_note: '',
         }
@@ -82,8 +92,10 @@ export function ReceiveGoodsPanel({
     try {
       await api.post(`v1/purchase-orders/${po.po_id}/receive`, {
         client_token: token,
-        received_at: new Date().toISOString().slice(0, 10),
+        received_at: receivedAt || undefined,
         supplier_dc_no: dcNo.trim() || undefined,
+        confirm_duplicate_dc: duplicateDc && dcReason.trim() ? true : undefined,
+        duplicate_dc_reason: duplicateDc && dcReason.trim() ? dcReason.trim() : undefined,
         supplier_dc_date: dcDate || undefined,
         vehicle_no: vehicle.trim() || undefined,
         inspection_note: note.trim() || undefined,
@@ -97,6 +109,8 @@ export function ReceiveGoodsPanel({
             rejection_reason: l.rejection_reason.trim() || undefined,
             warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : undefined,
             batch_no: l.batch_no.trim() || undefined,
+            mfg_date: l.batch_no.trim() && l.mfg_date ? l.mfg_date : undefined,
+            expiry_date: l.batch_no.trim() && l.expiry_date ? l.expiry_date : undefined,
             serials: l.serials.trim() ? l.serials.split(/[\s,]+/).filter(Boolean) : undefined,
             inspection_note: l.inspection_note.trim() || undefined,
           })),
@@ -104,6 +118,7 @@ export function ReceiveGoodsPanel({
       onDone()
     } catch (err) {
       setUncertain(err instanceof ApiError && err.code === 'inventory_uncertain')
+      if (err instanceof ApiError && err.code === 'duplicate_supplier_dc') setDuplicateDc(true)
       setError(err instanceof ApiError ? err.message : String(err))
     } finally {
       setBusy(false)
@@ -129,10 +144,17 @@ export function ReceiveGoodsPanel({
         )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.6rem' }}>
+          <Field label="Received on" hint="Within the financial year you are in, and not after today."><Input type="date" value={receivedAt} max={localToday()} onChange={(e) => setReceivedAt(e.target.value)} /></Field>
           <Field label="Supplier delivery challan no."><Input value={dcNo} onChange={(e) => setDcNo(e.target.value)} /></Field>
           <Field label="Challan date"><Input type="date" value={dcDate} onChange={(e) => setDcDate(e.target.value)} /></Field>
           <Field label="Vehicle no."><Input value={vehicle} onChange={(e) => setVehicle(e.target.value)} /></Field>
         </div>
+
+        {duplicateDc && (
+          <Field label="This challan is already recorded on this order — why record it again?" hint="Only for a genuine second delivery under the same challan (at least 10 characters). If the first receipt was wrong, withdraw or return it instead.">
+            <Input value={dcReason} onChange={(e) => setDcReason(e.target.value)} />
+          </Field>
+        )}
 
         {lines.length === 0 && <Notice tone="warning">Nothing on this order is waiting to be received.</Notice>}
         {lines.map((l) => (
@@ -151,6 +173,12 @@ export function ReceiveGoodsPanel({
               </Field>
               <Field label="Batch"><Input value={l.batch_no} onChange={(e) => set(l.line_id, { batch_no: e.target.value })} /></Field>
             </div>
+            {l.batch_no.trim() !== '' && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(9rem, 1fr))', gap: '0.55rem', marginTop: '0.4rem' }}>
+                <Field label="Manufactured on"><Input type="date" value={l.mfg_date} onChange={(e) => set(l.line_id, { mfg_date: e.target.value })} /></Field>
+                <Field label="Expires on" hint="Required for an item Inventory tracks by expiry (or give the manufacturing date when the item has a shelf life)."><Input type="date" value={l.expiry_date} onChange={(e) => set(l.line_id, { expiry_date: e.target.value })} /></Field>
+              </div>
+            )}
             {Number(l.rejected_qty || 0) > 0 && (
               <Field label="Why was it rejected?"><Input value={l.rejection_reason} onChange={(e) => set(l.line_id, { rejection_reason: e.target.value })} /></Field>
             )}

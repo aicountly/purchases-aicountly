@@ -593,8 +593,20 @@ if (preg_match('#/v1/(batches|serials/bulk)$#', $path, $mm) === 1 && $method ===
                 exit;
             }
         }
+        // BatchesController::buildRow: an expiry-tracked item's new batch needs its expiry, given
+        // or derived from mfg_date and the item's shelf life (Inventory, E8-PUR F009).
+        $tracked = $modes['tracked_items'][(string) $itemId] ?? [];
+        $expiry = isset($body['expiry_date']) ? (string) $body['expiry_date'] : null;
+        if ($expiry === null && !empty($body['mfg_date']) && (int) ($tracked['shelf_life_days'] ?? 0) > 0) {
+            $expiry = date('Y-m-d', strtotime($body['mfg_date'] . ' +' . (int) $tracked['shelf_life_days'] . ' days'));
+        }
+        if ((int) ($tracked['expiry'] ?? 0) === 1 && $expiry === null) {
+            http_response_code(422);
+            echo json_encode(['error' => ['code' => 'validation_failed', 'message' => 'This item tracks expiry, so a new batch needs its expiry date', 'details' => ['reason' => 'expiry_required']], 'message' => 'expiry required']);
+            exit;
+        }
         $id = 61000 + count($serialState['batches']) + 1;
-        $serialState['batches'][(string) $id] = ['batch_id' => $id, 'item_id' => $itemId, 'batch_no' => $no, 'status' => 'active'];
+        $serialState['batches'][(string) $id] = ['batch_id' => $id, 'item_id' => $itemId, 'batch_no' => $no, 'status' => 'active', 'mfg_date' => $body['mfg_date'] ?? null, 'expiry_date' => $expiry];
         file_put_contents($serialStore, json_encode($serialState));
         http_response_code(201);
         echo json_encode(['data' => $serialState['batches'][(string) $id]]);
@@ -1056,6 +1068,8 @@ if (str_contains($path, '/v1/items/bulk-lookup')) {
         // {"<item_id>": {"serial": 1, "batch": 0, "units": [{"unit_id", "conversion_factor"}]}}.
         'track_serial'         => (int) ($modes['tracked_items'][(string) $id]['serial'] ?? 0),
         'track_batch'          => (int) ($modes['tracked_items'][(string) $id]['batch'] ?? 0),
+        'track_expiry'         => (int) ($modes['tracked_items'][(string) $id]['expiry'] ?? 0),
+        'shelf_life_days'      => $modes['tracked_items'][(string) $id]['shelf_life_days'] ?? null,
         'units'                => $modes['tracked_items'][(string) $id]['units'] ?? [],
     ], $ids)]);
     exit;

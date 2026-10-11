@@ -27,6 +27,7 @@ import {
 import { api } from '../services/api'
 import { usePurchases } from '../context/PurchasesContext'
 import '../dashboards/purchase.css'
+import { localToday } from '../utils/localDate'
 
 interface PreviewResponse {
   file: { name: string; kind: string; readable: boolean }
@@ -76,13 +77,13 @@ const FIELDS: { id: string; label: string; hint: string }[] = [
 ]
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10)
+  return localToday()
 }
 
 function monthsAgo(months: number): string {
   const date = new Date()
   date.setMonth(date.getMonth() - months)
-  return date.toISOString().slice(0, 10)
+  return localToday(date)
 }
 
 export default function Statements() {

@@ -168,9 +168,11 @@ final class InventoryClient extends ApiClient
     }
 
     /** 201 with the batch; 409 conflict when the item already has a batch of that number. */
-    public function createBatch(Context $ctx, int $itemId, string $batchNo): array
+    public function createBatch(Context $ctx, int $itemId, string $batchNo, ?string $mfgDate = null, ?string $expiryDate = null): array
     {
-        return $this->call('POST', 'v1/batches', ['item_id' => $itemId, 'batch_no' => $batchNo] + $ctx->asBody(), true);
+        // BatchesController::create takes mfg_date / expiry_date; an expiry-tracked item's batch is
+        // refused without an expiry (E8-PUR F009).
+        return $this->call('POST', 'v1/batches', array_filter(['item_id' => $itemId, 'batch_no' => $batchNo, 'mfg_date' => $mfgDate, 'expiry_date' => $expiryDate], static fn ($v) => $v !== null) + $ctx->asBody(), true);
     }
 
     /**
