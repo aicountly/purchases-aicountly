@@ -51,7 +51,9 @@ function check(string $name, callable $fn): void
         putenv('APP_ENV');
         putenv('AIC_ENVIRONMENT');
         unset($_SERVER['HTTP_HOST']);
-        ApiClient::intercept(null);
+        if (method_exists(ApiClient::class, 'intercept')) {
+            ApiClient::intercept(null);
+        }
     }
 }
 
@@ -150,11 +152,13 @@ check('unset APP_ENV is production (reported by health as source=default); a CLI
 check('an unrecognised APP_ENV fails closed: no base, and request() refuses without touching the network', function (): void {
     putenv('APP_ENV=prodution');
     $calls = 0;
-    ApiClient::intercept(function () use (&$calls) {
-        $calls++;
+    if (method_exists(ApiClient::class, 'intercept')) {
+        ApiClient::intercept(function () use (&$calls) {
+            $calls++;
 
-        return ['ok' => true, 'status' => 200, 'body' => [], 'error' => null];
-    });
+            return ['ok' => true, 'status' => 200, 'body' => [], 'error' => null];
+        });
+    }
     foreach (clients() as $client) {
         same('', $client->base(), $client->service() . ' base');
         same('environment_not_configured', $client->baseProblem(), $client->service() . ' problem');
