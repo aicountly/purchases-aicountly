@@ -88,7 +88,7 @@ export default function Suppliers() {
           rows={profiles.data?.data ?? []}
           rowKey={(row) => row.profile_id}
           onRowClick={(row) => setOpenId(row.supplier_account_id === openId ? null : row.supplier_account_id)}
-          empty="No procurement profiles yet."
+          empty={profiles.error ? "Not loaded — see above." : "No procurement profiles yet."}
           columns={[
             { key: 'name', header: 'Supplier', render: (row) => row.supplier_name ?? 'Name unavailable from Smart Books' },
             { key: 'account', header: 'Books ledger', render: (row) => `#${row.supplier_account_id}` },

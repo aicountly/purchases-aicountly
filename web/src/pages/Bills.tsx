@@ -69,7 +69,7 @@ export function BillsList() {
           rows={data?.data ?? []}
           rowKey={(row) => row.request_id}
           onRowClick={(row) => navigate(`/bills/${row.request_id}`)}
-          empty="No bills entered."
+          empty={error ? "Not loaded — see above." : "No bills entered."}
           columns={[
             {
               key: 'no',

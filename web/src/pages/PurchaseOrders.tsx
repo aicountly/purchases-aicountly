@@ -85,7 +85,7 @@ export function PurchaseOrderList() {
           rows={data?.data ?? []}
           rowKey={(row) => row.po_id}
           onRowClick={(row) => navigate(`/purchase-orders/${row.po_id}`)}
-          empty="No purchase orders yet."
+          empty={error ? "Not loaded — see above." : "No purchase orders yet."}
           columns={[
             { key: 'no', header: 'Number', render: (row) => <Link to={`/purchase-orders/${row.po_id}`} onClick={(e) => e.stopPropagation()}>{row.po_no}</Link> },
             { key: 'date', header: 'Raised', render: (row) => date(row.po_date) },

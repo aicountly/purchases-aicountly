@@ -128,7 +128,7 @@ PURCHASE_CHROMIUM_PATH=/path/to/chromium TMPDIR=<stub state dir> npm --prefix we
 ```
 
 They are not wired into CI (the repository's workflows are manual-only); run them
-before a release. As of 2026-10-11: `test:ui` 36/36, `test:remediation` 14/14.
+before a release. As of 2026-10-11: `test:ui` 36/36, `test:remediation` 17/17.
 
 The integration suite **rewrites `server-php/.env`** with its own test
 configuration. Restore your local one afterwards.

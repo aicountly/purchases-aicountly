@@ -75,7 +75,7 @@ export default function Approvals() {
           loading={approvals.loading}
           rows={approvals.data?.data ?? []}
           rowKey={(row) => row.approval_id}
-          empty="Nothing is waiting for approval."
+          empty={approvals.error ? "Not loaded — see above." : "Nothing is waiting for approval."}
           columns={[
             {
               key: 'doc',
@@ -135,7 +135,7 @@ export default function Approvals() {
             rows={exceptions.data?.data ?? []}
             rowKey={(row) => row.exception_id}
             onRowClick={(row) => row.bill_request_id && navigate(`/bills/${row.bill_request_id}`)}
-            empty="Every bill agrees with its order and its receipt."
+            empty={exceptions.error ? "Not loaded — see above." : "Every bill agrees with its order and its receipt."}
             columns={[
               { key: 'invoice', header: 'Supplier invoice', render: (row) => row.supplier_invoice_no ?? `#${row.bill_request_id}` },
               { key: 'po', header: 'Purchase order', render: (row) => row.po_no ?? '—' },

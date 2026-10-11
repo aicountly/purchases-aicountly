@@ -110,7 +110,7 @@ export default function Claims() {
           loading={loading}
           rows={data?.data ?? []}
           rowKey={(row) => row.claim_id}
-          empty="No claims raised."
+          empty={loadError ? "Not loaded — see above." : "No claims raised."}
           columns={[
             { key: 'no', header: 'Number', render: (row) => row.claim_no },
             { key: 'date', header: 'Raised', render: (row) => date(row.claim_date) },
