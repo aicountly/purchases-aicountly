@@ -200,7 +200,14 @@ abstract class ApiClient
         if ($raw === false || $status === 0) {
             $this->log('failed', $path, $status, $ms, $transportError !== '' ? 'transport' : 'no_response');
 
-            return ['ok' => false, 'status' => 0, 'body' => null, 'error' => $transportError !== '' ? $transportError : 'unreachable'];
+            // E8-ID / F021: cURL's text names the internal host, port and address ("Failed to connect to
+            // 10.0.3.7 port 8443"). It goes to the log; callers, screens and stored errors get a code.
+            if ($transportError !== '') {
+                error_log('[cross-service] ' . $this->service() . ' ' . $path . ': ' . $transportError);
+            }
+            $timedOut = stripos($transportError, 'timed out') !== false;
+
+            return ['ok' => false, 'status' => 0, 'body' => null, 'error' => $this->service() . ($timedOut ? '_timeout' : '_unreachable')];
         }
 
         $decoded = json_decode((string) $raw, true);

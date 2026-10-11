@@ -1046,6 +1046,60 @@ check('posting a bill twice is refused, so Books gets one voucher', function () 
     assertSame(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_bill_requests WHERE status = 'POSTED'"), 'one posted bill');
 });
 
+check('E8-ID F021: Smart Books unavailable at a bill post (what Books now answers when Inventory is down) is FAILED and retryable, and plain Retry posts it', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'F021-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    $requestId = (int) $bill['request_id'];
+
+    stubFail('vouchers/drafts', 503);
+    assertThrows(static fn () => $bills->post($requestId), 'Nothing has been posted', 'Books 503 at the post');
+    stubRecover();
+    $failed = $bills->find($requestId);
+    assertSame('FAILED', $failed['status'], 'FAILED (retryable), not BLOCKED (revise)');
+
+    $posted = $bills->post($requestId);
+    assertSame('POSTED', $posted['status'], 'after recovery a plain Retry posts the same bill — no Revise');
+});
+
+check('E8-ID F021: a Books that does not answer is never described by its host, port or address', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'F021T-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    $requestId = (int) $bill['request_id'];
+
+    $before = getenv('BOOKS_API_BASE');
+    putenv('BOOKS_API_BASE=http://127.0.0.1:9');   // nothing listens: cURL says "Failed to connect to 127.0.0.1 port 9"
+    $thrown = '';
+    try {
+        $bills->post($requestId);
+    } catch (\Throwable $e) {
+        $thrown = json_encode($e instanceof ResponseSent ? $e->payload : $e->getMessage());
+    } finally {
+        putenv($before === false ? 'BOOKS_API_BASE' : 'BOOKS_API_BASE=' . $before);
+    }
+    assertTrue($thrown !== '' && !str_contains($thrown, '127.0.0.1') && stripos($thrown, 'port 9') === false && stripos($thrown, 'Failed to connect') === false, 'the answer names no host or port: ' . $thrown);
+    assertTrue(str_contains($thrown, '"retryable":true'), 'and says it can be retried');
+    assertSame('POSTED', $bills->post($requestId)['status'], 'Retry posts it once Books answers');
+
+    // What a command records for an attempt with no answer (the voucher post itself unreachable).
+    $curl = 'Failed to connect to 10.0.3.7 port 8443 after 3001 ms: Connection timed out';
+    foreach ([$curl, 'books_unreachable', 'inventory_timeout'] as $raw) {
+        $shown = IntegrationCommand::publicError($raw, 0);
+        assertTrue(!str_contains($shown, '10.0.3.7') && !str_contains($shown, '8443') && str_contains($shown, 'No answer'), 'no answer is said in words, without the address: ' . $shown);
+    }
+    assertSame('unreadable_response', IntegrationCommand::publicError('unreadable_response', 502), 'an answer with a status keeps its code');
+    assertSame('books_base_unconfigured', IntegrationCommand::publicError('books_base_unconfigured', 0), 'and our own configuration codes are kept');
+});
+
 echo "\nReturns and claims\n";
 
 check('a return runs approve, dispatch and debit note, keeping only references', function () use ($ctx, $auth) {
