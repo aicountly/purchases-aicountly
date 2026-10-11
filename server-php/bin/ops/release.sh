@@ -10,6 +10,10 @@
 #        [--backup-dir=~/aicountly-backups/<app>-<env>] [--snapshot=required|skip] [--jobs=install|skip] \
 #        [--php=/path/to/php]
 #
+# Product settings (release.conf): APP, ENTRY, ENV_FILE, MIGRATE or MIGRATE_STEPS (php arguments, run in
+# order), SNAPSHOT, PROTECT (runtime folders never deleted), PREPARE_SH (shell, in the stage, before the
+# snapshot), POST_SWITCH (php first runs), POST_SWITCH_SH (shell hooks in the live folder after the switch).
+#
 # Order — the live code is not touched until the schema it needs is in place:
 #   1. checks   stage has the front controller; live api/.env exists (first deploy: create it first)
 #   2. php      a PHP CLI that satisfies release.conf (version, pdo_pgsql)
@@ -27,6 +31,7 @@
 #   0 released · 10 stage incomplete · 11 live api/.env missing · 12 no usable PHP · 13 snapshot failed
 #   14 migration failed (live code untouched) · 15 an applied migration was edited (untouched)
 #   16 migration lock held by another run (untouched) · 17 switch failed · 18 jobs install failed
+#   19 stage preparation failed (untouched) · 20 post-switch hook failed (new code live)
 set -uo pipefail
 
 stage="" live="" revision="" backup_dir="" snapshot=required jobs=install php_bin=""
@@ -51,7 +56,7 @@ conf="$stage/bin/ops/release.conf"
 [ -f "$conf" ] || { echo "release: $conf is missing"; exit 10; }
 # Defaults, overridden by release.conf (a file from the repository, not from the server).
 APP="" MIN_PHP_ID=80100 ENTRY="index.php" ENV_FILE=".env" MIGRATE="bin/migrate.php" SNAPSHOT="bin/db-snapshot.php"
-PROTECT=() POST_SWITCH=()
+PROTECT=() POST_SWITCH=() PREPARE_SH=() MIGRATE_STEPS=() POST_SWITCH_SH=()
 # shellcheck source=/dev/null
 . "$conf"
 [ -n "$APP" ] || { echo "release: release.conf sets no APP"; exit 10; }
@@ -67,7 +72,10 @@ php_ok() {
   local v; v=$("$1" -r 'echo PHP_VERSION_ID;' 2>/dev/null) || return 1
   case "$v" in '' | *[!0-9]*) return 1 ;; esac
   [ "$v" -ge "$MIN_PHP_ID" ] || return 1
-  "$1" -m 2>/dev/null | grep -qix 'pdo_pgsql' || return 1
+  # Captured first: with pipefail, `php -m | grep -q` fails at random when grep exits on the match
+  # while php is still writing (SIGPIPE, exit 141) — which read as "no PHP CLI found".
+  local m; m=$("$1" -m 2>/dev/null) || return 1
+  case $'\n'"${m,,}"$'\n' in *$'\n'pdo_pgsql$'\n'*) return 0 ;; *) return 1 ;; esac
 }
 PHP=""
 if [ -n "$php_bin" ]; then
@@ -90,6 +98,13 @@ trap cleanup EXIT
 umask 022
 
 cd "$stage" || exit 10
+export STAGE="$stage" LIVE="$live" PHP REVISION="$revision"
+# Product preparation of the stage (release.conf PREPARE_SH), e.g. Books brings vendor/ in step with
+# composer.lock. Runs in the stage with STAGE, LIVE, PHP and REVISION set; nothing live has changed yet.
+for cmd in "${PREPARE_SH[@]}"; do
+  echo "--- prepare: $cmd ---"
+  bash -c "$cmd" || { echo "release: preparing the stage failed ($cmd); nothing live has changed"; exit 19; }
+done
 if [ "$snapshot" = required ]; then
   echo "--- snapshot (before any migration) ---"
   if ! "$PHP" "$SNAPSHOT" --dir="$backup_dir" --revision="$revision"; then
@@ -101,15 +116,19 @@ else
 fi
 
 echo "--- migrate (from the stage, before the code switch) ---"
-# shellcheck disable=SC2086 # MIGRATE may carry arguments
-"$PHP" $MIGRATE
-rc=$?
-case "$rc" in
-  0) ;;
-  2) exit 15 ;;
-  3) exit 16 ;;
-  *) exit 14 ;;
-esac
+[ "${#MIGRATE_STEPS[@]}" -gt 0 ] || MIGRATE_STEPS=("$MIGRATE")
+for step in "${MIGRATE_STEPS[@]}"; do
+  echo "> php $step"
+  # shellcheck disable=SC2086 # a step carries its arguments
+  "$PHP" $step
+  rc=$?
+  case "$rc" in
+    0) ;;
+    2) exit 15 ;;
+    3) exit 16 ;;
+    *) exit 14 ;;
+  esac
+done
 
 echo "--- switch ---"
 rm -f "$stage/$ENV_FILE"
@@ -155,6 +174,12 @@ for s in "${POST_SWITCH[@]}"; do
   echo "--- first run: $s ---"
   # shellcheck disable=SC2086
   ( cd "$live" && timeout 300 "$PHP" $s ) || echo "release: first run of $s exited $? (see its output above)"
+done
+
+# Product hooks on the live folder (release.conf POST_SWITCH_SH), e.g. Books' cpanel-post-deploy-api.sh.
+for cmd in "${POST_SWITCH_SH[@]}"; do
+  echo "--- post-switch: $cmd ---"
+  ( cd "$live" && bash -c "$cmd" ) || { echo "release: the post-switch hook failed ($cmd); the new code IS live"; exit 20; }
 done
 
 if [ "$jobs" = install ] && [ -f "$live/bin/ops/jobs.txt" ]; then

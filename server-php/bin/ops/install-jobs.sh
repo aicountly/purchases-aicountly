@@ -64,7 +64,8 @@ if [ "$remove" -eq 0 ]; then
     for c in /opt/cpanel/ea-php84/root/usr/bin/php /opt/cpanel/ea-php83/root/usr/bin/php \
              /opt/cpanel/ea-php82/root/usr/bin/php /opt/cpanel/ea-php81/root/usr/bin/php \
              /usr/local/bin/php /usr/bin/php "$(command -v php 2>/dev/null || true)"; do
-      if [ -n "$c" ] && [ -x "$c" ] && "$c" -m 2>/dev/null | grep -qi '^pdo_pgsql$'; then php_bin="$c"; break; fi
+      # php -m captured first: `php -m | grep -q` under pipefail can fail on SIGPIPE (see release.sh).
+      if [ -n "$c" ] && [ -x "$c" ] && mods="$("$c" -m 2>/dev/null)" && printf '%s\n' "$mods" | grep -qi '^pdo_pgsql$'; then php_bin="$c"; break; fi
     done
   fi
   [ -n "$php_bin" ] && [ -x "$php_bin" ] || { echo "No PHP CLI with pdo_pgsql was found. Name one with --php=PATH." >&2; exit 2; }
