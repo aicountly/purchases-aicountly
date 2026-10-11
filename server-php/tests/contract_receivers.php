@@ -234,5 +234,20 @@ check('F009: the real Inventory reports track_expiry, and Purchases refuses an e
     same('2027-08-31', $GLOBALS['inv']->query("SELECT expiry_date FROM inv_batches WHERE batch_no = 'PNT-2'")->fetchColumn(), 'and the batch carries the expiry');
 });
 
+check('F120: a USD order at 83 is valued by the real Inventory at the rupee rate (830), not the dollar number', function () use ($ctx, $owner) {
+    $orders = new PurchaseOrderService($ctx, $owner);
+    $created = $orders->create(['supplier_account_id' => 601, 'po_date' => '2026-09-01', 'delivery_warehouse_id' => 1, 'currency_code' => 'USD', 'exchange_rate' => 83, 'lines' => [['item_id' => 1, 'unit_id' => 1, 'ordered_qty' => 2, 'agreed_rate' => 10, 'warehouse_id' => 1]]]);
+    $orders->submit((int) $created['po_id']);
+    $orders->issue((int) $created['po_id']);
+    $usd = $orders->find((int) $created['po_id']);
+    (new ReceiptService($ctx, $owner))->request((int) $usd['po_id'], ['received_at' => '2026-09-18', 'client_token' => 'usd-1', 'lines' => [['line_id' => (int) $usd['lines'][0]['line_id'], 'qty' => 2]]]);
+    $docId = (int) Db::scalar("SELECT inventory_document_id FROM purchase_receipt_requests WHERE client_token = 'usd-1'");
+    truthy($docId > 0, 'the real Inventory accepted the USD receipt');
+    $line = $GLOBALS['inv']->query('SELECT source_transaction_rate, source_fc_rate, source_exchange_rate FROM inv_document_lines WHERE document_id = ' . $docId)->fetch(\PDO::FETCH_ASSOC);
+    same(830.0, (float) $line['source_transaction_rate'], 'valued at the rupee rate');
+    same(10.0, (float) $line['source_fc_rate'], 'with the dollar rate kept beside it');
+    same(83.0, (float) $line['source_exchange_rate'], 'and the exchange rate');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);
