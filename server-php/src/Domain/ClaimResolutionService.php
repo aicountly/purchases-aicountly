@@ -179,9 +179,12 @@ final class ClaimResolutionService
             case 'financial_adjustment':
                 // Where the supplier supplies from, read from their Books ledger — only for a
                 // debit note not yet sent; one already sent replays its stored body.
-                $supply = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'claim_resolution', $resolutionId) === null
+                $firstSend = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'claim_resolution', $resolutionId) === null;
+                $supply = $firstSend
                     ? PlaceOfSupply::forSupplier((new BooksClient())->withSession($this->auth->sesKey()), $this->ctx, (int) $claim['supplier_account_id'])
                     : null;
+                // The claim's order's invoices, settled Agst Ref by the note (F246).
+                $link = $firstSend ? DebitNoteLink::forOrder($this->ctx, $this->auth, (int) $claim['supplier_account_id'], $claim['po_id'] === null ? null : (int) $claim['po_id']) : [];
                 $payload = [
                     'vch_date'     => gmdate('Y-m-d'),
                     'party'        => array_filter([
@@ -207,6 +210,7 @@ final class ClaimResolutionService
                 if (($supply['supply_nature'] ?? null) !== null) {
                     $payload['supply_nature'] = $supply['supply_nature'];
                 }
+                $payload += $link;
                 $voucher = (new DebitNotePoster($this->ctx, $this->auth))->post(
                     self::COMMAND_DEBIT_NOTE, 'claim_resolution', $resolutionId, $payload, 'claim ' . $claim['claim_no'], 0,
                     fn (string $status, string $message) => $this->mark($resolutionId, $status, $message),

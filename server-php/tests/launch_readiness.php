@@ -929,6 +929,72 @@ check('F122: a typed GSTIN must pass its check digit, and one that differs from 
     same(null, Db::scalar('SELECT supplier_gstin_reason FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $same['request_id']]), 'the ledger\'s own GSTIN needs nothing');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nF246 / F274 — debit notes settle the invoice; payables are Books' net\n";
+
+function billedOrder(Context $ctx, Auth $auth, float $qty = 10): array
+{
+    $po = orderOf($ctx, $auth);
+    receive($ctx, $auth, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], $qty);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'RB-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => $qty, 'rate' => 250]]]);
+    $bills->post((int) $bill['request_id']);
+
+    return (new Domain\PurchaseOrderService($ctx, $auth))->find((int) $po['po_id']);
+}
+
+/** @return list<array<string, mixed>> Books' bill-by-bill rows for supplier 601, as the stub keeps them */
+function booksBills(): array
+{
+    $r = (new Clients\BooksClient())->withSession('stub-ses-key.role-1')->billByBill(ctx(), ['acc_id' => 601]);
+
+    return (array) ($r['body']['data']['rows'] ?? []);
+}
+
+check('F246: a return\'s debit note names the invoice it corrects (original_document, against_bills), so Books settles it — no separate Dr bill, the invoice pending falls', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_live_bills' => true]);
+    $po = billedOrder($ctx, $owner, 10);
+    $invoiceVoucher = (int) Db::scalar('SELECT books_voucher_id FROM purchase_bill_requests WHERE po_id = :po', ['po' => (int) $po['po_id']]);
+    same(2500.0, (float) booksBills()[0]['pending_amount'], 'the invoice is owed in full');
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $return = $returns->createReturn(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'reason_code' => 'quality', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'return_qty' => 4]]]);
+    $id = (int) $return['return_id'];
+    $returns->approveReturn($id, ['note' => 'Owner approves.']);
+    $returns->dispatchReturn($id);
+    $returns->requestDebitNote($id);
+    $sent = IntegrationCommand::latest(88, Domain\ReturnClaimService::COMMAND_DEBIT_NOTE, 'purchase_return', $id)['request_payload'];
+    same($invoiceVoucher, (int) ($sent['original_document']['vch_txn_id'] ?? 0), 'against the purchase it corrects');
+    same($invoiceVoucher, (int) ($sent['against_bills'][0]['bill_id'] ?? 0), 'settling its bill Agst Ref');
+    $rows = booksBills();
+    stubMode([]);
+    same(1, count($rows), 'one open bill, no Dr row for the note: ' . json_encode($rows));
+    same(1500.0, (float) $rows[0]['pending_amount'], 'the invoice now owes 2500 - 1000');
+});
+
+check('F274: open items keep debit notes, advances and ON ACCOUNT apart; the total is Books\' net and the planner never schedules a Dr row', function () use ($ctx, $owner) {
+    reset();
+    stubMode(['books_live_bills' => true]);
+    $po = billedOrder($ctx, $owner, 10);
+    // A debit note settling no bill (a claim with no order): a Dr row on the supplier's account.
+    $claims = new Domain\ReturnClaimService($ctx, $owner);
+    $claim = $claims->createClaim(['supplier_account_id' => 601, 'claim_kind' => 'rebate', 'claimed_amount' => 300]);
+    $claims->updateClaim((int) $claim['claim_id'], 'submit', []);
+    $claims->updateClaim((int) $claim['claim_id'], 'approve', ['note' => 'Owner approves the rebate claim.']);
+    $res = (new Domain\ClaimResolutionService($ctx, $owner))->propose((int) $claim['claim_id'], ['kind' => 'financial_adjustment', 'amount' => 300, 'adjustment_acc_id' => 7301]);
+    (new Domain\ClaimResolutionService($ctx, $owner))->approve((int) $res['resolution_id'], ['note' => 'Owner approves.']);
+    $open = (new Dashboards\BooksReader($ctx, $owner->sesKey()))->openItems(601, '2026-12-31');
+    same(1, count($open['rows']), 'one payable: the invoice');
+    same(1, count($open['credits']), 'the unallocated debit note is a credit, not a payable');
+    same('2200.0000', Dashboards\Decimal::fixed((string) $open['net_payable'], 4), 'net 2500 - 300, as the supplier ledger says');
+    $_GET = ["cmp_id" => (string) $ctx->cmpId, "fy_id" => (string) $ctx->fyId, "bo_id" => (string) $ctx->boId];
+    $planner = (new Dashboards\BillsDashboard($ctx, $owner, Dashboards\Period::fromRequest(), Dashboards\Filters::fromRequest()))->build();
+    stubMode([]);
+    $json = json_encode($planner);
+    truthy(!str_contains($json, '"pending":"300'), 'the planner schedules no Dr row');
+    unset($po);
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

@@ -92,7 +92,15 @@ final class BooksReader
      * for a capped list of suppliers the buyer is actually planning to pay, and
      * never in a loop over every creditor in the ledger.
      *
-     * @return array{ok: bool, error: ?string, rows: list<array<string, mixed>>}
+     * Books' rows are on two sides of the supplier's account (books_bills.dr_cr): 2, their bills —
+     * what we owe; 1, a debit note or an advance — what they owe back. Its ON ACCOUNT and Undefined
+     * Reference rows reconcile the ledger and are no bill at all. Only the first are payables:
+     * `rows` holds them, `credits` the Dr-side bills, `on_account` the reconciliation rows, and
+     * `net_payable` what Books' ledger says is owed (Cr less Dr, all of them). Every row used to be
+     * added up as a payable, so an unallocated debit note or an advance was planned for payment
+     * (F274).
+     *
+     * @return array{ok: bool, error: ?string, rows: list<array<string, mixed>>, credits?: list<array<string, mixed>>, on_account?: list<array<string, mixed>>, net_payable?: string}
      */
     public function openItems(int $supplierAccountId, string $asOn): array
     {
@@ -109,6 +117,9 @@ final class BooksReader
         $rows = $data['rows'] ?? $data['bills'] ?? $data['data'] ?? [];
 
         $out = [];
+        $credits = [];
+        $onAccount = [];
+        $net = Decimal::ZERO;
         foreach ((array) $rows as $row) {
             if (!is_array($row)) {
                 continue;
@@ -118,6 +129,25 @@ final class BooksReader
                 continue;
             }
             $due = self::dateOrNull($row['due_date'] ?? null);
+            // A row that names no side is read as the supplier's bill, as Books' default for a
+            // purchase; Books always names it on bill-by-bill.
+            $theirs = !isset($row['dr_cr']) || (int) $row['dr_cr'] === 2;
+            $net = $theirs ? Decimal::add($net, $pending) : Decimal::sub($net, $pending);
+            $brief = [
+                'supplier_account_id' => $supplierAccountId,
+                'bill_ref'            => self::stringOrNull($row['bill_ref'] ?? $row['reference'] ?? $row['vch_no'] ?? null),
+                'bill_date'           => self::dateOrNull($row['bill_date'] ?? $row['vch_date'] ?? null),
+                'pending_amount'      => $pending,
+                'side'                => $theirs ? 'payable' : 'receivable',
+            ];
+            if (self::isReconciliationRow($row)) {
+                $onAccount[] = $brief;
+                continue;
+            }
+            if (!$theirs) {
+                $credits[] = $brief;
+                continue;
+            }
 
             $out[] = [
                 'supplier_account_id' => $supplierAccountId,
@@ -133,7 +163,7 @@ final class BooksReader
             ];
         }
 
-        return ['ok' => true, 'error' => null, 'rows' => $out];
+        return ['ok' => true, 'error' => null, 'rows' => $out, 'credits' => $credits, 'on_account' => $onAccount, 'net_payable' => $net];
     }
 
     /**

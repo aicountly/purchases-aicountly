@@ -568,7 +568,9 @@ final class SuppliersDashboard extends Dashboard
         if ($this->canSeeValues()) {
             $open = $this->booksReader()->openItems($supplierId, $this->period->to);
             if ($open['ok']) {
-                $total = Decimal::sum(array_map(static fn ($r) => (string) $r['pending_amount'], $open['rows']));
+                // Books' net: the supplier's bills less their debit notes and advances (F274). The
+                // overdue figure is of their bills alone.
+                $total = (string) ($open['net_payable'] ?? Decimal::sum(array_map(static fn ($r) => (string) $r['pending_amount'], $open['rows'])));
                 $overdue = Decimal::ZERO;
                 $undated = 0;
                 foreach ($open['rows'] as $item) {
@@ -586,6 +588,10 @@ final class SuppliersDashboard extends Dashboard
                     'total'     => $total,
                     'overdue'   => $overdue,
                     'rows'      => array_slice($open['rows'], 0, 25),
+                    'bills_total' => Decimal::sum(array_map(static fn ($r) => (string) $r['pending_amount'], $open['rows'])),
+                    'credits'   => $open['credits'] ?? [],
+                    'credits_total' => Decimal::sum(array_map(static fn ($r) => (string) $r['pending_amount'], $open['credits'] ?? [])),
+                    'on_account' => $open['on_account'] ?? [],
                     'undated_count' => $undated,
                     'basis'     => 'Open items from Smart Books as at ' . Format::date($this->period->to)
                         . '. Purchases holds no payable figure of its own, so this can never disagree with the accounts.',

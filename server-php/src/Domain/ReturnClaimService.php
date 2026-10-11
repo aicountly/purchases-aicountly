@@ -416,10 +416,13 @@ final class ReturnClaimService
         $revision = $this->debitNoteRevision($returnId, self::truthy($input['resend'] ?? false), self::text($input['note'] ?? null));
         // Where the supplier supplies from, from their Books ledger — only for a request not yet
         // sent; one already sent replays its stored body.
-        $supply = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $revision) === null
+        $firstSend = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $revision) === null;
+        $supply = $firstSend
             ? PlaceOfSupply::forSupplier((new BooksClient())->withSession($this->auth->sesKey()), $scope, (int) $return['supplier_account_id'])
             : null;
-        $payload = $this->debitNotePayload($return, $financial, $supply);
+        // The order's invoices it corrects, so Books settles them Agst Ref (F246).
+        $link = $firstSend ? DebitNoteLink::forOrder($scope, $this->auth, (int) $return['supplier_account_id'], self::id($return['po_id'])) : [];
+        $payload = $this->debitNotePayload($return, $financial, $supply) + $link;
         $voucher = (new DebitNotePoster($this->ctx, $this->auth))->post(self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $payload, 'return ' . $return['return_no'], $revision, null, $scope);
 
         Db::transaction(function () use ($returnId, $voucher, $financial) {

@@ -1171,6 +1171,55 @@ if (str_contains($path, '/reports/bill-by-bill')) {
         'source_vch_type_id' => $flagOnAccount ? null : 11, 'is_on_account' => $flagOnAccount, 'is_undefined_reference' => 0,
         'overdue_days' => 0, 'age_bucket' => 'not_due',
     ];
+    if (!empty($modes['books_live_bills'])) {
+        // The supplier's account as the posted vouchers make it: a purchase is a bill on the Cr
+        // side (2); a debit note settles the bills it names Agst Ref — each no more than is pending
+        // or the note has left — and is a Dr bill (1) only for the rest (New Ref).
+        $file = sys_get_temp_dir() . '/stub-vouchers.json';
+        $held = is_file($file) ? (json_decode((string) file_get_contents($file), true) ?: []) : [];
+        $bills = [];
+        foreach ($held as $vid => $v) {
+            if (!empty($v['cancelled']) || (int) ($v['party']['acc_id'] ?? 0) !== $accId) {
+                continue;
+            }
+            $total = (float) ($v['tax_summary']['grand_total'] ?? 0);
+            if ((int) ($v['vch_type_id'] ?? 0) === 11) {
+                $bills[(int) $vid] = ['bill_id' => (int) $vid, 'acc_id' => $accId, 'bill_ref' => $v['bill']['bill_ref'] ?? null, 'bill_date' => $v['bill']['bill_date'] ?? null,
+                    'due_date' => $v['bill']['due_date'] ?? null, 'original_amount' => $total, 'pending_amount' => $total, 'dr_cr' => 2,
+                    'source_vch_txn_id' => (int) $vid, 'source_vch_type_id' => 11, 'is_on_account' => 0, 'is_undefined_reference' => 0];
+            }
+        }
+        foreach ($held as $vid => $v) {
+            if (!empty($v['cancelled']) || (int) ($v['party']['acc_id'] ?? 0) !== $accId || (int) ($v['vch_type_id'] ?? 0) !== 3) {
+                continue;
+            }
+            $left = (float) ($v['tax_summary']['grand_total'] ?? 0);
+            foreach ((array) ($v['against_bills'] ?? []) as $a) {
+                $target = (int) ($a['bill_id'] ?? 0);
+                if (!isset($bills[$target]) || $left <= 0) {
+                    continue;
+                }
+                $take = min((float) $a['amount'], (float) $bills[$target]['pending_amount'], $left);
+                $bills[$target]['pending_amount'] = round((float) $bills[$target]['pending_amount'] - $take, 4);
+                $left = round($left - $take, 4);
+            }
+            if ($left > 0) {
+                $bills[(int) $vid] = ['bill_id' => (int) $vid, 'acc_id' => $accId, 'bill_ref' => $v['bill']['bill_ref'] ?? null, 'bill_date' => $v['bill']['bill_date'] ?? null,
+                    'due_date' => null, 'original_amount' => $left, 'pending_amount' => $left, 'dr_cr' => 1,
+                    'source_vch_txn_id' => (int) $vid, 'source_vch_type_id' => 3, 'is_on_account' => 0, 'is_undefined_reference' => 0];
+            }
+        }
+        $rows = array_map(static function (array $b): array {
+            $b['original_amount'] = number_format((float) $b['original_amount'], 4, '.', '');
+            $b['pending_amount'] = number_format((float) $b['pending_amount'], 4, '.', '');
+            return $b;
+        }, array_values($bills));
+        if (($_GET['show_settled'] ?? null) !== '1') {
+            $rows = array_values(array_filter($rows, static fn (array $r) => (float) $r['pending_amount'] > 0));
+        }
+        echo json_encode(['data' => ['report' => 'bill_by_bill', 'acc_id' => $accId, 'rows' => $rows]]);
+        exit;
+    }
     $rows = [
         $bill(1, 'INV/0001', '2026-08-01', '2026-08-31', '200000.0000', '120000.5000'),
         $bill(2, 'INV/0002', '2026-08-10', null, '45000.2500', '45000.2500'),
@@ -1443,6 +1492,9 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         'stock'       => $stock,
         'challan_settlements' => $voucherPayload['challan_settlements'] ?? [],
         'source_document_id'  => $voucherPayload['source_document_id'] ?? null,
+        // A note's Agst Ref bills and the purchase it is against (BillAllocationService).
+        'against_bills'       => $voucherPayload['against_bills'] ?? [],
+        'original_document'   => $voucherPayload['original_document'] ?? null,
     ];
     file_put_contents($voucherStore, json_encode($vouchers));
 
