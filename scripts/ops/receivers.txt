@@ -1,0 +1,10 @@
+# Receivers this release calls (E8-OPS, A24). Checked by scripts/ops/preflight-receivers.sh BEFORE any file
+# goes live; a missing one stops the deploy. Derived from the code with console-react-app
+# ops/estate/contract-graph.py (routes this app calls vs routes the receiver serves), trimmed by hand
+# to the calls a release cannot work without. Manage authenticates before it routes, so it is checked
+# through the contracts its /api/health lists rather than by route.
+# label | production origin | sandbox origin | route METHOD path   or   health path jq-filter
+inventory | https://inventory.aicountly.com | https://inventory.gh.aicountly.com | route POST /api/v1/inventory-documents/post
+inventory | https://inventory.aicountly.com | https://inventory.gh.aicountly.com | route POST /api/v1/availability/check
+books | https://books.aicountly.com | https://books.gh.aicountly.com | route POST /api/vouchers/drafts
+manage | https://manage.aicountly.com | https://manage.gh.aicountly.com | health /api/health .success == true

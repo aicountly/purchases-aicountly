@@ -14,6 +14,13 @@ declare(strict_types=1);
 
 namespace Aicountly\Api;
 
+// E8-OPS guard (L07-137): a test runner, never a web page. tests/ is not deployed; if a copy ever is,
+// a request must not run it against the live .env.
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/../src/Env.php';
 require __DIR__ . '/../src/Autoload.php';
 

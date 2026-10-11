@@ -1,0 +1,5 @@
+# Scheduled jobs of purchases (E8-OPS, F160/F262). Installed into the deploy user's crontab by
+# bin/ops/release.sh on every deploy (bin/ops/install-jobs.sh --apply); check with --check.
+#! app: purchases
+# name            | schedule      | command (run from the api folder)
+command-monitor   | */5 * * * *   | {php} bin/command-monitor.php

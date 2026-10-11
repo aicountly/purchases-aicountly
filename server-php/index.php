@@ -179,12 +179,21 @@ if ($path === '' || $path === 'health') {
         'env' => Env::get('APP_ENV', 'unknown'),
         'time' => gmdate('c'),
         'database' => $database,
+        // E8-OPS (F162, F128, F262): the commit this deploy wrote to REVISION; which settings the
+        // cross-app journeys need are present (booleans only); cross-app commands left open too long
+        // (counts only); and whether the command monitor (cron) runs. Post-deploy reads all four.
+        'revision' => \Aicountly\Api\Ops\OpsStatus::revision(),
+        'config' => $opsConfig = \Aicountly\Api\Ops\OpsStatus::config(),
+        'commands' => $database['reachable'] ? \Aicountly\Api\Ops\OpsStatus::commands() : ['readable' => false],
+        'monitor' => $monitor = ($database['reachable'] ? \Aicountly\Api\Ops\OpsStatus::monitor() : ['state' => 'unknown']),
         // Which environment this deployment is configured as and whether every sibling base
         // agrees with it (A20). A production API pointing at a sandbox Books is not usable.
         'environment' => $environment,
         // One field to read when something is wrong. False means the site
         // is up and the product is not usable.
-        'usable' => $database['reachable'] && ($database['schema']['ready'] ?? false) && $environment['ok'],
+        'usable' => $usable = $database['reachable'] && ($database['schema']['ready'] ?? false) && $environment['ok'],
+        // Usable, configured for its cross-app journeys, and watched: what a production deploy requires.
+        'ready' => $usable && $opsConfig['ready'] && $monitor['state'] === 'running',
     ]);
 }
 

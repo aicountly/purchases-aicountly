@@ -20,6 +20,17 @@ API_PORT="${API_PORT:-8793}"
 # Purchases' own AI Pulse gateway key, for the test API's .env; the stub Pulse insists on it.
 PULSE_KEY="test-pulse-gateway-key"
 
+
+# E8-OPS guard (L07-137): this script OVERWRITES server-php/.env and truncates tables. Never on a server:
+# refuse when an existing .env is not a local/test one (an unset APP_ENV counts as production here).
+if [ -f "$ROOT/.env" ] && [ "${TEST_ALLOW_ENV_OVERWRITE:-0}" != 1 ]; then
+  existing_env="$(sed -n 's/^[[:space:]]*APP_ENV[[:space:]]*=[[:space:]]*["'"'"']\{0,1\}\([A-Za-z]*\).*/\1/p' "$ROOT/.env" | tail -n 1 | tr 'A-Z' 'a-z')"
+  case "$existing_env" in
+    local | test | testing | development | dev) ;;
+    *) echo "Refusing to run: $ROOT/.env is not a local/test configuration (APP_ENV='${existing_env:-unset}'). These tests overwrite it." >&2; exit 2 ;;
+  esac
+fi
+
 cat > "$ROOT/.env" <<ENVEOF
 APP_ENV=local
 APP_PRODUCT_KEY=purchases
