@@ -167,6 +167,38 @@ await check('the approval controls carry the segregation-of-duties policy and re
   ok(/Who may decide on a document they raised/.test(text) && /Over-receipt tolerance/.test(text), 'SoD policy and tolerance visible')
 })
 
+// --- Launch readiness 2026-10 (E8-PUR) ------------------------------------------------------
+await check('F146: an approvals inbox that failed to load says so, never "nothing is waiting"', async () => {
+  await page.route('**/v1/approvals?*', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'database_unavailable', message: 'The database is not answering.' } }) }))
+  await page.goto(`${BASE}/approvals`, { waitUntil: 'networkidle' })
+  await settle()
+  const text = await page.locator('body').innerText()
+  await page.unroute('**/v1/approvals?*')
+  ok(/Could not load the approvals/.test(text), 'the failure is shown')
+  ok(!/Nothing is waiting for approval/.test(text), 'and not as an empty inbox')
+})
+
+await check('F146: Settings that failed to load offer no form and no Save', async () => {
+  await page.route('**/v1/settings?*', (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'database_unavailable', message: 'The database is not answering.' } }) }))
+  await page.goto(`${BASE}/settings`, { waitUntil: 'networkidle' })
+  await settle()
+  const text = await page.locator('body').innerText()
+  const saves = await page.getByRole('button', { name: /^Save/ }).count()
+  await page.unroute('**/v1/settings?*')
+  ok(/Could not load this company's purchase settings/.test(text), 'the failure is shown')
+  ok(saves === 0, `no Save button over values that did not load (found ${saves})`)
+})
+
+await check('F226: an RFQ says Purchases sends nothing and names who was asked', async () => {
+  const rfq = await call('POST', 'v1/rfqs', { title: 'Q4 steel', delivery_warehouse_id: 3, supplier_account_ids: [601], lines: [{ item_id: 201, required_qty: 100 }] })
+  await page.goto(`${BASE}/rfqs/${rfq.rfq_id}`, { waitUntil: 'networkidle' })
+  await settle()
+  const text = await page.locator('body').innerText()
+  ok(/Purchases does not send RFQs/.test(text), 'the screen says nothing is sent')
+  ok(/Deccan Steel Traders/.test(text), 'the supplier asked is named, not "Account 601"')
+  ok(!/Issue to suppliers/.test(text), 'no button claims to issue it to suppliers')
+})
+
 await browser.close()
 console.log(results.join('\n'))
 console.log(`\n${results.filter((r) => r.includes(' ok ')).length} ok, ${results.filter((r) => r.includes('FAIL')).length} failed`)

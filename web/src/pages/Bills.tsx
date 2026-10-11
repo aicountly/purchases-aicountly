@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../services/api'
 import type { BillRequest, CatalogSupplier, PurchaseOrder } from '../services/types'
@@ -8,10 +8,13 @@ import { useUrlFilter, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
 import { ItemPicker, LedgerPicker, SupplierPicker } from '../components/LivePicker'
+import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
+import * as decimal from '../utils/decimal'
+import { localToday } from '../utils/localDate'
 
-const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'POSTING', 'UNCERTAIN', 'POSTED', 'FAILED', 'BLOCKED', 'CANCELLED']
+const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'REJECTED', 'POSTING', 'UNCERTAIN', 'POSTED', 'FAILED', 'BLOCKED', 'CANCELLED']
 
 export function BillsList() {
   const navigate = useNavigate()
@@ -22,14 +25,17 @@ export function BillsList() {
   const status = urlStatus === '' && searchParams.get('exceptions') === '1' ? 'EXCEPTION' : urlStatus
   const supplierId = useUrlId('supplier_id')
 
-  const { data, loading, error } = useApi(
+  // Paged (F145): every bill is reachable, not only the first hundred.
+  const [offset, setOffset] = useState(0)
+  useEffect(() => setOffset(0), [status, supplierId])
+  const { data, loading, error, reload } = useApi(
     (signal) =>
       api.list<BillRequest>(
         'v1/bills',
-        { status: status || undefined, supplier_account_id: supplierId, limit: 100 },
+        { status: status || undefined, supplier_account_id: supplierId, limit: 50, offset },
         signal,
       ),
-    [scope?.cmp_id, scope?.fy_id, status, supplierId],
+    [scope?.cmp_id, scope?.fy_id, status, supplierId, offset],
     Boolean(scope),
   )
 
@@ -46,7 +52,7 @@ export function BillsList() {
         copy them.
       </Notice>
 
-      {error && <Notice tone="danger" title="Could not load bills">{error}</Notice>}
+      {error && <LoadFailed what="bills" error={error} onRetry={reload} />}
 
       <Card
         title={`${data?.meta.total ?? 0} bill${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}
@@ -63,7 +69,7 @@ export function BillsList() {
           rows={data?.data ?? []}
           rowKey={(row) => row.request_id}
           onRowClick={(row) => navigate(`/bills/${row.request_id}`)}
-          empty="No bills entered."
+          empty={error ? "Not loaded — see above." : "No bills entered."}
           columns={[
             {
               key: 'no',
@@ -75,11 +81,12 @@ export function BillsList() {
               ),
             },
             { key: 'date', header: 'Dated', render: (row) => date(row.supplier_invoice_date) },
-            { key: 'supplier', header: 'Supplier', render: (row) => `Account ${row.supplier_account_id}` },
+            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? `Ledger #${row.supplier_account_id}` },
             { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
             { key: 'voucher', header: 'Books voucher', render: (row) => row.books_voucher_no ?? '—' },
           ]}
         />
+        <Pager offset={offset} limit={50} total={data?.meta.total ?? 0} onChange={setOffset} />
       </Card>
     </div>
   )
@@ -110,6 +117,9 @@ export function BillDetail() {
   const [revisePosting, setRevisePosting] = useState('')
   const [reviseNote, setReviseNote] = useState('')
   const [reviseGstin, setReviseGstin] = useState('')
+  const [reviseLines, setReviseLines] = useState<ReviseLine[]>([])
+  const [reviseConfirm, setReviseConfirm] = useState(false)
+  const [reviseConfirmReason, setReviseConfirmReason] = useState('')
   const [cancelReason, setCancelReason] = useState('')
 
   const { data, loading, reload } = useApi(
@@ -138,6 +148,17 @@ export function BillDetail() {
 
   const latest = bill.matches[0]
   const openExceptions = latest?.exceptions.filter((e) => e.status === 'OPEN') ?? []
+  const rejectedExceptions = latest?.exceptions.filter((e) => e.status === 'REJECTED') ?? []
+  // Re-running the match changes the bill's state: only while it is waiting on its match, and
+  // only for someone who enters bills (never a cancelled, rejected, refused or posted one).
+  const canRematch = ['MATCHING', 'MATCHED', 'EXCEPTION'].includes(bill.status) && can('bill.enter')
+  const canPost = ['MATCHED', 'EXCEPTION', 'FAILED', 'UNCERTAIN', 'POSTING'].includes(bill.status) && can('bill.post')
+  const canRevise = ['BLOCKED', 'REJECTED'].includes(bill.status) && can('bill.enter')
+
+  function openRevise() {
+    setReviseLines(revisableLines(bill?.requested_lines))
+    setPanel('revise')
+  }
 
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
@@ -149,7 +170,8 @@ export function BillDetail() {
             <StatusBadge status={bill.status} />
           </h1>
           <p style={{ margin: '0.3rem 0 0', color: 'var(--muted)' }}>
-            {bill.bill_kind === 'service' ? 'Service bill' : bill.bill_kind === 'direct' ? 'Direct purchase' : 'Against an order'} · Account {bill.supplier_account_id}
+            {bill.bill_kind === 'service' ? 'Service bill' : bill.bill_kind === 'direct' ? 'Direct purchase' : 'Against an order'} · {bill.supplier_name ?? `Ledger #${bill.supplier_account_id}`}
+            {bill.is_reverse_charge ? ' · reverse charge' : ''}
             {bill.supplier_invoice_date && ` · dated ${date(bill.supplier_invoice_date)}`}
             {bill.posting_date && ` · booked ${date(bill.posting_date)}`}
             {bill.due_date && ` · due ${date(bill.due_date)}`}
@@ -164,16 +186,16 @@ export function BillDetail() {
 
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           <DiscussInConnect entityType="purchase_bill" entityId={Number(id)} />
-          {bill.status !== 'POSTED' && can('match.view') && (
+          {canRematch && (
             <Button disabled={busy} onClick={() => act(`v1/bills/${id}/rematch`)}>Re-run the match</Button>
           )}
-          {!['POSTED', 'CANCELLED', 'BLOCKED'].includes(bill.status) && can('bill.post') && (
-            <Button tone="primary" disabled={busy || openExceptions.length > 0} onClick={() => act(`v1/bills/${id}/post`)}>
+          {canPost && (
+            <Button tone="primary" disabled={busy || openExceptions.length > 0 || rejectedExceptions.length > 0} onClick={() => act(`v1/bills/${id}/post`)}>
               Post to Smart Books
             </Button>
           )}
-          {bill.status === 'BLOCKED' && can('bill.enter') && (
-            <Button tone="primary" disabled={busy} onClick={() => setPanel('revise')}>Revise</Button>
+          {canRevise && (
+            <Button tone="primary" disabled={busy} onClick={openRevise}>Revise</Button>
           )}
           {bill.status === 'POSTED' && can('bill.post') && (
             <Button disabled={busy} onClick={() => act(`v1/bills/${id}/verify`)}>Check again in Smart Books</Button>
@@ -187,6 +209,13 @@ export function BillDetail() {
       {error && <Notice tone="danger" title="That did not work" onDismiss={() => setError(null)}>{error}</Notice>}
 
       <CommandStrip commands={bill.commands} busy={busy} onRetry={() => act(`v1/bills/${id}/post`)} />
+
+      {bill.status === 'REJECTED' && (
+        <Notice tone="danger" title="A match exception was rejected">
+          This bill cannot be posted as it stands. Revise it — the revision is matched afresh — or cancel it.
+          {bill.last_error ? ` ${bill.last_error}` : ''}
+        </Notice>
+      )}
 
       {bill.status === 'POSTED' && bill.posting_check && (
         <Notice
@@ -204,11 +233,41 @@ export function BillDetail() {
       )}
 
       {panel === 'revise' && (
-        <Card title="Revise what Smart Books refused">
+        <Card title={bill.status === 'REJECTED' ? 'Revise the rejected bill' : 'Revise what Smart Books refused'}>
           <div style={{ display: 'grid', gap: '0.6rem' }}>
             <p style={{ margin: 0, fontSize: '0.88rem' }}>
-              {bill.last_error ?? 'Smart Books refused this bill.'} A revision is a new request; the refused one is withdrawn and cannot be sent again.
+              {bill.last_error ?? (bill.status === 'REJECTED' ? 'A match exception was rejected.' : 'Smart Books refused this bill.')} A revision is a new request, matched afresh; the old one is withdrawn and cannot be sent again.
             </p>
+            {reviseLines.length > 0 && (
+              <div className="table-scroll" style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+                      <th>Line</th><th>Description</th><th>Quantity</th><th>Rate</th><th>Discount %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reviseLines.map((line, index) => (
+                      <tr key={line.key} data-testid="revise-line">
+                        <td>{line.line_no}</td>
+                        <td>{line.description ?? (line.item_id ? `Item ${line.item_id}` : 'Service')}</td>
+                        {(['qty', 'rate', 'discount_pc'] as const).map((field) => (
+                          <td key={field}>
+                            <Input
+                              aria-label={`${field} of line ${line.line_no}`}
+                              inputMode="decimal"
+                              value={line[field]}
+                              onChange={(e) => setReviseLines(reviseLines.map((l, i) => (i === index ? { ...l, [field]: e.target.value } : l)))}
+                              style={{ width: '7rem' }}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.6rem' }}>
               <Field label="Supplier invoice date"><Input type="date" value={reviseDate} onChange={(e) => setReviseDate(e.target.value)} /></Field>
               <Field label="Posting date"><Input type="date" value={revisePosting} onChange={(e) => setRevisePosting(e.target.value)} /></Field>
@@ -216,6 +275,17 @@ export function BillDetail() {
                 <Input value={reviseGstin} maxLength={15} onChange={(e) => setReviseGstin(e.target.value.toUpperCase())} />
               </Field>
             </div>
+            {bill.bill_kind === 'direct' && (
+              <div style={{ display: 'grid', gap: '0.4rem' }}>
+                <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.88rem' }}>
+                  <input type="checkbox" checked={reviseConfirm} onChange={(e) => setReviseConfirm(e.target.checked)} />
+                  These goods are not the ones on an open goods receipt of this supplier
+                </label>
+                {reviseConfirm && (
+                  <Field label="Why (recorded with the bill)"><Input value={reviseConfirmReason} onChange={(e) => setReviseConfirmReason(e.target.value)} /></Field>
+                )}
+              </div>
+            )}
             <Field label="What changed"><Input value={reviseNote} onChange={(e) => setReviseNote(e.target.value)} /></Field>
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
               <Button onClick={() => setPanel('none')}>Back</Button>
@@ -223,7 +293,14 @@ export function BillDetail() {
                 tone="primary"
                 disabled={busy}
                 onClick={async () => {
-                  await act(`v1/bills/${id}/revise`, { supplier_invoice_date: reviseDate || undefined, posting_date: revisePosting || undefined, supplier_gstin: reviseGstin.trim() || undefined, note: reviseNote || undefined })
+                  await act(`v1/bills/${id}/revise`, {
+                    supplier_invoice_date: reviseDate || undefined,
+                    posting_date: revisePosting || undefined,
+                    supplier_gstin: reviseGstin.trim() || undefined,
+                    note: reviseNote || undefined,
+                    lines: reviseLines.length > 0 ? reviseLines.map(revisedLine) : undefined,
+                    ...(reviseConfirm ? { confirm_no_open_grn: true, confirm_no_open_grn_reason: reviseConfirmReason.trim() } : {}),
+                  })
                   setPanel('none')
                 }}
               >
@@ -339,6 +416,53 @@ export function BillDetail() {
   )
 }
 
+interface ReviseLine {
+  key: string
+  line_no: number
+  description: string | null
+  item_id: number | null
+  qty: string
+  rate: string
+  discount_pc: string
+  /** Everything else the line carries (order line, ledger, tax category, warehouse), sent back as it was. */
+  rest: Record<string, unknown>
+}
+
+/** The bill's stored lines as an editable list: quantity, rate and discount are what a revision changes. */
+function revisableLines(raw: unknown): ReviseLine[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((l): l is Record<string, unknown> => typeof l === 'object' && l !== null)
+    .map((l, i) => ({
+      key: `${i}-${String(l.line_no ?? i)}`,
+      line_no: Number(l.line_no ?? i + 1),
+      description: typeof l.description === 'string' ? l.description : null,
+      item_id: l.item_id == null ? null : Number(l.item_id),
+      qty: String(l.qty ?? ''),
+      rate: String(l.rate ?? ''),
+      discount_pc: String(l.discount_pc ?? '0'),
+      rest: l,
+    }))
+}
+
+function revisedLine(line: ReviseLine): Record<string, unknown> {
+  const { rest } = line
+  return {
+    po_line_id: rest.po_line_id ?? undefined,
+    item_id: rest.item_id ?? undefined,
+    unit_id: rest.unit_id ?? undefined,
+    warehouse_id: rest.warehouse_id ?? undefined,
+    is_service: rest.is_service ?? undefined,
+    purchase_acc_id: rest.purchase_acc_id ?? undefined,
+    description: rest.description ?? undefined,
+    tax_cat_id: rest.tax_cat_id ?? undefined,
+    hsn_sac: rest.hsn_sac ?? undefined,
+    qty: line.qty,
+    rate: line.rate,
+    discount_pc: line.discount_pc,
+  }
+}
+
 function LegCard({ title, owner, detail }: { title: string; owner: string; detail: string }) {
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.7rem' }}>
@@ -347,6 +471,18 @@ function LegCard({ title, owner, detail }: { title: string; owner: string; detai
       <div style={{ color: 'var(--muted)', fontSize: '0.82rem', marginTop: '0.15rem' }}>{detail}</div>
     </div>
   )
+}
+
+/** An unbilled goods receipt of the supplier holding the same items, as the server named it (A09). */
+interface OpenReceipt {
+  inventory_document_id: number
+  document_no?: string
+  document_date?: string
+  item_id: number
+  open_qty: number
+  receipt_no?: string
+  po_id?: number
+  po_no?: string
 }
 
 interface DirectLine {
@@ -380,18 +516,39 @@ export function BillEditor() {
   const { scope } = usePurchases()
 
   const [invoiceNo, setInvoiceNo] = useState('')
+  // One supplier invoice entered as several bills (F170): the number stays the supplier's.
+  const [invoicePart, setInvoicePart] = useState('1')
+  const [partReason, setPartReason] = useState('')
   // The GSTIN printed on the invoice, only when it is not the one on the supplier's ledger.
   const [supplierGstin, setSupplierGstin] = useState('')
-  const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
+  // Why the invoice's GSTIN is not the one on the supplier's ledger — asked only when they differ (F122).
+  const [gstinReason, setGstinReason] = useState('')
+  const [gstinDiffers, setGstinDiffers] = useState<string | null>(null)
+  // '' = as the supplier's ledger implies (services from abroad are reverse charge); 'yes' / 'no' as marked (F220).
+  const [reverseCharge, setReverseCharge] = useState<'' | 'yes' | 'no'>('')
+  const [invoiceDate, setInvoiceDate] = useState(() => localToday())
   const [dueDate, setDueDate] = useState('')
   const [postingDate, setPostingDate] = useState('')
   const [quantities, setQuantities] = useState<Record<number, string>>({})
   const [rates, setRates] = useState<Record<number, string>>({})
+  // The order line's discount, carried onto the bill: the bill is matched on the NET rate (A31),
+  // so defaulting to the gross rate with no discount would show a variance nobody agreed.
+  const [discounts, setDiscounts] = useState<Record<number, string>>({})
   const [narration, setNarration] = useState('')
+  // The order's own charges billed on this invoice (F163): matched against what the order agreed.
+  const [charges, setCharges] = useState<Record<'freight' | 'other_charges', { amount: string; ledger: { id: number; name: string } | null }>>({
+    freight: { amount: '', ledger: null },
+    other_charges: { amount: '', ledger: null },
+  })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [supplier, setSupplier] = useState<CatalogSupplier | null>(null)
   const [direct, setDirect] = useState<DirectLine[]>(() => [blankLine('service')])
+  // Goods an unbilled receipt of this supplier already brought in (A09): the bill would receive
+  // them again. Bill against that order instead — or confirm, with a reason, they are different.
+  const [openReceipts, setOpenReceipts] = useState<OpenReceipt[] | null>(null)
+  const [confirmDifferent, setConfirmDifferent] = useState(false)
+  const [confirmReason, setConfirmReason] = useState('')
   // A bill without an order receives its goods itself, so each item line says where they go.
   const warehouses = useWarehouses(!poId)
 
@@ -409,14 +566,17 @@ export function BillEditor() {
     setSeeded(true)
     const nextQty: Record<number, string> = {}
     const nextRates: Record<number, string> = {}
+    const nextDiscounts: Record<number, string> = {}
     const progress = new Map((po.progress?.lines ?? []).map((l) => [l.line_id, l]))
     for (const line of po.lines) {
       const toBill = progress.get(line.line_id)?.to_bill_qty ?? Math.max(0, Number(line.received_qty) - Number(line.billed_qty))
       nextQty[line.line_id] = String(toBill > 0 ? toBill : 0)
       nextRates[line.line_id] = line.agreed_rate
+      nextDiscounts[line.line_id] = line.discount_pc ?? '0'
     }
     setQuantities(nextQty)
     setRates(nextRates)
+    setDiscounts(nextDiscounts)
   }
 
   const dates = {
@@ -424,6 +584,8 @@ export function BillEditor() {
     due_date: dueDate || undefined,
     posting_date: postingDate || undefined,
     supplier_gstin: supplierGstin.trim() || undefined,
+    supplier_gstin_reason: gstinDiffers && gstinReason.trim() ? gstinReason.trim() : undefined,
+    reverse_charge: reverseCharge === '' ? undefined : reverseCharge === 'yes',
   }
 
   async function save() {
@@ -436,11 +598,29 @@ export function BillEditor() {
             po_id: po.po_id,
             bill_kind: 'po',
             supplier_invoice_no: invoiceNo.trim(),
+            ...(Number(invoicePart) > 1 ? { invoice_part: Number(invoicePart), invoice_part_reason: partReason.trim() } : {}),
             ...dates,
             narration: narration || undefined,
-            lines: po.lines
-              .filter((line) => Number(quantities[line.line_id] ?? 0) > 0)
-              .map((line) => ({ po_line_id: line.line_id, qty: Number(quantities[line.line_id] ?? 0), rate: Number(rates[line.line_id] ?? line.agreed_rate) })),
+            lines: [
+              ...po.lines
+                .filter((line) => Number(quantities[line.line_id] ?? 0) > 0)
+                .map((line): Record<string, unknown> => ({
+                  po_line_id: line.line_id,
+                  qty: quantities[line.line_id] ?? '0',
+                  rate: rates[line.line_id] ?? line.agreed_rate,
+                  discount_pc: discounts[line.line_id] ?? line.discount_pc ?? '0',
+                })),
+              ...(['freight', 'other_charges'] as const)
+                .filter((kind) => Number(charges[kind].amount || 0) > 0)
+                .map((kind): Record<string, unknown> => ({
+                  is_service: true,
+                  charge_kind: kind,
+                  description: kind === 'freight' ? 'Freight' : 'Other charges',
+                  purchase_acc_id: charges[kind].ledger?.id,
+                  qty: '1',
+                  rate: charges[kind].amount,
+                })),
+            ],
           }
         : {
             supplier_account_id: supplier?.acc_id,
@@ -448,17 +628,28 @@ export function BillEditor() {
             supplier_invoice_no: invoiceNo.trim(),
             ...dates,
             narration: narration || undefined,
+            ...(openReceipts && confirmDifferent ? { confirm_no_open_grn: true, confirm_no_open_grn_reason: confirmReason.trim() } : {}),
             lines: direct
               .filter((l) => Number(l.qty || 0) > 0 && Number(l.rate || 0) > 0)
               .map((l) =>
                 l.kind === 'service'
-                  ? { is_service: true, description: l.description.trim() || 'Service', purchase_acc_id: l.purchase_acc_id ?? undefined, qty: Number(l.qty), rate: Number(l.rate) }
-                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : undefined, qty: Number(l.qty), rate: Number(l.rate) },
+                  ? { is_service: true, description: l.description.trim() || 'Service', purchase_acc_id: l.purchase_acc_id ?? undefined, qty: l.qty, rate: l.rate }
+                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : undefined, qty: l.qty, rate: l.rate },
               ),
           }
       const response = await api.post<BillRequest>('v1/bills', body)
       navigate(`/bills/${response.data.request_id}`)
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'gstin_differs_from_ledger') {
+        setGstinDiffers(String(err.details.ledger_gstin ?? ''))
+        setError(err.message)
+        return
+      }
+      if (err instanceof ApiError && err.code === 'open_goods_receipts' && Array.isArray(err.details.receipts)) {
+        setOpenReceipts(err.details.receipts as OpenReceipt[])
+        setError(null)
+        return
+      }
       setError(err instanceof ApiError ? err.message : String(err))
     } finally {
       setSaving(false)
@@ -468,9 +659,10 @@ export function BillEditor() {
   if (poId && order.loading) return <p style={{ color: 'var(--muted)' }}>Loading the purchase order…</p>
   if (poId && !po) return <Notice tone="warning">That purchase order does not exist.</Notice>
 
+  // In fixed point, line by line as the server computes them (F452).
   const total = po
-    ? po.lines.reduce((sum, line) => sum + Number(quantities[line.line_id] ?? 0) * Number(rates[line.line_id] ?? line.agreed_rate), 0)
-    : direct.reduce((sum, l) => sum + Number(l.qty || 0) * Number(l.rate || 0), 0)
+    ? decimal.sum(po.lines.map((line) => decimal.lineAmount(quantities[line.line_id] ?? '0', rates[line.line_id] ?? line.agreed_rate, discounts[line.line_id] ?? line.discount_pc ?? '0')))
+    : decimal.sum(direct.map((l) => decimal.lineAmount(l.qty || '0', l.rate || '0')))
   const currency = po?.currency_code ?? 'INR'
   const setLine = (key: string, patch: Partial<DirectLine>) => setDirect((current) => current.map((l) => (l.key === key ? { ...l, ...patch } : l)))
   const missingLedger = !po && direct.some((l) => l.kind === 'service' && Number(l.rate || 0) > 0 && l.purchase_acc_id === null)
@@ -480,7 +672,7 @@ export function BillEditor() {
       <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Enter supplier bill</h1>
       {po ? (
         <p style={{ margin: 0, color: 'var(--muted)' }}>
-          Against <Link to={`/purchase-orders/${po.po_id}`}>{po.po_no}</Link> · {po.supplier_name_snapshot ?? `Account ${po.supplier_account_id}`}
+          Against <Link to={`/purchase-orders/${po.po_id}`}>{po.po_no}</Link> · {po.supplier_name_snapshot ?? `Ledger #${po.supplier_account_id}`}
         </p>
       ) : (
         <Notice tone="info">
@@ -497,8 +689,30 @@ export function BillEditor() {
           <Field label="Supplier invoice number" hint="The same invoice cannot be booked twice — here, in Billing or in Smart Books.">
             <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} />
           </Field>
+          {po && (
+            <Field label="Part of the invoice" hint="When one supplier invoice covers several orders, enter each order's bill as a part of the same invoice number.">
+              <Input type="number" min="1" max="20" step="1" value={invoicePart} onChange={(e) => setInvoicePart(e.target.value)} />
+            </Field>
+          )}
+          {po && Number(invoicePart) > 1 && (
+            <Field label="Why is this invoice entered in parts?" hint="Sent to Smart Books with the bill (at least 10 characters).">
+              <Input value={partReason} onChange={(e) => setPartReason(e.target.value)} />
+            </Field>
+          )}
           <Field label="Supplier GSTIN on the invoice (optional)" hint="Only when it differs from the one on their ledger in Smart Books. Its state decides how the GST is split.">
             <Input value={supplierGstin} maxLength={15} onChange={(e) => setSupplierGstin(e.target.value.toUpperCase())} />
+          </Field>
+          {gstinDiffers !== null && (
+            <Field label={`Why not their ledger's GSTIN${gstinDiffers ? ` (${gstinDiffers})` : ''}?`} hint="Recorded with the bill. Leave the GSTIN blank to use the ledger's.">
+              <Input value={gstinReason} onChange={(e) => setGstinReason(e.target.value)} />
+            </Field>
+          )}
+          <Field label="Reverse charge" hint="You owe this GST to the government, not the supplier: import of services, or a notified supply.">
+            <Select value={reverseCharge} onChange={(e) => setReverseCharge(e.target.value as '' | 'yes' | 'no')}>
+              <option value="">As the supplier's ledger implies</option>
+              <option value="yes">Yes — reverse charge</option>
+              <option value="no">No — an ordinary purchase</option>
+            </Select>
           </Field>
           <Field label="Invoice date" hint="As printed on the supplier's invoice."><Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} /></Field>
           <Field label="Due date (optional)"><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>
@@ -535,7 +749,24 @@ export function BillEditor() {
                   <Input value={rates[line.line_id] ?? ''} inputMode="decimal" onChange={(e) => setRates({ ...rates, [line.line_id]: e.target.value })} style={{ width: '7rem', textAlign: 'right' }} />
                 ),
               },
-              { key: 'agreed', header: 'Agreed', numeric: true, render: (line) => money(line.agreed_rate, currency) },
+              {
+                key: 'discount',
+                header: 'Discount %',
+                numeric: true,
+                render: (line) => (
+                  <Input aria-label={`Discount of line ${line.line_no}`} value={discounts[line.line_id] ?? ''} inputMode="decimal" onChange={(e) => setDiscounts({ ...discounts, [line.line_id]: e.target.value })} style={{ width: '5rem', textAlign: 'right' }} />
+                ),
+              },
+              {
+                key: 'agreed',
+                header: 'Agreed (net)',
+                numeric: true,
+                render: (line) => (
+                  <span title={Number(line.discount_pc) > 0 ? `${money(line.agreed_rate, currency)} less ${line.discount_pc}%` : undefined}>
+                    {money(Number(line.ordered_qty) > 0 ? Number(line.line_amount) / Number(line.ordered_qty) : Number(line.agreed_rate), currency)}
+                  </span>
+                ),
+              },
             ]}
           />
           <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.75rem', marginBottom: 0 }}>
@@ -596,9 +827,57 @@ export function BillEditor() {
       </Card>
 
       {missingLedger && <Notice tone="warning">Choose the ledger each service line is booked to.</Notice>}
+      {openReceipts && (
+        <Notice tone="warning" title="These goods may already be in stock">
+          <div data-testid="open-receipts" style={{ display: 'grid', gap: '0.5rem' }}>
+            <span>
+              An unbilled goods receipt of this supplier already brought in the same items. A bill with no order receives its goods
+              itself, so saving it as it stands would put them into stock a second time.
+            </span>
+            <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+              {openReceipts.map((r) => (
+                <li key={`${r.inventory_document_id}-${r.item_id}`}>
+                  {r.receipt_no ?? r.document_no ?? `Inventory document #${r.inventory_document_id}`}
+                  {r.document_date ? ` (${date(r.document_date)})` : ''}: {qty(r.open_qty)} of item #{r.item_id} not billed
+                  {r.po_id ? <> — <Link to={`/bills/new?po_id=${r.po_id}`}>bill it against {r.po_no ?? 'its order'}</Link></> : null}
+                </li>
+              ))}
+            </ul>
+            <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+              <input type="checkbox" checked={confirmDifferent} onChange={(e) => setConfirmDifferent(e.target.checked)} />
+              These are different goods from the ones on those receipts
+            </label>
+            {confirmDifferent && (
+              <Field label="Why (recorded with the bill and shown to whoever reviews it)">
+                <Input value={confirmReason} onChange={(e) => setConfirmReason(e.target.value)} />
+              </Field>
+            )}
+          </div>
+        </Notice>
+      )}
+      {po && (Number(po.freight_amount || 0) > 0 || Number(po.other_charges || 0) > 0) && (
+        <Card title="Charges the order agreed">
+          <p style={{ margin: '0 0 0.6rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+            Billed freight or other charges are matched against the order&apos;s own figure, and booked to the ledger you choose. They are not added to the goods&apos; stock cost: Smart Books does not capitalise a charge on a bill that settles goods receipts.
+          </p>
+          {(['freight', 'other_charges'] as const)
+            .filter((kind) => Number(kind === 'freight' ? po.freight_amount : po.other_charges) > 0)
+            .map((kind) => (
+              <div key={kind} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.55rem', marginBottom: '0.5rem' }}>
+                <Field label={`${kind === 'freight' ? 'Freight' : 'Other charges'} billed (order: ${kind === 'freight' ? po.freight_amount : po.other_charges})`}>
+                  <Input type="number" min="0" step="any" value={charges[kind].amount} onChange={(e) => setCharges((c) => ({ ...c, [kind]: { ...c[kind], amount: e.target.value } }))} />
+                </Field>
+                <LedgerPicker
+                  onPick={(ledger) => setCharges((c) => ({ ...c, [kind]: { ...c[kind], ledger: { id: ledger.acc_id, name: ledger.acc_name } } }))}
+                  selectedLabel={charges[kind].ledger?.name ?? null}
+                />
+              </div>
+            ))}
+        </Card>
+      )}
       <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
         <Button onClick={() => navigate(-1)}>Cancel</Button>
-        <Button tone="primary" disabled={saving || invoiceNo.trim() === '' || (!po && (supplier === null || missingLedger))} onClick={save}>
+        <Button tone="primary" disabled={saving || invoiceNo.trim() === '' || (['freight', 'other_charges'] as const).some((k) => Number(charges[k].amount || 0) > 0 && charges[k].ledger === null) || (!po && (supplier === null || missingLedger)) || (openReceipts !== null && (!confirmDifferent || confirmReason.trim().length < 10))} onClick={save}>
           {saving ? 'Matching…' : 'Save and match'}
         </Button>
       </div>

@@ -331,7 +331,7 @@ final class InsightsDashboard extends Dashboard
         $row = $this->row(
             'SELECT COALESCE(SUM(p.total_amount), 0)::text AS value, COUNT(*) AS orders
              FROM purchase_orders p
-             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> \'CANCELLED\'' . $clause,
+             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN (\'ISSUED\', \'ACKNOWLEDGED\', \'PARTIALLY_RECEIVED\', \'RECEIVED\', \'CLOSED\')' . $clause,
             $range + $params,
             'p',
         ) ?? [];
@@ -358,7 +358,7 @@ final class InsightsDashboard extends Dashboard
                 "SELECT to_char(date_trunc('month', p.po_date), 'YYYY-MM') AS month,
                         COALESCE(SUM(p.total_amount), 0)::text AS amount, COUNT(*) AS orders
                  FROM purchase_orders p
-                 WHERE {scope} AND p.status <> 'CANCELLED'
+                 WHERE {scope} AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED')
                    AND p.po_date >= date_trunc('month', CURRENT_DATE) - INTERVAL '11 months'" . $clause . '
                  GROUP BY 1 ORDER BY 1',
                 $params,
@@ -552,7 +552,7 @@ final class InsightsDashboard extends Dashboard
                     'formatted' => Format::money((string) $forecast['projection'], $currency),
                     'method'    => (string) $forecast['method_label'],
                 ],
-            'basis'      => 'Ordered value and order count per month, uncancelled, in the selected scope. A month with no orders is shown as zero, not skipped. '
+            'basis'      => 'Ordered value and order count per month of issued orders (drafts and orders awaiting approval are not purchases yet), in the selected scope. A month with no orders is shown as zero, not skipped. '
                 . 'The period filter above narrows every other panel; this one deliberately shows twelve months so the period can be read in context.',
         ]);
     }
@@ -579,7 +579,7 @@ final class InsightsDashboard extends Dashboard
             "SELECT l.item_id, l.is_service, COALESCE(SUM(l.line_amount), 0)::text AS amount
              FROM purchase_order_lines l
              JOIN purchase_orders p ON p.po_id = l.po_id
-             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'" . $clause . '
+             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED')" . $clause . '
              GROUP BY l.item_id, l.is_service
              ORDER BY SUM(l.line_amount) DESC
              LIMIT 400',
@@ -844,7 +844,7 @@ final class InsightsDashboard extends Dashboard
 
         $total = $this->amount(
             'SELECT COALESCE(SUM(p.total_amount), 0) FROM purchase_orders p
-             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> \'CANCELLED\'' . $clause,
+             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN (\'ISSUED\', \'ACKNOWLEDGED\', \'PARTIALLY_RECEIVED\', \'RECEIVED\', \'CLOSED\')' . $clause,
             $range + $params,
             'p',
         );
@@ -856,7 +856,7 @@ final class InsightsDashboard extends Dashboard
             'SELECT p.supplier_account_id, p.supplier_name_snapshot,
                     COALESCE(SUM(p.total_amount), 0)::text AS value
              FROM purchase_orders p
-             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status <> \'CANCELLED\'' . $clause . '
+             WHERE {scope} AND p.po_date BETWEEN :from AND :to AND p.status IN (\'ISSUED\', \'ACKNOWLEDGED\', \'PARTIALLY_RECEIVED\', \'RECEIVED\', \'CLOSED\')' . $clause . '
              GROUP BY p.supplier_account_id, p.supplier_name_snapshot
              ORDER BY SUM(p.total_amount) DESC LIMIT 1',
             $range + $params,
@@ -1262,7 +1262,7 @@ final class InsightsDashboard extends Dashboard
             'range'     => ['low' => $low, 'high' => $high],
             'range_formatted' => ['low' => Format::money($low, $currency), 'high' => Format::money($high, $currency)],
             'range_label' => 'Range shown is the lowest and highest of those three months, not a confidence interval.',
-            'basis'     => 'ORDERED value raised per month, uncancelled. It is what this application knows; posted purchases are Smart Books\' figure and are shown on the Overview.',
+            'basis'     => 'ORDERED value of issued orders per month (drafts excluded). It is what this application knows; posted purchases are Smart Books\' figure and are shown on the Overview.',
             'caveat'    => 'A three-month mean carries no seasonality and no knowledge of a decision already taken. Treat it as a starting point for a conversation, not a budget.',
             'history'   => array_map(
                 static fn (array $r) => [

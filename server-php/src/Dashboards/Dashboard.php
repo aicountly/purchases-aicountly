@@ -184,7 +184,7 @@ abstract class Dashboard
     {
         $codes = $this->rows(
             'SELECT DISTINCT currency_code FROM purchase_orders
-             WHERE {scope} AND po_date BETWEEN :from AND :to AND status <> \'CANCELLED\' LIMIT 5',
+             WHERE {scope} AND po_date BETWEEN :from AND :to AND status IN (\'ISSUED\', \'ACKNOWLEDGED\', \'PARTIALLY_RECEIVED\', \'RECEIVED\', \'CLOSED\') LIMIT 5',
             $this->period->params(),
         );
 

@@ -22,8 +22,8 @@ final class PurchaseOrdersController extends Controller
         $result = (new PurchaseOrderService($ctx, $auth))->search([
             'status'              => Http::param('status'),
             'supplier_account_id' => Http::intParam('supplier_account_id'),
-            'from'                => Http::param('from'),
-            'to'                  => Http::param('to'),
+            'from'                => Http::dateParam('from'),
+            'to'                  => Http::dateParam('to'),
             'open_only'           => Http::param('open_only') === '1',
             'overdue'             => Http::param('overdue') === '1',
             'q'                   => $params['q'],
@@ -106,7 +106,7 @@ final class PurchaseOrdersController extends Controller
     public static function receive(string $id): void
     {
         [$auth, $ctx] = self::enter();
-        Http::data((new ReceiptService($ctx, $auth))->request((int) $id, Http::body()));
+        Http::data((new ReceiptService($ctx, $auth))->request((int) $id, Http::body(), true));
     }
 
     public static function retryReceipt(string $id): void
@@ -147,6 +147,10 @@ final class PurchaseOrdersController extends Controller
     public static function retryReceiptReturn(string $id): void
     {
         [$auth, $ctx] = self::enter();
+        // Refused before the receipt is looked up, so a stranger to Purchases learns nothing of it.
+        if (!Permissions::allows($ctx, $auth, 'receipt.request') && !Permissions::allows($ctx, $auth, 'return.approve')) {
+            Permissions::assert($ctx, $auth, 'receipt.request');
+        }
         Http::data((new ReceiptReturnService($ctx, $auth))->retry((int) $id));
     }
 
@@ -164,6 +168,18 @@ final class PurchaseOrdersController extends Controller
     }
 
     /** Stop waiting for what will not be delivered, with a reason. */
+    public static function amend(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new PurchaseOrderService($ctx, $auth))->amend((int) $id, Http::body()));
+    }
+
+    public static function reopen(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new PurchaseOrderService($ctx, $auth))->reopen((int) $id, Http::body()));
+    }
+
     public static function shortClose(string $id): void
     {
         [$auth, $ctx] = self::enter();

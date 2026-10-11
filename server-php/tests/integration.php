@@ -548,7 +548,7 @@ check('refuses to receive more than was ordered', function () use ($ctx, $auth) 
     );
 });
 
-check('an unreachable Inventory leaves the receipt retryable on the same key', function () use ($ctx, $auth) {
+check('a server error from Inventory leaves the receipt UNCERTAIN, retryable on the same key (it may have been recorded)', function () use ($ctx, $auth) {
     resetDatabase();
     $orders = new PurchaseOrderService($ctx, $auth);
     $po = $orders->create(poInput());
@@ -558,7 +558,7 @@ check('an unreachable Inventory leaves the receipt retryable on the same key', f
     stubFail('inventory-documents', 500);
     assertThrows(
         static fn () => (new ReceiptService($ctx, $auth))->request((int) $po['po_id'], []),
-        'press Retry',
+        'may have been recorded',
         'receipt during an outage',
     );
     stubRecover();
@@ -567,10 +567,10 @@ check('an unreachable Inventory leaves the receipt retryable on the same key', f
         'SELECT * FROM purchase_integration_commands WHERE command_type = :t ORDER BY command_id DESC LIMIT 1',
         ['t' => ReceiptService::COMMAND_RECEIPT],
     );
-    assertSame('FAILED', $command['status'], 'FAILED, so it can be retried');
+    assertSame('UNCERTAIN', $command['status'], 'UNCERTAIN: a 500 after the request arrived proves nothing was not written');
     $firstKey = $command['idempotency_key'];
 
-    $requestId = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'FAILED' ORDER BY request_id DESC LIMIT 1");
+    $requestId = (int) Db::scalar("SELECT request_id FROM purchase_receipt_requests WHERE status = 'UNCERTAIN' ORDER BY request_id DESC LIMIT 1");
     (new ReceiptService($ctx, $auth))->retry($requestId);
 
     $keys = array_values(array_unique(array_filter(array_map(
@@ -781,12 +781,14 @@ check('a duplicate supplier invoice number is refused', function () use ($ctx, $
 
 check('the PO -> GRN -> bill journey receives the goods once, and the bill settles the GRN', function () use ($ctx, $auth) {
     resetDatabase();
+    // A company that chose challan_only (the pre-020 default, kept by existing companies).
+    receiveStockAtGrn($ctx, false);
     $po = receivedOrder($ctx, $auth);
 
     $grn = inventoryPosts();
     assertSame(1, count($grn), 'one document for the goods receipt');
     assertSame('INWARD_CHALLAN', $grn[0]['document_type'], 'the GRN is an inward challan');
-    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'by default the receipt notes the goods and the bill receives them (receive_stock_at_grn is off)');
+    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'with receive_stock_at_grn off the receipt notes the goods and the bill receives them');
     assertSame('purchases.receipt', $grn[0]['source_document_type'] ?? null, 'filed under the receipt, not the order');
     assertSame((int) $po['receipts'][0]['request_id'], (int) $grn[0]['source_document_id'], 'the receipt is the source');
     assertSame((int) $po['po_id'], (int) ($grn[0]['metadata']['purchase_order_id'] ?? 0), 'the order travels beside it as a reference');
@@ -860,6 +862,60 @@ function receiveStockAtGrn(Context $ctx, bool $on): void
     Db::update('purchase_settings', ['receive_stock_at_grn' => $on], ['cmp_id' => $ctx->cmpId]);
 }
 
+check('E8-INV A11: a new company puts goods into stock at the goods receipt; an existing one keeps its mode', function () use ($ctx, $auth) {
+    resetDatabase();
+    Db::run('DELETE FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
+    assertSame('physical', ReceiptService::stockEffectFor($ctx->cmpId), 'no settings row and no receipt: a new company, the new default');
+    Db::run('INSERT INTO purchase_settings (cmp_id) VALUES (:cmp)', ['cmp' => $ctx->cmpId]);
+    assertSame('physical', ReceiptService::stockEffectFor($ctx->cmpId), 'the column default is on (migration 020)');
+
+    // A company that already recorded receipts under the old default and has no settings row.
+    resetDatabase();
+    receiveStockAtGrn($ctx, false);
+    receivedOrder($ctx, $auth);
+    Db::run('DELETE FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
+    assertSame('challan_only', ReceiptService::stockEffectFor($ctx->cmpId), 'its receipts were notes; nothing flips it silently');
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => '0'];
+    Auth::adopt($auth);
+    try {
+        try {
+            \Aicountly\Api\Controllers\SettingsController::show();
+        } catch (ResponseSent $sent) {
+            assertSame(false, (bool) ($sent->payload['data']['receive_stock_at_grn'] ?? true), 'opening Settings writes the mode it already works under');
+        }
+        assertSame('challan_only', ReceiptService::stockEffectFor($ctx->cmpId), 'still the mode it works under');
+    } finally {
+        Auth::adopt(null);
+    }
+});
+
+check('E8-INV A11: switching the receipt stock mode records who and when, and the order says it', function () use ($ctx, $auth) {
+    resetDatabase();
+    receiveStockAtGrn($ctx, false);
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => '0'];
+    $_SERVER['REQUEST_METHOD'] = 'PUT';
+    Auth::adopt($auth);
+    try {
+        $bodyProp = new \ReflectionProperty(Http::class, 'body');
+        $bodyProp->setValue(null, ['receive_stock_at_grn' => true, 'reason' => 'GRNI ready']);
+        try {
+            \Aicountly\Api\Controllers\SettingsController::update();
+        } catch (ResponseSent $sent) {
+            $row = $sent->payload['data'] ?? [];
+            assertSame(true, (bool) $row['receive_stock_at_grn'], 'switched on');
+            assertTrue(($row['receive_stock_at_grn_changed_by'] ?? '') !== '', 'who changed it');
+            assertTrue(($row['receive_stock_at_grn_changed_at'] ?? null) !== null, 'and when');
+        }
+    } finally {
+        (new \ReflectionProperty(Http::class, 'body'))->setValue(null, null);
+        Auth::adopt(null);
+    }
+    $po = receivedOrder($ctx, $auth);
+    $order = (new PurchaseOrderService($ctx, $auth))->find((int) $po['po_id']);
+    assertSame('physical', $order['grn_stock_effect'], 'the order answers the mode');
+    assertTrue(($order['grn_stock_effect_changed']['by'] ?? '') !== '', 'the receive panel can say who switched it');
+});
+
 check('with receive_stock_at_grn on, the goods receipt puts the goods into stock and its bill settles it', function () use ($ctx, $auth) {
     resetDatabase();
     receiveStockAtGrn($ctx, true);
@@ -887,6 +943,7 @@ check('with receive_stock_at_grn on, the goods receipt puts the goods into stock
 
 check('one bill cannot settle a receipt that put goods into stock with one that only noted them', function () use ($ctx, $auth) {
     resetDatabase();
+    receiveStockAtGrn($ctx, false);
     $orders = new PurchaseOrderService($ctx, $auth);
     $po = $orders->create(poInput());
     $orders->submit((int) $po['po_id']);
@@ -988,7 +1045,7 @@ check('a purchase return leaves stock once: dispatched on challan, issued by the
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'item_id' => 201, 'warehouse_id' => 3, 'return_qty' => 10, 'rate' => 250]],
     ]);
     $returnId = (int) $return['return_id'];
-    $returns->approveReturn($returnId, []);
+    $returns->approveReturn($returnId, ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn($returnId);
 
     $posts = inventoryPosts();
@@ -1053,6 +1110,62 @@ check('posting a bill twice is refused, so Books gets one voucher', function () 
     assertSame(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_bill_requests WHERE status = 'POSTED'"), 'one posted bill');
 });
 
+check('E8-ID F021: Smart Books unavailable at a bill post (what Books now answers when Inventory is down) is FAILED and retryable, and plain Retry posts it', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'F021-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    $requestId = (int) $bill['request_id'];
+
+    stubFail('vouchers/drafts', 503);
+    // A 5xx after a write is an unknown outcome (E8-PUR F007/F283): Books may have acted, so the
+    // command keeps its key and is reconciled on retry — never BLOCKED (revise), never "posted".
+    assertThrows(static fn () => $bills->post($requestId), 'Retry cannot post it twice', 'Books 503 at the post');
+    stubRecover();
+    $failed = $bills->find($requestId);
+    assertTrue(in_array($failed['status'], ['FAILED', 'UNCERTAIN'], true), 'retryable, not BLOCKED (revise): ' . $failed['status']);
+
+    $posted = $bills->post($requestId);
+    assertSame('POSTED', $posted['status'], 'after recovery a plain Retry posts the same bill — no Revise');
+});
+
+check('E8-ID F021: a Books that does not answer is never described by its host, port or address', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'F021T-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    $requestId = (int) $bill['request_id'];
+
+    $before = getenv('BOOKS_API_BASE');
+    putenv('BOOKS_API_BASE=http://127.0.0.1:9');   // nothing listens: cURL says "Failed to connect to 127.0.0.1 port 9"
+    $thrown = '';
+    try {
+        $bills->post($requestId);
+    } catch (\Throwable $e) {
+        $thrown = json_encode($e instanceof ResponseSent ? $e->payload : $e->getMessage());
+    } finally {
+        putenv($before === false ? 'BOOKS_API_BASE' : 'BOOKS_API_BASE=' . $before);
+    }
+    assertTrue($thrown !== '' && !str_contains($thrown, '127.0.0.1') && stripos($thrown, 'port 9') === false && stripos($thrown, 'Failed to connect') === false, 'the answer names no host or port: ' . $thrown);
+    assertTrue(str_contains($thrown, '"retryable":true'), 'and says it can be retried');
+    assertSame('POSTED', $bills->post($requestId)['status'], 'Retry posts it once Books answers');
+
+    // What a command records for an attempt with no answer (the voucher post itself unreachable).
+    $curl = 'Failed to connect to 10.0.3.7 port 8443 after 3001 ms: Connection timed out';
+    foreach ([$curl, 'books_unreachable', 'inventory_timeout'] as $raw) {
+        $shown = IntegrationCommand::publicError($raw, 0);
+        assertTrue(!str_contains($shown, '10.0.3.7') && !str_contains($shown, '8443') && str_contains($shown, 'No answer'), 'no answer is said in words, without the address: ' . $shown);
+    }
+    assertSame('unreadable_response', IntegrationCommand::publicError('unreadable_response', 502), 'an answer with a status keeps its code');
+    assertSame('books_base_unconfigured', IntegrationCommand::publicError('books_base_unconfigured', 0), 'and our own configuration codes are kept');
+});
+
 echo "\nReturns and claims\n";
 
 check('a return runs approve, dispatch and debit note, keeping only references', function () use ($ctx, $auth) {
@@ -1070,7 +1183,7 @@ check('a return runs approve, dispatch and debit note, keeping only references',
         ]],
     ]);
 
-    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->approveReturn((int) $return['return_id'], ['note' => 'The owner approves a return they raised.']);
     $dispatched = $returns->dispatchReturn((int) $return['return_id']);
     assertSame('DISPATCHED', $dispatched['status'], 'status after dispatch');
     assertTrue($dispatched['inventory_document_uuid'] !== null, 'Inventory reference kept');
@@ -1093,7 +1206,7 @@ check('a claim moves through its lifecycle and cannot over-settle', function () 
     $claimId = (int) $claim['claim_id'];
 
     $service->updateClaim($claimId, 'submit', []);
-    $service->updateClaim($claimId, 'approve', ['approved_amount' => 4500]);
+    $service->updateClaim($claimId, 'approve', ['approved_amount' => 4500, 'note' => 'The owner approves a claim they raised.']);
 
     // Settled by what happens, never by hand.
     assertThrows(static fn () => $service->updateClaim($claimId, 'settle', ['settled_amount' => 4500]), 'propose a resolution', 'marking it settled by hand');
@@ -1103,7 +1216,7 @@ check('a claim moves through its lifecycle and cannot over-settle', function () 
     $resolution = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 4500, 'adjustment_acc_id' => 7302]);
     assertTrue(str_contains((string) $resolution['proposed_effect']['summary'], 'debit note'), 'the effect is spelt out before approval');
     assertSame('APPROVED', $service->findClaim($claimId)['status'], 'nothing is settled by a proposal');
-    $resolutions->approve((int) $resolution['resolution_id']);
+    $resolutions->approve((int) $resolution['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
 
     $settled = $service->findClaim($claimId);
     assertSame('SETTLED', $settled['status'], 'settled once Books posted the debit note');
@@ -1355,8 +1468,9 @@ check('supplier concentration states the denominator it used', function () use (
 check('concentration refuses to add two currencies together', function () use ($ctx, $auth) {
     resetDatabase();
     $orders = new PurchaseOrderService($ctx, $auth);
-    $orders->create(poInput());
-    $orders->create(poInput(['currency_code' => 'USD', 'exchange_rate' => 83]));
+    // Issued: a draft is not purchase value (F373).
+    issuedOrder($orders, poInput());
+    issuedOrder($orders, poInput(['currency_code' => 'USD', 'exchange_rate' => 83]));
 
     // The orders are dated in September 2026 (poInput): ask for that month, not whichever month
     // the suite happens to run in — from 1 Oct 2026 the default period held no orders at all.
@@ -2013,7 +2127,7 @@ check('a forecast is refused rather than extrapolated from too little history', 
 
 check('the six figures at the top are the ones the screen is about', function () use ($ctx, $auth) {
     resetDatabase();
-    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+    issuedOrder(new PurchaseOrderService($ctx, $auth), poInput([
         'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 1000]],
     ]));
 
@@ -2033,7 +2147,7 @@ check('the six figures at the top are the ones the screen is about', function ()
 
 check('a card carries the short form and the exact figure, never only the short one', function () use ($ctx, $auth) {
     resetDatabase();
-    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+    issuedOrder(new PurchaseOrderService($ctx, $auth), poInput([
         'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 2845000]],
     ]));
 
@@ -2133,7 +2247,7 @@ check('every insight row says what kind of statement it is', function () use ($c
 
 check('the category split refuses rather than grouping the spend by something else', function () use ($ctx, $auth) {
     resetDatabase();
-    (new PurchaseOrderService($ctx, $auth))->create(poInput([
+    issuedOrder(new PurchaseOrderService($ctx, $auth), poInput([
         'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100]],
     ]));
 
@@ -2274,6 +2388,13 @@ function delayedOrder(Context $ctx, Auth $auth): void
     $orders->issue((int) $po['po_id']);
 }
 
+check('F305: AI commentary that states a figure the records do not hold is dropped; one that only repeats them is kept', function () {
+    $result = ['answer' => '3 orders are late. The oldest is PO/26/0007, 12 days late.', 'records' => [['reference' => 'PO/26/0007', 'remaining' => '₹1,25,000.00']], 'summary_facts' => ['delayed_orders' => 3]];
+    assertSame([], AskEngine::ungroundedFigures('Three orders, led by PO/26/0007 with ₹1,25,000.00 still to come, are 12 days late at worst; 3 in all.', $result), 'every figure is in the rows');
+    assertSame(['45.2'], AskEngine::ungroundedFigures('3 orders are late; that is 45.2% of all orders.', $result), 'an invented share is caught');
+    assertSame(['2,00,000'], AskEngine::ungroundedFigures('All good: ₹2,00,000 is still to come.', $result), 'an invented amount is caught');
+});
+
 check('with a model bound in AI Pulse, the summary is written there — as this user, for this company', function () use ($ctx) {
     resetDatabase();
     AiClient::useClient(null);
@@ -2287,8 +2408,9 @@ check('with a model bound in AI Pulse, the summary is written there — as this 
     $answer = AskEngine::answer($ctx, $auth, Period::fromRequest(), 'which orders are delayed this week?');
 
     assertSame('delayed_orders', $answer['intent'], 'the keywords chose the question');
-    assertSame('ai_narrated', $answer['method'], 'the summary sentence came from AI Pulse');
-    assertSame('Stub summary written through AI Pulse.', $answer['answer'], 'word for word');
+    assertSame('ai_narrated', $answer['method'], 'the commentary came from AI Pulse');
+    assertSame('Stub summary written through AI Pulse.', $answer['narrative'], 'word for word, as commentary');
+    assertTrue(str_contains($answer['answer'], 'past the promised date'), 'beside the factual sentence, which stands unchanged (F305): ' . $answer['answer']);
     assertTrue(str_contains($answer['method_label'], 'through AI Pulse'), 'and the label says where it came from');
     assertTrue($answer['records'] !== [] && $answer['records'][0]['reference'] !== '', 'the figures are still the query\'s own');
 
@@ -2507,6 +2629,16 @@ function callAccess(string $action, Context $ctx, Auth $auth, array $body = [], 
 }
 
 /** Give a user a profile directly, for tests that need a non-owner administrator. */
+/** An order taken through approval and issue: only issued orders are purchase value (F373). */
+function issuedOrder(PurchaseOrderService $orders, array $input): array
+{
+    $po = $orders->create($input);
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+
+    return $po;
+}
+
 function grantProfile(Context $ctx, string $uuid, string $name, array $permissions): int
 {
     $profileId = (int) Db::insert('purchase_permission_profiles', [
@@ -2755,6 +2887,26 @@ check('the owner is never locked out by this rule', function () use ($ctx, $auth
     $result = callAccess('unassign', $ctx, $auth, [], [(string) $assignment['assignment_id']]);
     assertSame(200, $result['status'], 'the owner may remove it: their access comes from the portal');
     assertTrue(Permissions::allows($ctx, $auth, 'access.manage'), 'and they still have it');
+});
+
+check('F306: you cannot edit your own last access-management profile to drop it (or deactivate it)', function () use ($ctx) {
+    resetDatabase();
+
+    $admin = authFor('user-admin', 2);
+    grantProfile($ctx, 'user-admin', 'Access admin', ['access.manage', 'po.view']);
+    $profileId = (int) Db::scalar("SELECT profile_id FROM purchase_permission_profiles WHERE profile_name = 'Access admin'");
+
+    $result = callAccess('saveProfile', $ctx, $admin, ['profile_id' => $profileId, 'profile_name' => 'Access admin', 'permissions' => ['po.view']]);
+    assertSame(409, $result['status'], 'dropping access.manage from your own last grant is refused');
+    assertTrue(str_contains((string) $result['message'], 'your own last grant'), 'and says why: ' . $result['message']);
+    $result = callAccess('saveProfile', $ctx, $admin, ['profile_id' => $profileId, 'profile_name' => 'Access admin', 'permissions' => ['access.manage', 'po.view'], 'is_active' => false]);
+    assertSame(409, $result['status'], 'deactivating it is refused too');
+    assertTrue(Permissions::allows($ctx, $admin, 'access.manage'), 'the grant survives');
+
+    // With a second grant elsewhere it is allowed.
+    grantProfile($ctx, 'user-admin', 'Deputy admin', ['access.manage']);
+    $result = callAccess('saveProfile', $ctx, $admin, ['profile_id' => $profileId, 'profile_name' => 'Access admin', 'permissions' => ['po.view']]);
+    assertSame(200, $result['status'], 'allowed while another grant remains');
 });
 
 check('a profile in use cannot be deleted out from under people', function () use ($ctx, $auth) {
@@ -3187,6 +3339,9 @@ check('the export endpoint answers with a real PDF when asked for one', function
 
 // Insights alignment 2026-10: portal outage (MNY-18) and the analytics Insights binds.
 require __DIR__ . '/insights_contract.php';
+
+// E8-BK-POST A16: Books' voucher cancel / edit events.
+require __DIR__ . '/books_voucher_events.php';
 
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Controllers;
 
+use Aicountly\Api\Domain\SupplierNames;
 use Aicountly\Api\Domain\ClaimResolutionService;
 use Aicountly\Api\Domain\ReturnClaimService;
 use Aicountly\Api\Http;
@@ -24,7 +25,7 @@ final class ClaimsController extends Controller
             'open_only'           => Http::param('open_only') === '1',
         ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
 
-        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset']);
+        Http::list(SupplierNames::attach($ctx, $auth, $result['rows']), $result['total'], $params['limit'], $params['offset']);
     }
 
     public static function show(string $id): void
@@ -37,7 +38,7 @@ final class ClaimsController extends Controller
             Http::notFound('That claim does not exist.');
         }
 
-        Http::data($claim);
+        Http::data(SupplierNames::attach($ctx, $auth, [$claim])[0]);
     }
 
     public static function create(): void

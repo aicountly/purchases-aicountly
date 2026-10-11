@@ -11,6 +11,7 @@ use Aicountly\Api\Context;
 use Aicountly\Api\Db;
 use Aicountly\Api\Http;
 use Aicountly\Api\IntegrationCommand;
+use Aicountly\Api\LocalDate;
 use Aicountly\Api\Permissions;
 
 /**
@@ -70,7 +71,8 @@ final class ReceiptService
 
     /**
      * How this company's goods receipts move stock — its own choice
-     * (purchase_settings.receive_stock_at_grn, migration 006, off by default):
+     * (purchase_settings.receive_stock_at_grn, migration 006; ON by default for new companies
+     * since migration 020, E8-INV A11):
      *
      *   off  `challan_only`: the receipt only notes the goods; the bill receives them.
      *   on   `physical`: the goods are on hand at the order rate and Books accrues them
@@ -88,7 +90,18 @@ final class ReceiptService
     /** The same answer for a company, for screens that describe it (the order's receive panel). */
     public static function stockEffectFor(int $cmpId): string
     {
-        $on = Db::scalar('SELECT receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $cmpId]);
+        $row = Db::first('SELECT receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $cmpId]);
+        if ($row === null) {
+            // No settings row yet (E8-INV A11). A company with no receipt at all is a new company and
+            // takes the column default — the goods go into stock at the receipt (migration 020). One
+            // that already recorded receipts under the old default keeps working as it did until an
+            // operator switches it deliberately: its open receipts were notes, and mixing kinds on one
+            // bill is refused.
+            $hasReceipts = (bool) Db::scalar('SELECT EXISTS (SELECT 1 FROM purchase_receipt_requests WHERE cmp_id = :cmp)', ['cmp' => $cmpId]);
+
+            return $hasReceipts ? 'challan_only' : 'physical';
+        }
+        $on = $row['receive_stock_at_grn'];
 
         return $on === true || $on === 't' || $on === 1 || $on === '1' ? 'physical' : 'challan_only';
     }
@@ -100,9 +113,12 @@ final class ReceiptService
      *   {lines: [{line_id, qty, rejected_qty?, rejection_reason?, warehouse_id?, batch_id?,
      *             batch_no?, serials?, inspection_note?}],
      *    received_at?, supplier_dc_no?, supplier_dc_date?, vehicle_no?, inspection_note?,
-     *    client_token?, over_receipt_reason?}
+     *    client_token?, over_receipt_reason?, confirm_duplicate_dc?, duplicate_dc_reason?}
+     *   each line may also carry expiry_date / mfg_date for the batch it names (F009).
+     * @param bool $tokenRequired the HTTP API's rule (F281): a receipt is recorded only under a
+     *   client token (or Idempotency-Key), so a resent request can never become a second GRN.
      */
-    public function request(int $poId, array $input): array
+    public function request(int $poId, array $input, bool $tokenRequired = false): array
     {
         Permissions::assert($this->ctx, $this->auth, 'receipt.request');
 
@@ -110,27 +126,41 @@ final class ReceiptService
         if ($clientToken !== null && mb_strlen($clientToken) > 120) {
             Http::validationFailed('The submission token is too long.', ['field' => 'client_token']);
         }
+        if ($tokenRequired && $clientToken === null) {
+            Http::error(422, 'client_token_required', 'Send a client_token (or an Idempotency-Key header) with every receipt, unique to the delivery being recorded, so that a resent request is recognised instead of recorded as a second delivery.', ['field' => 'client_token']);
+        }
+        // What was asked for, so the same token with a different body is refused, not answered
+        // with the first receipt as though it were this one (F482).
+        $fingerprint = self::fingerprintOf($input);
+        // The day the goods arrived: a real date, in the financial year the receipt is recorded in
+        // and not in the future; by default the company's today, not the server's UTC day (F388).
+        $receivedAt = $this->receivedAt($input['received_at'] ?? null);
 
         // Serial numbers Inventory would refuse — on an item that does not track them, or not one
         // per base unit — are refused before anything is recorded (Inventory C6).
         (new ReceiptTracking($this->ctx, $this->auth))->check($poId, $input);
 
-        $requestId = Db::transaction(function () use ($poId, $input, $clientToken): int {
+        $requestId = Db::transaction(function () use ($poId, $input, $clientToken, $fingerprint, $receivedAt): int {
             $po = PoProgress::lock($poId, $this->ctx->cmpId);
             if ($po === null) {
                 Http::notFound('That purchase order does not exist.');
             }
 
             if ($clientToken !== null) {
-                $existing = Db::scalar(
-                    'SELECT request_id FROM purchase_receipt_requests
+                $existing = Db::first(
+                    'SELECT request_id, receipt_no, request_fingerprint FROM purchase_receipt_requests
                       WHERE cmp_id = :cmp AND po_id = :po AND client_token = :token',
                     ['cmp' => $this->ctx->cmpId, 'po' => $poId, 'token' => $clientToken],
                 );
                 if ($existing !== null) {
+                    if ($existing['request_fingerprint'] !== null && !hash_equals((string) $existing['request_fingerprint'], $fingerprint)) {
+                        Http::error(409, 'client_token_reused', sprintf('This submission token was already used for receipt %s, which recorded something different. Nothing new was recorded. Use a new token for a new delivery.', (string) $existing['receipt_no']), [
+                            'request_id' => (int) $existing['request_id'], 'receipt_no' => (string) $existing['receipt_no'], 'retryable' => false,
+                        ]);
+                    }
                     // The same submission again — a double click, a retried request, a
                     // browser that resent the form. Its receipt, not a second one.
-                    return -((int) $existing);
+                    return -((int) $existing['request_id']);
                 }
             }
 
@@ -143,7 +173,9 @@ final class ReceiptService
                 }, ['status' => $po['status']]);
             }
 
-            $lines = $this->admitLines($po, $input);
+            $dcReason = $this->guardDuplicateChallan($poId, $input);
+
+            $lines = $this->admitLines($po, $input, $receivedAt);
 
             $settings = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $this->ctx->cmpId]);
             if ($settings === null) {
@@ -164,7 +196,9 @@ final class ReceiptService
                 'document_type'        => 'INWARD_CHALLAN',
                 'stock_effect'         => $this->grnStockEffect(),
                 'status'               => 'REQUESTED',
-                'received_at'          => self::date($input['received_at'] ?? null),
+                'received_at'          => $receivedAt,
+                'request_fingerprint'  => $fingerprint,
+                'duplicate_dc_reason'  => $dcReason,
                 'warehouse_id'         => self::id($input['warehouse_id'] ?? $po['delivery_warehouse_id'] ?? null),
                 'supplier_dc_no'       => self::text($input['supplier_dc_no'] ?? null),
                 'supplier_dc_date'     => self::validDate($input['supplier_dc_date'] ?? null),
@@ -191,9 +225,10 @@ final class ReceiptService
             return $this->orderView((int) $receipt['po_id'], $requestId);
         }
 
-        Audit::record($this->ctx, $this->auth, 'receipt.requested', 'receipt_request', $requestId, null, [
+        Audit::record($this->ctx, $this->auth, 'receipt.requested', 'receipt_request', $requestId, null, array_filter([
             'po_id' => $poId,
-        ]);
+            'duplicate_dc_confirmed' => self::text($input['duplicate_dc_reason'] ?? null) !== null && !empty($input['confirm_duplicate_dc']) ? self::text($input['supplier_dc_no'] ?? null) : null,
+        ], static fn ($v) => $v !== null));
 
         return $this->dispatch($requestId);
     }
@@ -244,17 +279,12 @@ final class ReceiptService
             Http::conflict('This receipt was recorded under its order\'s identity before receipts had their own. Use the receipt repair report to review it.');
         }
 
-        $response = $this->inventory()->documentBySource(
-            Context::of((int) $receipt['cmp_id'], (int) $receipt['fy_id'], (int) $receipt['bo_id']),
-            'purchases',
-            self::SOURCE_TYPE,
-            $requestId,
-        );
-        if (!$response['ok'] && (int) $response['status'] !== 404) {
-            Http::error(503, 'inventory_unavailable', 'Inventory could not be asked about this receipt just now. Nothing has changed; try again.');
+        $found = $this->bySource($receipt);
+        if ($found['state'] === 'unreadable') {
+            Http::error(503, 'inventory_unavailable', 'Inventory could not be asked about this receipt just now, or answered in a way that cannot be read. Nothing has changed; try again.', ['retryable' => true, 'detail' => $found['why']]);
         }
 
-        $document = self::documentFrom($response);
+        $document = $found['document'];
         $command = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_RECEIPT, 'receipt_request', $requestId);
 
         if ($document === null) {
@@ -307,6 +337,36 @@ final class ReceiptService
         $receipt = $this->findReceipt($requestId);
         if ($receipt === null) {
             Http::notFound('That receipt does not exist.');
+        }
+
+        // A receipt that was ever sent is withdrawn only once Inventory has said it holds nothing
+        // under this receipt's identity (F007): an answer recorded as "nothing written" may have
+        // been wrong — a server error after commit, under the rules before October 2026 — and
+        // withdrawing it then leaves an orphan GRN, and recording the delivery again a second one.
+        $sent = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_RECEIPT, 'receipt_request', $requestId);
+        if ($sent !== null && (int) ($sent['attempts'] ?? 0) > 0 && $receipt['applied_at'] === null
+            && in_array($sent['status'], [IntegrationCommand::FAILED, IntegrationCommand::BLOCKED], true)
+            && $receipt['source_document_type'] === self::SOURCE_TYPE) {
+            $found = $this->bySource($receipt);
+            if ($found['state'] === 'unreadable') {
+                Http::error(503, 'inventory_unavailable', 'Inventory could not confirm that it holds nothing for this receipt, so it has not been withdrawn. Nothing has changed; try again.', ['retryable' => true, 'detail' => $found['why'], 'request_id' => $requestId]);
+            }
+            if ($found['state'] === 'found') {
+                $document = $found['document'];
+                $problem = $this->mismatch($document, $receipt);
+                if ($problem === null && $sent['status'] === IntegrationCommand::FAILED) {
+                    // It was recorded after all. Count it once, from what Inventory holds.
+                    $this->applyOnce($requestId, $document, 'reconcile');
+                    IntegrationCommand::completeByReconcile((int) $sent['command_id'], self::reference($document));
+                }
+                Http::error(409, 'receipt_in_inventory', sprintf(
+                    'Inventory holds %s for this receipt, so it was not withdrawn.%s',
+                    ($document['document_no'] ?? null) ? 'GRN ' . $document['document_no'] : 'a document',
+                    $problem === null && $sent['status'] === IntegrationCommand::FAILED
+                        ? ' It is now recorded on the order. To send the goods back, give them back or reverse the GRN.'
+                        : ' Have it looked at in Inventory before withdrawing anything here.',
+                ), ['request_id' => $requestId, 'inventory_document_id' => $document['document_id'] ?? null, 'retryable' => false]);
+            }
         }
 
         Db::transaction(function () use ($requestId, $reason, &$receipt): void {
@@ -446,7 +506,7 @@ final class ReceiptService
             'uncertain' => IntegrationCommand::uncertain($commandId, $lease, $message, $status),
             default     => IntegrationCommand::fail($commandId, $lease, $message, $status),
         };
-        $this->markReceipt($requestId, strtoupper($outcome), $message);
+        $this->markReceipt($requestId, strtoupper($outcome), IntegrationCommand::publicError($message, $status));
 
         Http::error(
             $outcome === 'blocked' ? 409 : 502,
@@ -458,7 +518,7 @@ final class ReceiptService
             match ($outcome) {
                 'blocked'   => $message,
                 'uncertain' => 'Inventory did not confirm this receipt. It may have been recorded: press Reconcile to check, or Retry — neither can record it twice.',
-                default     => 'Could not reach Inventory to record this receipt. Nothing has been received — press Retry.',
+                default     => 'Inventory did not record this receipt (' . $message . '). Nothing has been received — press Retry.',
             },
             ['request_id' => $requestId, 'retryable' => $outcome !== 'blocked', 'detail' => $message],
         );
@@ -472,7 +532,7 @@ final class ReceiptService
      * @param array<string, mixed> $input
      * @return list<array<string, mixed>>
      */
-    private function admitLines(array $po, array $input): array
+    private function admitLines(array $po, array $input, ?string $receivedAt = null): array
     {
         $poId = (int) $po['po_id'];
         $lines = Db::all(
@@ -572,6 +632,20 @@ final class ReceiptService
             // by id before the receipt is first sent (ReceiptTracking::register).
             $serials = ReceiptTracking::serialNumbers($want['serials'] ?? null);
 
+            // The batch's dates, for an expiry-tracked item (F009): Inventory creates the batch with
+            // them. Checked as dates here; whether the item needs them is ReceiptTracking::check.
+            $mfg = self::lineDate($want['mfg_date'] ?? null, 'mfg_date', (int) $line['line_no']);
+            $expiry = self::lineDate($want['expiry_date'] ?? null, 'expiry_date', (int) $line['line_no']);
+            if ($mfg !== null && $receivedAt !== null && $mfg > $receivedAt) {
+                Http::validationFailed(sprintf('Line %d: the manufacturing date %s is after the goods arrived (%s).', (int) $line['line_no'], $mfg, $receivedAt), ['field' => 'lines', 'line_id' => $lineId, 'reason' => 'mfg_after_receipt']);
+            }
+            if ($expiry !== null && $mfg !== null && $expiry < $mfg) {
+                Http::validationFailed(sprintf('Line %d: the expiry date %s is before the manufacturing date %s.', (int) $line['line_no'], $expiry, $mfg), ['field' => 'lines', 'line_id' => $lineId, 'reason' => 'expiry_before_mfg']);
+            }
+            if ($expiry !== null && $receivedAt !== null && $expiry < $receivedAt && $qty > 0) {
+                Http::validationFailed(sprintf('Line %d: this batch expired on %s, before the goods arrived (%s). Reject it at the gate (rejected quantity) instead of receiving it into stock.', (int) $line['line_no'], $expiry, $receivedAt), ['field' => 'lines', 'line_id' => $lineId, 'reason' => 'batch_expired']);
+            }
+
             $out[] = [
                 'line_id'          => $lineId,
                 'line_no'          => (int) $line['line_no'],
@@ -580,6 +654,8 @@ final class ReceiptService
                 'warehouse_id'     => self::id($want['warehouse_id'] ?? $line['warehouse_id'] ?? $input['warehouse_id'] ?? null),
                 'batch_id'         => self::id($want['batch_id'] ?? null),
                 'batch_no'         => self::text($want['batch_no'] ?? null),
+                'mfg_date'         => $mfg,
+                'expiry_date'      => $expiry,
                 'serials'          => $serials,
                 'qty'              => $qty,
                 'rejected_qty'     => $rejected,
@@ -620,17 +696,28 @@ final class ReceiptService
             }
         }
 
+        // Inventory values the goods at the line's rate and ignores the header's exchange rate, so
+        // the rate it is sent is in rupees (the order's net rate x its exchange rate), with the
+        // order-currency figures beside it as Books sends them (F120).
+        $currency = strtoupper((string) ($po['currency_code'] ?? 'INR'));
+        $exchange = (float) ($po['exchange_rate'] ?? 1) > 0 ? (float) $po['exchange_rate'] : 1.0;
+        $foreign = $currency !== 'INR' || abs($exchange - 1.0) > 0.0000001;
+        $range = $this->ctx->fyId === (int) $receipt['fy_id'] ? $this->ctx->fyRange() : null;
+
         return [
             'document_type'        => (string) ($receipt['document_type'] ?? 'INWARD_CHALLAN'),
             'stock_effect'         => (string) ($receipt['stock_effect'] ?? $this->grnStockEffect()),
-            'document_date'        => (string) ($receipt['received_at'] ?? gmdate('Y-m-d')),
+            'document_date'        => (string) ($receipt['received_at'] ?? LocalDate::today()),
+            // The year's dates as Manage gave them, so Inventory checks the date against them
+            // instead of only warning that it could not (F388).
+            'fy_range'             => $range !== null ? ['fy_start' => $range['from'], 'fy_end' => $range['to']] : null,
             'source_app'           => 'purchases',
             // The receipt is the source; the order is a reference beside it.
             'source_document_type' => self::SOURCE_TYPE,
             'source_document_id'   => (int) $receipt['request_id'],
             'source_document_uuid' => (string) $receipt['receipt_uuid'],
             'source_document_no'   => (string) $receipt['receipt_no'],
-            'source_document_date' => (string) ($receipt['received_at'] ?? gmdate('Y-m-d')),
+            'source_document_date' => (string) ($receipt['received_at'] ?? LocalDate::today()),
             'party_ref'            => (string) ($po['supplier_account_id'] ?? ''),
             'party_name'           => $po['supplier_name_snapshot'] ?? null,
             'narration'            => 'GRN ' . $receipt['receipt_no'] . ' against ' . ($po['po_no'] ?? '')
@@ -660,13 +747,18 @@ final class ReceiptService
                 'qty'             => (float) $line['qty'],
                 // The provisional cost (the order's net rate). Inventory values a physical
                 // inward challan at its own rate; the bill trues it up.
-                'rate'            => (float) $line['rate'],
-                'amount'          => round((float) $line['qty'] * (float) $line['rate'], 4),
+                'rate'            => $foreign ? round((float) $line['rate'] * $exchange, 4) : (float) $line['rate'],
+                'amount'          => round((float) $line['qty'] * (float) $line['rate'] * ($foreign ? $exchange : 1.0), 4),
+                'fc_rate'         => $foreign ? (float) $line['rate'] : null,
+                'fc_amount'       => $foreign ? round((float) $line['qty'] * (float) $line['rate'], 4) : null,
+                'exchange_rate'   => $foreign ? $exchange : null,
                 'direction'       => 'in',
                 'hsn_sac'         => $line['hsn_sac'] ?? null,
                 'metadata'        => array_filter([
                     'purchase_order_line_id' => (int) $line['line_id'],
                     'batch_no'               => empty($line['batch_id']) ? ($line['batch_no'] ?? null) : null,
+                    'mfg_date'               => $line['mfg_date'] ?? null,
+                    'expiry_date'            => $line['expiry_date'] ?? null,
                     'rejected_qty'           => (float) ($line['rejected_qty'] ?? 0) > 0 ? (float) $line['rejected_qty'] : null,
                     'rejection_reason'       => $line['rejection_reason'] ?? null,
                     'inspection_note'        => $line['inspection_note'] ?? null,
@@ -846,6 +938,54 @@ final class ReceiptService
     }
 
     /**
+     * What Inventory holds under this receipt's identity, as one of three answers:
+     *
+     *   found       a JSON answer naming a document (the live one, when it lists several)
+     *   absent      Inventory's own "not found": 404 with error.code not_found, or an empty list
+     *   unreadable  anything else — a timeout, a 5xx, a 2xx that is not JSON (a splash page, a
+     *               WAF), a bare 404 from something that is not Inventory's route. Never read as
+     *               "never recorded" (F234).
+     *
+     * @param array<string, mixed> $receipt
+     * @return array{state: 'found'|'absent'|'unreadable', document: ?array<string, mixed>, why: string}
+     */
+    private function bySource(array $receipt): array
+    {
+        $response = $this->inventory()->documentBySource(
+            Context::of((int) $receipt['cmp_id'], (int) $receipt['fy_id'], (int) $receipt['bo_id']),
+            'purchases',
+            self::SOURCE_TYPE,
+            (int) $receipt['request_id'],
+        );
+
+        return self::sourceAnswer($response);
+    }
+
+    /**
+     * @param array{ok:bool, status:int, body:?array, error:?string} $response
+     * @return array{state: 'found'|'absent'|'unreadable', document: ?array<string, mixed>, why: string}
+     */
+    public static function sourceAnswer(array $response): array
+    {
+        $body = is_array($response['body'] ?? null) ? $response['body'] : null;
+        if ($response['ok']) {
+            if ($body === null || !array_key_exists('data', $body)) {
+                return ['state' => 'unreadable', 'document' => null, 'why' => 'Inventory answered ' . (int) $response['status'] . ' with something that is not its JSON.'];
+            }
+            $document = self::documentFrom($response);
+
+            return $document === null
+                ? ['state' => 'absent', 'document' => null, 'why' => 'Inventory lists no live document for it.']
+                : ['state' => 'found', 'document' => $document, 'why' => ''];
+        }
+        if ((int) $response['status'] === 404 && (string) ($body['error']['code'] ?? '') === 'not_found') {
+            return ['state' => 'absent', 'document' => null, 'why' => 'Inventory has no document for it.'];
+        }
+
+        return ['state' => 'unreadable', 'document' => null, 'why' => (string) ($response['error'] ?? ('HTTP ' . (int) $response['status']))];
+    }
+
+    /**
      * The document in an Inventory answer: `data` for create/post and by-source, which
      * may also answer with a list.
      *
@@ -935,9 +1075,104 @@ final class ReceiptService
         return is_string($value) && preg_match('/^\d{4}-\d{2}-\d{2}$/', trim($value)) === 1 ? trim($value) : null;
     }
 
-    private static function date(mixed $value): string
+    /**
+     * The receipt date: a real calendar date, inside the financial year it is recorded in, not
+     * after today. Absent, the company's today (F388).
+     */
+    private function receivedAt(mixed $value): string
     {
-        return self::validDate($value) ?? gmdate('Y-m-d');
+        $today = LocalDate::today();
+        if ($value === null || (is_string($value) && trim($value) === '')) {
+            $date = $today;
+        } else {
+            $date = self::validDate($value);
+            if ($date === null || !checkdate((int) substr($date, 5, 2), (int) substr($date, 8, 2), (int) substr($date, 0, 4))) {
+                Http::validationFailed('The receipt date must be a date, like 2026-09-18.', ['field' => 'received_at']);
+            }
+        }
+        if ($date > $today) {
+            Http::validationFailed(sprintf('Goods cannot be received on %s: that is after today (%s).', $date, $today), ['field' => 'received_at', 'reason' => 'future_date']);
+        }
+        $range = $this->ctx->fyRange();
+        if ($range !== null && ($date < $range['from'] || $date > $range['to'])) {
+            Http::validationFailed(sprintf('The receipt date %s is outside the financial year you are in (%s to %s). Switch to the year the goods arrived in, or date the receipt in this one.', $date, $range['from'], $range['to']), ['field' => 'received_at', 'fy_from' => $range['from'], 'fy_to' => $range['to'], 'reason' => 'outside_financial_year']);
+        }
+
+        return $date;
+    }
+
+    private static function lineDate(mixed $value, string $field, int $lineNo): ?string
+    {
+        if ($value === null || (is_string($value) && trim($value) === '')) {
+            return null;
+        }
+        $date = self::validDate($value);
+        if ($date === null || !checkdate((int) substr($date, 5, 2), (int) substr($date, 8, 2), (int) substr($date, 0, 4))) {
+            Http::validationFailed(sprintf('Line %d: %s must be a date, like 2027-03-31.', $lineNo, str_replace('_', ' ', $field)), ['field' => 'lines', 'line_no' => $lineNo, 'subfield' => $field]);
+        }
+
+        return $date;
+    }
+
+    /**
+     * A second receipt naming the supplier delivery challan an earlier live receipt of this order
+     * already names (F281) — the same delivery recorded twice, stock and GRNI twice — is refused,
+     * naming the earlier GRN, unless the person confirms it is a genuine split delivery under one
+     * challan and says why. Withdrawn and refused receipts do not count.
+     *
+     * @param array<string, mixed> $input
+     */
+    private function guardDuplicateChallan(int $poId, array $input): ?string
+    {
+        $dc = self::text($input['supplier_dc_no'] ?? null);
+        if ($dc === null) {
+            return null;
+        }
+        $dcDate = self::validDate($input['supplier_dc_date'] ?? null);
+        $earlier = Db::first(
+            "SELECT request_id, receipt_no, received_at, supplier_dc_date, status FROM purchase_receipt_requests
+              WHERE cmp_id = :cmp AND po_id = :po AND lower(supplier_dc_no) = lower(:dc)
+                AND status NOT IN ('CANCELLED', 'BLOCKED')
+                AND (CAST(:dc_date AS DATE) IS NULL OR supplier_dc_date IS NULL OR supplier_dc_date = CAST(:dc_date2 AS DATE))
+              ORDER BY request_id LIMIT 1",
+            ['cmp' => $this->ctx->cmpId, 'po' => $poId, 'dc' => $dc, 'dc_date' => $dcDate, 'dc_date2' => $dcDate],
+        );
+        if ($earlier === null) {
+            return null;
+        }
+        $reason = self::text($input['duplicate_dc_reason'] ?? null);
+        if (!empty($input['confirm_duplicate_dc']) && $reason !== null && mb_strlen($reason) >= 10) {
+            return $reason;
+        }
+        Http::error(409, 'duplicate_supplier_dc', sprintf(
+            'Delivery challan %s is already recorded on this order as receipt %s (%s, %s). Recording it again would put the same goods into stock twice. If the supplier really delivered twice under one challan, confirm it and say why; if receipt %s was wrong, withdraw or return it instead.',
+            $dc,
+            (string) $earlier['receipt_no'],
+            (string) $earlier['received_at'],
+            strtolower((string) $earlier['status']),
+            (string) $earlier['receipt_no'],
+        ), [
+            'field' => 'supplier_dc_no', 'request_id' => (int) $earlier['request_id'], 'receipt_no' => (string) $earlier['receipt_no'],
+            'needs' => 'confirm_duplicate_dc and duplicate_dc_reason (at least 10 characters)', 'retryable' => false,
+        ]);
+    }
+
+    /** @param array<string, mixed> $input */
+    private static function fingerprintOf(array $input): string
+    {
+        unset($input['client_token']);
+        $canon = static function (mixed $v) use (&$canon): mixed {
+            if (!is_array($v)) {
+                return is_string($v) ? trim($v) : $v;
+            }
+            if (!array_is_list($v)) {
+                ksort($v);
+            }
+
+            return array_map($canon, $v);
+        };
+
+        return hash('sha256', (string) json_encode($canon($input), JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION));
     }
 
     private static function now(): string

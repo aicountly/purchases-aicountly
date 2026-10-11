@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Plus, Trash2 } from 'lucide-react'
 import { api, ApiError } from '../services/api'
@@ -8,10 +8,13 @@ import { useUrlFilter, useUrlFlag, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip, recoveryPath } from '../components/CommandStrip'
 import type { IntegrationCommand, ReceiptRequest } from '../services/types'
-import { OrderCommunicationsPanel, ReceiptReturnPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
+import { AmendPanel, OrderCommunicationsPanel, ReceiptReturnPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
+import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
+import * as decimal from '../utils/decimal'
+import { localToday } from '../utils/localDate'
 
 const STATUSES = ['', 'DRAFT', 'APPROVAL_PENDING', 'APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED']
 
@@ -25,7 +28,10 @@ export function PurchaseOrderList() {
   const [openOnly, setOpenOnly] = useUrlFlag('open_only')
   const supplierId = useUrlId('supplier_id')
 
-  const { data, loading, error } = useApi(
+  // Paged (F145): every order is reachable, not only the first hundred.
+  const [offset, setOffset] = useState(0)
+  useEffect(() => setOffset(0), [status, overdue, openOnly, supplierId])
+  const { data, loading, error, reload } = useApi(
     (signal) =>
       api.list<PurchaseOrder>(
         'v1/purchase-orders',
@@ -34,11 +40,12 @@ export function PurchaseOrderList() {
           overdue: overdue ? 1 : undefined,
           open_only: openOnly ? 1 : undefined,
           supplier_account_id: supplierId,
-          limit: 100,
+          limit: 50,
+          offset,
         },
         signal,
       ),
-    [scope?.cmp_id, scope?.fy_id, status, overdue, openOnly, supplierId],
+    [scope?.cmp_id, scope?.fy_id, status, overdue, openOnly, supplierId, offset],
     Boolean(scope),
   )
 
@@ -53,7 +60,7 @@ export function PurchaseOrderList() {
         )}
       </header>
 
-      {error && <Notice tone="danger" title="Could not load purchase orders">{error}</Notice>}
+      {error && <LoadFailed what="purchase orders" error={error} onRetry={reload} />}
 
       <Card
         title={`${data?.meta.total ?? 0} order${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}
@@ -78,11 +85,11 @@ export function PurchaseOrderList() {
           rows={data?.data ?? []}
           rowKey={(row) => row.po_id}
           onRowClick={(row) => navigate(`/purchase-orders/${row.po_id}`)}
-          empty="No purchase orders yet."
+          empty={error ? "Not loaded — see above." : "No purchase orders yet."}
           columns={[
             { key: 'no', header: 'Number', render: (row) => <Link to={`/purchase-orders/${row.po_id}`} onClick={(e) => e.stopPropagation()}>{row.po_no}</Link> },
             { key: 'date', header: 'Raised', render: (row) => date(row.po_date) },
-            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name_snapshot ?? `Account ${row.supplier_account_id}` },
+            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name_snapshot ?? `Ledger #${row.supplier_account_id}` },
             {
               key: 'promised',
               header: 'Promised',
@@ -98,6 +105,7 @@ export function PurchaseOrderList() {
             { key: 'total', header: 'Total', numeric: true, render: (row) => money(row.total_amount, row.currency_code) },
           ]}
         />
+        <Pager offset={offset} limit={50} total={data?.meta.total ?? 0} onChange={setOffset} />
       </Card>
     </div>
   )
@@ -129,6 +137,7 @@ export function PurchaseOrderDetail() {
   const [cancelling, setCancelling] = useState(false)
   const [receiving, setReceiving] = useState(false)
   const [shortClosing, setShortClosing] = useState(false)
+  const [amending, setAmending] = useState(false)
   const [undoing, setUndoing] = useState<{ receipt: ReceiptRequest; mode: 'return' | 'reverse' } | null>(null)
 
   const { data, loading, reload } = useApi(
@@ -149,7 +158,22 @@ export function PurchaseOrderDetail() {
     setBusy(true)
     setActionError(null)
     try {
-      await api.post(fullPath, body)
+      try {
+        await api.post(fullPath, body)
+      } catch (err) {
+        // A barred supplier: somebody who may approve suppliers can override it for this order,
+        // saying why (F025). Asked once; the server decides whether this person may.
+        if (err instanceof ApiError && err.code === 'vendor_not_approved' && err.details.override) {
+          const reason = window.prompt(`${err.message}\n\nOverride for this order — why?`)
+          if (reason && reason.trim() !== '') {
+            await api.post(fullPath, { ...body, vendor_override_reason: reason.trim() })
+          } else {
+            throw err
+          }
+        } else {
+          throw err
+        }
+      }
       setNote('')
       return true
     } catch (err) {
@@ -175,6 +199,8 @@ export function PurchaseOrderDetail() {
   if (!po) return <Notice tone="warning">That purchase order does not exist.</Notice>
 
   const pendingApprovals = po.approvals.filter((a) => a.status === 'PENDING')
+  const canAmend = ['DRAFT', 'APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED'].includes(po.status) && !po.amendment_pending_id && can('po.amend')
+  const shortClosed = po.lines.some((l) => Number(l.short_closed_qty) > 0)
   const canReceive = ['ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED'].includes(po.status)
   const progress = new Map((po.progress?.lines ?? []).map((l) => [l.line_id, l]))
   const receivable = (po.progress?.lines ?? []).some((l) => l.to_receive_qty > 0)
@@ -190,7 +216,7 @@ export function PurchaseOrderDetail() {
             <StatusBadge status={po.status} />
           </h1>
           <p style={{ margin: '0.3rem 0 0', color: 'var(--muted)' }}>
-            {po.supplier_name_snapshot ?? `Account ${po.supplier_account_id}`} · {date(po.po_date)}
+            {po.supplier_name_snapshot ?? `Ledger #${po.supplier_account_id}`} · {date(po.po_date)}
             {po.promised_date && ` · promised ${date(po.promised_date)}`}
           </p>
           <p style={{ margin: '0.35rem 0 0', display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8rem', color: 'var(--muted)' }}>
@@ -218,6 +244,20 @@ export function PurchaseOrderDetail() {
           )}
           {canReceive && receivable && can('po.close') && (
             <Button disabled={busy} onClick={() => setShortClosing(true)}>Short-close</Button>
+          )}
+          {canAmend && (
+            <Button disabled={busy} onClick={() => setAmending(true)}>Amend</Button>
+          )}
+          {shortClosed && !['CANCELLED', 'DRAFT'].includes(po.status) && can('po.close') && (
+            <Button
+              disabled={busy}
+              onClick={() => {
+                const reason = window.prompt('Why is more coming after all? What was short-closed will be expected again.')
+                if (reason && reason.trim() !== '') void act('reopen', { reason: reason.trim() })
+              }}
+            >
+              Reopen
+            </Button>
           )}
           {!['CANCELLED', 'CLOSED'].includes(po.status) && can('po.cancel') && (
             <Button tone="danger" disabled={busy} onClick={() => setCancelling(true)}>Cancel</Button>
@@ -267,6 +307,21 @@ export function PurchaseOrderDetail() {
       )}
 
       {shortClosing && <ShortClosePanel po={po} run={act} busy={busy} onCancel={() => setShortClosing(false)} />}
+
+      {amending && <AmendPanel po={po} run={act} busy={busy} onCancel={() => setAmending(false)} />}
+
+      {(po.amendments ?? []).length > 0 && (
+        <Card title="Amendments">
+          <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'grid', gap: '0.3rem', fontSize: '0.88rem' }} data-testid="amendments">
+            {(po.amendments ?? []).map((a) => (
+              <li key={a.amendment_id}>
+                <StatusBadge status={a.status} /> Version {a.to_version}: {a.reason} — value {money(a.value_before)} → {money(a.value_after)}
+                {a.decided_by ? ` · decided by ${a.decided_by}${a.decision_note ? `: ${a.decision_note}` : ''}` : ''}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       {undoing && (
         <ReceiptReturnPanel
@@ -427,6 +482,12 @@ export function PurchaseOrderDetail() {
                         <Button tone="ghost" disabled={busy} onClick={() => setUndoing({ receipt: row, mode: 'reverse' })}>Reverse</Button>
                       )}
                     </span>
+                  ) : row.applied_at === null && row.recoverable && can('receipt.request') ? (
+                    // Left half-sent by an attempt that died: no live lease protects it any more.
+                    <span style={{ display: 'flex', gap: '0.3rem' }} data-testid="receipt-recover">
+                      <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/reconcile`)}>Reconcile</Button>
+                      <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/retry`)}>Retry</Button>
+                    </span>
                   ) : row.applied_at === null && ['FAILED', 'UNCERTAIN', 'BLOCKED'].includes(row.status) && can('receipt.request') ? (
                     <span style={{ display: 'flex', gap: '0.3rem' }}>
                       {row.status === 'UNCERTAIN' && <Button disabled={busy} onClick={() => void post(`v1/receipt-requests/${row.request_id}/reconcile`)}>Reconcile</Button>}
@@ -502,7 +563,7 @@ export function PurchaseOrderEditor() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [supplier, setSupplier] = useState<{ id: number; name: string; status?: string } | null>(null)
-  const [poDate, setPoDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [poDate, setPoDate] = useState(() => localToday())
   const [promisedDate, setPromisedDate] = useState('')
   const [paymentTerms, setPaymentTerms] = useState('')
   const [freight, setFreight] = useState('0')
@@ -515,8 +576,10 @@ export function PurchaseOrderEditor() {
     setLines((c) => c.map((line) => (line.key === key ? { ...line, ...patch } : line)))
   }
 
-  const subtotal = lines.reduce((sum, l) => sum + Number(l.ordered_qty || 0) * Number(l.agreed_rate || 0), 0)
-  const tax = lines.reduce((sum, l) => sum + (Number(l.ordered_qty || 0) * Number(l.agreed_rate || 0) * Number(l.estimated_tax_pc || 0)) / 100, 0)
+  // Fixed point, line by line as the server computes them (PurchaseOrderService::normaliseLines; F452).
+  const lineAmounts = lines.map((l) => decimal.lineAmount(l.ordered_qty || '0', l.agreed_rate || '0'))
+  const subtotal = Number(decimal.sum(lineAmounts))
+  const tax = Number(decimal.sum(lines.map((l, i) => decimal.percentOf(lineAmounts[i], l.estimated_tax_pc || '0'))))
 
   async function save() {
     if (!supplier) {
@@ -621,7 +684,7 @@ export function PurchaseOrderEditor() {
                 <Field label="Tax %" hint="Estimate only"><Input value={line.estimated_tax_pc} inputMode="decimal" onChange={(e) => patchLine(line.key, { estimated_tax_pc: e.target.value })} /></Field>
                 <div style={{ textAlign: 'right', paddingBottom: '0.35rem' }}>
                   <div style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>Line</div>
-                  <div className="num" style={{ fontWeight: 600 }}>{money(Number(line.ordered_qty || 0) * Number(line.agreed_rate || 0))}</div>
+                  <div className="num" style={{ fontWeight: 600 }}>{money(decimal.lineAmount(line.ordered_qty || '0', line.agreed_rate || '0'))}</div>
                 </div>
               </div>
             </div>

@@ -14,8 +14,10 @@ declare(strict_types=1);
  *       Write the report and the actions it proposes to FILE, for a person to review.
  *       Reads only.
  *
- *   php bin/receipt-repair.php --apply=FILE --actor=UUID --reason="…"
- *       Apply a reviewed plan. Each action is re-checked against the database as it is
+ *   php bin/receipt-repair.php --apply=FILE --cmp=ID --actor=UUID --reason="…"
+ *       Apply a reviewed plan, for the one company it was made for (--cmp must name the
+ *       plan's company; a plan made without --cmp cannot be applied). A snapshot of every
+ *       row an action may change is written beside the plan before anything is applied. Each action is re-checked against the database as it is
  *       now and skipped if anything it was planned against has changed. Each applied
  *       action is audited against the person named, with the reason given.
  *
@@ -43,9 +45,23 @@ declare(strict_types=1);
  *   orphan_commands         open commands whose receipt or bill was cancelled.
  *   renumbered_commands     extra rows of one operation from before the operation was
  *                           unique, kept as later revisions for history.
+ *   bill_double_posts       a bill with more than one COMPLETED Books post (the 007 race):
+ *                           Books may hold two purchase vouchers for one supplier invoice.
+ *                           Listed with each attempt's idempotency key and Books reference,
+ *                           to check in Books and reverse the extra one there (F221).
+ *   missing_indexes         uq_purchase_bills_supplier_invoice absent — migration 009 skips it
+ *                           (with only a warning) where duplicates already existed, so new
+ *                           duplicate invoices can still be entered (F221).
  */
 
 namespace Aicountly\Api;
+
+// A worker, never a web page (F483). .htaccess refuses bin/ over HTTP; this holds on a server that
+// ignores .htaccess.
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
 
 require __DIR__ . '/../src/Env.php';
 require __DIR__ . '/../src/Autoload.php';
@@ -70,7 +86,7 @@ try {
 }
 
 if (isset($opts['apply'])) {
-    exit(applyPlan((string) $opts['apply'], (string) ($opts['actor'] ?? ''), (string) ($opts['reason'] ?? '')));
+    exit(applyPlan((string) $opts['apply'], (string) ($opts['actor'] ?? ''), (string) ($opts['reason'] ?? ''), isset($opts['cmp']) ? (int) $opts['cmp'] : null));
 }
 
 $cmpFilter = isset($opts['cmp']) ? (int) $opts['cmp'] : null;
@@ -105,6 +121,7 @@ function buildReport(?int $cmpFilter, bool $askInventory): array
     $out = [
         'legacy_identity' => [], 'inventory_differs' => [], 'counter_drift' => [], 'duplicate_invoices' => [],
         'open_commands' => [], 'orphan_commands' => [], 'renumbered_commands' => [],
+        'bill_double_posts' => [], 'missing_indexes' => [],
     ];
 
     foreach (Db::all(
@@ -159,7 +176,7 @@ function buildReport(?int $cmpFilter, bool $askInventory): array
                 array_agg(status ORDER BY request_id) AS statuses
            FROM purchase_bill_requests b
           WHERE status <> 'CANCELLED' AND supplier_invoice_no IS NOT NULL" . sprintf($cmpSql, 'b') . '
-          GROUP BY cmp_id, supplier_account_id, lower(supplier_invoice_no) HAVING COUNT(*) > 1',
+          GROUP BY cmp_id, supplier_account_id, lower(supplier_invoice_no), invoice_part HAVING COUNT(*) > 1',
     ) as $row) {
         $out['duplicate_invoices'][] = [
             'cmp_id' => (int) $row['cmp_id'], 'supplier_account_id' => (int) $row['supplier_account_id'], 'supplier_invoice_no' => $row['invoice'],
@@ -202,6 +219,33 @@ function buildReport(?int $cmpFilter, bool $askInventory): array
             'command_id' => (int) $c['command_id'], 'cmp_id' => (int) $c['cmp_id'], 'command_type' => $c['command_type'],
             'entity_type' => $c['entity_type'], 'entity_id' => (int) $c['entity_id'], 'revision' => (int) $c['revision'], 'status' => $c['status'],
             'what_to_do' => 'History only: an earlier attempt of the same operation made before operations were unique. If it is COMPLETED, check the other product for a duplicate document.',
+        ];
+    }
+
+    // A bill posted to Books more than once: every COMPLETED post of one bill, whatever its
+    // revision (a bill is revised only before it reaches Books, so two completed posts are
+    // never a legitimate revision).
+    foreach (Db::all(
+        "SELECT c.cmp_id, c.entity_id, b.supplier_account_id, b.supplier_invoice_no, b.status AS bill_status,
+                json_agg(json_build_object('command_id', c.command_id, 'revision', c.revision, 'idempotency_key', c.idempotency_key, 'books_reference', c.external_reference) ORDER BY c.command_id) AS attempts
+           FROM purchase_integration_commands c
+           LEFT JOIN purchase_bill_requests b ON b.request_id = c.entity_id
+          WHERE c.entity_type = 'bill_request' AND c.command_type = '" . \Aicountly\Api\Domain\BillService::COMMAND_BILL . "' AND c.status = 'COMPLETED'"
+          . sprintf($cmpSql, 'c') . '
+          GROUP BY c.cmp_id, c.entity_id, b.supplier_account_id, b.supplier_invoice_no, b.status HAVING COUNT(*) > 1 ORDER BY c.cmp_id, c.entity_id',
+    ) as $row) {
+        $out['bill_double_posts'][] = [
+            'cmp_id' => (int) $row['cmp_id'], 'bill_request_id' => (int) $row['entity_id'], 'supplier_account_id' => (int) $row['supplier_account_id'],
+            'supplier_invoice_no' => $row['supplier_invoice_no'], 'bill_status' => $row['bill_status'],
+            'attempts' => json_decode((string) $row['attempts'], true) ?: [],
+            'what_to_do' => 'Books may hold one purchase voucher per attempt. Look each idempotency key up in Books; keep the voucher this bill names and reverse the other in Books (a debit note or cancellation there). Nothing here changes Books.',
+        ];
+    }
+
+    if (Db::scalar("SELECT 1 FROM pg_indexes WHERE indexname = 'uq_purchase_bills_supplier_invoice'") === null) {
+        $out['missing_indexes'][] = [
+            'index' => 'uq_purchase_bills_supplier_invoice',
+            'what_to_do' => 'Migration 009 could not create it because duplicate supplier invoices existed; until it exists new duplicates can be entered. Resolve duplicate_invoices, then plan and apply create_invoice_index.',
         ];
     }
 
@@ -285,7 +329,7 @@ function proposeActions(array $report): array
     return $actions;
 }
 
-function applyPlan(string $file, string $actor, string $reason): int
+function applyPlan(string $file, string $actor, string $reason, ?int $cmpId): int
 {
     if ($actor === '' || trim($reason) === '') {
         fwrite(STDERR, "--apply needs --actor=<your uuid> and --reason=\"…\"\n");
@@ -298,6 +342,33 @@ function applyPlan(string $file, string $actor, string $reason): int
 
         return 1;
     }
+    // One company at a time (F221): the plan must have been made for one, and --cmp must name it.
+    if ($cmpId === null || $cmpId <= 0 || !isset($plan['cmp_id']) || (int) $plan['cmp_id'] !== $cmpId) {
+        fwrite(STDERR, "--apply needs --cmp=<company id>, and the plan must have been made with the same --cmp (this plan is for "
+            . (isset($plan['cmp_id']) ? 'company ' . (int) $plan['cmp_id'] : 'every company — make it again with --cmp') . ").\n");
+
+        return 1;
+    }
+    foreach ($plan['actions'] as $a) {
+        if (isset($a['cmp_id']) && (int) $a['cmp_id'] !== $cmpId) {
+            fwrite(STDERR, "The plan holds an action for company {$a['cmp_id']}; it was edited or is not for company {$cmpId}. Nothing applied.\n");
+
+            return 1;
+        }
+    }
+    // A snapshot of what the actions may change, before any of it changes.
+    $snapshot = [
+        'taken_at' => gmdate('c'), 'cmp_id' => $cmpId, 'plan' => $file, 'actor' => $actor,
+        'order_lines' => Db::all('SELECT * FROM purchase_order_lines WHERE cmp_id = :cmp AND line_id = ANY(CAST(:ids AS BIGINT[]))', ['cmp' => $cmpId, 'ids' => '{' . implode(',', array_map(static fn ($a) => (int) $a['line_id'], array_filter($plan['actions'], static fn ($a) => ($a['action'] ?? '') === 'recount_order_line'))) . '}']),
+        'commands'    => Db::all('SELECT command_id, cmp_id, command_type, entity_type, entity_id, revision, status, attempts, last_error, external_reference FROM purchase_integration_commands WHERE cmp_id = :cmp AND command_id = ANY(CAST(:ids AS BIGINT[]))', ['cmp' => $cmpId, 'ids' => '{' . implode(',', array_map(static fn ($a) => (int) $a['command_id'], array_filter($plan['actions'], static fn ($a) => ($a['action'] ?? '') === 'withdraw_command'))) . '}']),
+    ];
+    $snapshotFile = $file . '.snapshot-' . gmdate('Ymd\THis') . '.json';
+    if (file_put_contents($snapshotFile, json_encode($snapshot, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n") === false) {
+        fwrite(STDERR, "Could not write the snapshot {$snapshotFile}; nothing applied.\n");
+
+        return 1;
+    }
+    fwrite(STDOUT, "Snapshot written to {$snapshotFile}.\n");
     $auth = Auth::operator($actor);
     $applied = 0;
     $skipped = 0;
@@ -346,13 +417,13 @@ function applyPlan(string $file, string $actor, string $reason): int
                     case 'create_invoice_index':
                         $dupes = Db::scalar(
                             "SELECT COUNT(*) FROM (SELECT 1 FROM purchase_bill_requests WHERE status <> 'CANCELLED' AND supplier_invoice_no IS NOT NULL
-                              GROUP BY cmp_id, supplier_account_id, lower(supplier_invoice_no) HAVING COUNT(*) > 1) d",
+                              GROUP BY cmp_id, supplier_account_id, lower(supplier_invoice_no), invoice_part HAVING COUNT(*) > 1) d",
                         );
                         if ((int) $dupes > 0) {
                             return 'skipped: ' . $dupes . ' duplicate supplier invoice group(s) remain';
                         }
                         Db::run("CREATE UNIQUE INDEX IF NOT EXISTS uq_purchase_bills_supplier_invoice
-                                   ON purchase_bill_requests (cmp_id, supplier_account_id, lower(supplier_invoice_no))
+                                   ON purchase_bill_requests (cmp_id, supplier_account_id, lower(supplier_invoice_no), invoice_part)
                                    WHERE status <> 'CANCELLED' AND supplier_invoice_no IS NOT NULL");
 
                         return 'applied';

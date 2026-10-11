@@ -3,6 +3,7 @@ import { api, ApiError } from '../services/api'
 import type { MatchPolicy, PurchaseSettings } from '../services/types'
 import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
+import { LoadFailed } from '../components/LoadFailed'
 import { Button, Card, DataTable, Field, Input, money, Notice, qty } from '../ui'
 
 export default function Settings() {
@@ -67,6 +68,16 @@ export default function Settings() {
   }
 
   if (settings.loading) return <p style={{ color: 'var(--muted)' }}>Loading…</p>
+  // Never a form over values that did not load: its boxes would show off where the server has them
+  // on, and Save would write that back (F146).
+  if (settings.error || !settings.data?.data) {
+    return (
+      <div style={{ display: 'grid', gap: '1rem', maxWidth: '52rem' }}>
+        <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Settings</h1>
+        <LoadFailed what="this company's purchase settings" error={settings.error ?? 'The settings did not arrive.'} onRetry={settings.reload} />
+      </div>
+    )
+  }
 
   return (
     <div style={{ display: 'grid', gap: '1rem', maxWidth: '52rem' }}>
@@ -99,7 +110,7 @@ export default function Settings() {
       <Card title="Approvals and controls">
         <div style={{ display: 'grid', gap: '0.85rem' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(13rem, 1fr))', gap: '0.85rem' }}>
-            <Field label="Requisition needs approval above" hint="0 means always approve">
+            <Field label="Requisition needs approval above" hint="0: approved on submit, whatever the value — no second person checks it">
               <Input
                 disabled={!editable}
                 inputMode="decimal"
@@ -107,7 +118,7 @@ export default function Settings() {
                 onChange={(e) => setForm({ ...form, requisition_approval_above_amount: e.target.value })}
               />
             </Field>
-            <Field label="Purchase order needs approval above">
+            <Field label="Purchase order needs approval above" hint="0: approved on submit, whatever the value — no second person checks it">
               <Input
                 disabled={!editable}
                 inputMode="decimal"
@@ -123,7 +134,7 @@ export default function Settings() {
               checked={Boolean(form.enforce_approved_vendors)}
               onChange={(e) => setForm({ ...form, enforce_approved_vendors: e.target.checked })}
             />
-            Only allow purchase orders to approved suppliers
+            Only allow purchase orders to approved suppliers (checked at create, submit, approval and issue; blacklisted or suspended suppliers are always refused)
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <input

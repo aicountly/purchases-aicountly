@@ -123,12 +123,8 @@ final class Period
 
     private static function dateParam(string $name): ?string
     {
-        $raw = Http::param($name);
-        if ($raw === null || $raw === '' || preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw) !== 1) {
-            return null;
-        }
-
-        return $raw;
+        // Not given: the preset decides. Given and not a real date: 422, never a database error (F266).
+        return Http::dateParam($name);
     }
 
     public function days(): int

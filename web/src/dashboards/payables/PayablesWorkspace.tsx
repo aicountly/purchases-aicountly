@@ -387,6 +387,10 @@ export function PayablesWorkspace({
       <ConfirmAction
         pending={pending}
         onClose={() => setPending(null)}
+        onRefresh={() => {
+          refresh()
+          onChanged()
+        }}
         onDone={() => {
           setPending(null)
           setSelected(new Set())
@@ -428,10 +432,13 @@ function ConfirmAction({
   pending,
   onClose,
   onDone,
+  onRefresh,
 }: {
   pending: { action: 'rematch' | 'post'; rows: PayableRow[] } | null
   onClose: () => void
   onDone: () => void
+  /** The list behind the dialog, refreshed after a run that stopped part-way (F310). */
+  onRefresh: () => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -466,6 +473,8 @@ function ConfirmAction({
       }
       onDone()
     } catch (err) {
+      // Those that went through are no longer what the list shows: refresh it behind the dialog.
+      if (completed > 0) onRefresh()
       setError(
         (err instanceof ApiError ? err.message : 'That could not be completed.') +
           (completed > 0 ? ` ${completed} of ${pending.rows.length} finished before this.` : ''),
@@ -506,7 +515,7 @@ function ConfirmAction({
                 <span>
                   {row.invoice_no ?? `#${row.request_id}`}
                   <span className="aic-sub" style={{ display: 'block' }}>
-                    {row.supplier_name ?? `Account ${row.supplier_account_id}`}
+                    {row.supplier_name ?? `Ledger #${row.supplier_account_id}`}
                   </span>
                 </span>
                 <b style={{ fontVariantNumeric: 'tabular-nums' }}>{formatMoney(row.subtotal, row.currency)}</b>

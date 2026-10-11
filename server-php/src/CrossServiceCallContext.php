@@ -28,8 +28,16 @@ final class CrossServiceCallContext
 {
     public const HEADER = 'X-Saas-Origin';
 
-    /** Products whose name we honour in the header. */
-    private const KNOWN = ['books', 'inventory', 'manage', 'contacts', 'pos', 'purchases', 'purchases', 'billing', 'crm'];
+    /**
+     * Every AICOUNTLY product that can call this API (F489: the list stopped at crm, with
+     * purchases twice, so a call from Pay, Sales, Pulse, Connect or Insights was never recognised
+     * and nothing stopped this product calling it back). Products a service key is configured for
+     * (SERVICE_KEYS) are honoured too, so a new caller is covered the day it is given a key.
+     */
+    public const PRODUCTS = [
+        'books', 'inventory', 'manage', 'contacts', 'pos', 'purchases', 'billing', 'crm', 'sales', 'pay',
+        'pulse', 'connect', 'insights', 'email', 'console', 'my', 'appointments', 'messaging',
+    ];
 
     private static ?string $inbound = null;
     private static bool $resolved = false;
@@ -43,9 +51,22 @@ final class CrossServiceCallContext
         self::$resolved = true;
 
         $claimed = strtolower(Http::header(self::HEADER));
-        self::$inbound = in_array($claimed, self::KNOWN, true) ? $claimed : null;
+        self::$inbound = in_array($claimed, self::known(), true) ? $claimed : null;
 
         return self::$inbound;
+    }
+
+    /** @return list<string> the names honoured in the header */
+    public static function known(): array
+    {
+        return array_values(array_unique([...self::PRODUCTS, ...ServiceKeys::configuredApps()]));
+    }
+
+    /** Forget the caller — a new request (tests; each PHP-FPM request starts fresh anyway). */
+    public static function reset(): void
+    {
+        self::$inbound = null;
+        self::$resolved = false;
     }
 
     public static function isInboundFrom(string $app): bool
@@ -62,7 +83,7 @@ final class CrossServiceCallContext
     public static function adoptAuthenticatedOrigin(string $app): void
     {
         $app = strtolower(trim($app));
-        if (in_array($app, self::KNOWN, true)) {
+        if (in_array($app, self::known(), true)) {
             self::$inbound = $app;
             self::$resolved = true;
         }

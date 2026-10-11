@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Controllers;
 
+use Aicountly\Api\Domain\SupplierNames;
 use Aicountly\Api\Audit;
 use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Db;
@@ -25,10 +26,10 @@ final class SuppliersController extends Controller
         [$auth, $ctx] = self::enter();
         Permissions::assert($ctx, $auth, 'supplier.view');
 
-        Http::data(Db::all(
+        Http::data(SupplierNames::attach($ctx, $auth, Db::all(
             'SELECT * FROM purchase_supplier_profiles WHERE cmp_id = :cmp ORDER BY is_preferred DESC, supplier_account_id',
             ['cmp' => $ctx->cmpId],
-        ));
+        )));
     }
 
     public static function upsert(): void
@@ -132,9 +133,16 @@ final class SuppliersController extends Controller
     {
         [$auth, $ctx] = self::enter();
         Permissions::assert($ctx, $auth, 'supplier.view');
+        // Computing it is a read; storing it is a change to the supplier's record (F497).
+        if (Http::method() === 'POST') {
+            Permissions::assert($ctx, $auth, 'supplier.manage');
+        }
 
-        $from = (string) (Http::param('from') ?? gmdate('Y-m-d', strtotime('-90 days')));
-        $to = (string) (Http::param('to') ?? gmdate('Y-m-d'));
+        $from = self::dateParam('from', gmdate('Y-m-d', strtotime('-90 days')));
+        $to = self::dateParam('to', gmdate('Y-m-d'));
+        if ($from > $to) {
+            Http::validationFailed('The period starts after it ends.', ['field' => 'from']);
+        }
 
         // Our own facts: what we ordered and what we committed to.
         $orders = Db::first(
@@ -210,7 +218,9 @@ final class SuppliersController extends Controller
             'overall_score'            => $overall,
             'basis_summary'            => [
                 'po_count'      => (int) ($orders['po_count'] ?? 0),
-                'ordered_value' => (float) ($orders['ordered_value'] ?? 0),
+                // What was spent with the supplier is a cost figure: for cost.view only (F497).
+                'ordered_value' => Permissions::allows($ctx, $auth, 'cost.view') ? (float) ($orders['ordered_value'] ?? 0) : null,
+                'ordered_value_withheld' => !Permissions::allows($ctx, $auth, 'cost.view'),
                 'receipt_count' => $receiptCount,
                 'note'          => 'Computed from Purchases documents and the receipts Inventory recorded. No stock or ledger data is stored here.',
             ],
@@ -246,6 +256,22 @@ final class SuppliersController extends Controller
         }
 
         Http::data($scorecard);
+    }
+
+    /** A Y-m-d query parameter that is a real date, or the default; anything else is 422 (F266). */
+    private static function dateParam(string $name, string $default): string
+    {
+        $value = Http::param($name);
+        if ($value === null || trim((string) $value) === '') {
+            return $default;
+        }
+        $value = trim((string) $value);
+        $parts = explode('-', $value);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value) !== 1 || !checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
+            Http::validationFailed(sprintf('"%s" is not a date (YYYY-MM-DD).', $value), ['field' => $name]);
+        }
+
+        return $value;
     }
 
     private static function text(mixed $value): ?string

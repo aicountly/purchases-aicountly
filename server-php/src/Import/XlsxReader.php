@@ -27,6 +27,16 @@ namespace Aicountly\Api\Import;
  */
 final class XlsxReader
 {
+    /**
+     * Bounds on what a workbook may unpack to (F483): a 0.4 MB upload that inflates to 400 MB tied
+     * a worker up for 20 s. Every entry's declared size is checked before anything is read, and
+     * every read is capped, because a ZIP can lie about its sizes.
+     */
+    public const MAX_ENTRY_BYTES = 16 * 1048576;
+    public const MAX_TOTAL_BYTES = 48 * 1048576;
+    public const MAX_ROWS = 20000;
+    private const MAX_RATIO = 200;
+
     /** Formats Excel reserves for dates, plus anything whose code contains a date token. */
     private const BUILTIN_DATE_FORMATS = [14, 15, 16, 17, 18, 19, 20, 21, 22, 27, 30, 36, 45, 46, 47, 50, 57];
 
@@ -42,6 +52,10 @@ final class XlsxReader
         }
 
         try {
+            $refusal = self::oversized($zip);
+            if ($refusal !== null) {
+                return new Table([], [], $source, [$refusal]);
+            }
             $notes = [];
             $shared = self::sharedStrings($zip);
             [$dateStyles, $epoch1904] = self::styles($zip);
@@ -59,7 +73,7 @@ final class XlsxReader
                 );
             }
 
-            $xml = $zip->getFromName($sheetPath);
+            $xml = self::entry($zip, $sheetPath);
             if ($xml === false) {
                 return new Table([], [], $source, ['The workbook’s first sheet could not be read.']);
             }
@@ -73,15 +87,50 @@ final class XlsxReader
             return new Table([], [], $source, [...$notes, 'The sheet is empty.']);
         }
 
+        if (count($rows) > self::MAX_ROWS + 1) {
+            return new Table([], [], $source, [...$notes, sprintf('The sheet has more than %d rows. Export a narrower date range and import it in parts.', self::MAX_ROWS)]);
+        }
+
         $headers = array_shift($rows);
 
         return (new Table($headers, array_values($rows), $source, $notes))->tidy();
     }
 
+    /** Why this workbook is refused before it is unpacked, or null. */
+    private static function oversized(\ZipArchive $zip): ?string
+    {
+        $total = 0;
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $stat = $zip->statIndex($i);
+            if ($stat === false) {
+                return 'That file is not a readable .xlsx workbook.';
+            }
+            $size = (int) ($stat['size'] ?? 0);
+            $packed = max(1, (int) ($stat['comp_size'] ?? 0));
+            $total += $size;
+            if ($size > self::MAX_ENTRY_BYTES || $total > self::MAX_TOTAL_BYTES || ($size > 1048576 && $size / $packed > self::MAX_RATIO)) {
+                return 'This workbook unpacks to far more data than a statement holds, so it was not opened. Export just the statement (one sheet, the date range you need) as .xlsx or .csv.';
+            }
+        }
+
+        return null;
+    }
+
+    /** One entry of the workbook, read no further than the cap: false if absent or too large. */
+    private static function entry(\ZipArchive $zip, string $name): string|false
+    {
+        $content = $zip->getFromName($name, self::MAX_ENTRY_BYTES + 1);
+        if ($content === false || strlen($content) > self::MAX_ENTRY_BYTES) {
+            return false;
+        }
+
+        return $content;
+    }
+
     /** @return list<string> */
     private static function sharedStrings(\ZipArchive $zip): array
     {
-        $xml = $zip->getFromName('xl/sharedStrings.xml');
+        $xml = self::entry($zip, 'xl/sharedStrings.xml');
         if ($xml === false) {
             return [];
         }
@@ -116,12 +165,12 @@ final class XlsxReader
     private static function styles(\ZipArchive $zip): array
     {
         $epoch1904 = false;
-        $workbook = $zip->getFromName('xl/workbook.xml');
+        $workbook = self::entry($zip, 'xl/workbook.xml');
         if ($workbook !== false && preg_match('/date1904\s*=\s*"(1|true)"/i', $workbook) === 1) {
             $epoch1904 = true;
         }
 
-        $xml = $zip->getFromName('xl/styles.xml');
+        $xml = self::entry($zip, 'xl/styles.xml');
         if ($xml === false) {
             return [[], $epoch1904];
         }
@@ -154,7 +203,7 @@ final class XlsxReader
     /** @return array{0: ?string, 1: ?string, 2: int} */
     private static function firstSheet(\ZipArchive $zip): array
     {
-        $workbook = $zip->getFromName('xl/workbook.xml');
+        $workbook = self::entry($zip, 'xl/workbook.xml');
         $name = null;
         $count = 0;
 
@@ -201,6 +250,9 @@ final class XlsxReader
 
         $out = [];
         foreach ($doc->sheetData->row ?? [] as $row) {
+            if (count($out) > self::MAX_ROWS + 1) {
+                break; // the header and MAX_ROWS rows: a statement is not longer; read() says so
+            }
             $cells = [];
             $widest = 0;
 

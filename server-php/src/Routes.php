@@ -7,6 +7,7 @@ namespace Aicountly\Api;
 use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\AnalyticsController;
 use Aicountly\Api\Controllers\BillsController;
+use Aicountly\Api\Controllers\BooksEventsController;
 use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
 use Aicountly\Api\Controllers\ConnectController;
@@ -31,6 +32,9 @@ final class Routes
 {
     public static function register(Router $router): void
     {
+        // Books tells us it cancelled or edited one of our bills (E8-BK-POST A16). Books' key and signature only.
+        $router->post('v1/integration/books/voucher-events', [BooksEventsController::class, 'voucherEvents']);
+
         // The company switcher. Live reads from Manage, NOT company-scoped --
         // this is what the caller uses to choose the company in the first place.
         $router->get('v1/manage/companies', [ManageController::class, 'companies']);
@@ -107,6 +111,10 @@ final class Routes
         $router->post('v1/purchase-orders/{id}/receive', [PurchaseOrdersController::class, 'receive']);
         $router->post('v1/purchase-orders/{id}/cancel', [PurchaseOrdersController::class, 'cancel']);
         $router->post('v1/purchase-orders/{id}/short-close', [PurchaseOrdersController::class, 'shortClose']);
+        // An issued order changed as a new version (approval above the threshold), and what a
+        // short-close stopped waiting for expected again (F167, F420).
+        $router->post('v1/purchase-orders/{id}/amend', [PurchaseOrdersController::class, 'amend']);
+        $router->post('v1/purchase-orders/{id}/reopen', [PurchaseOrdersController::class, 'reopen']);
         $router->post('v1/receipt-requests/{id}/retry', [PurchaseOrdersController::class, 'retryReceipt']);
         $router->post('v1/receipt-requests/{id}/reconcile', [PurchaseOrdersController::class, 'reconcileReceipt']);
         $router->post('v1/receipt-requests/{id}/cancel', [PurchaseOrdersController::class, 'cancelReceipt']);

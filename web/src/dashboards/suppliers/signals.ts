@@ -96,7 +96,7 @@ function num(value: string | null | undefined): number | null {
 }
 
 function name(row: { supplier_name: string | null; supplier_account_id: number }): string {
-  return row.supplier_name ?? `Account ${row.supplier_account_id}`
+  return row.supplier_name ?? `Ledger #${row.supplier_account_id}`
 }
 
 function plural(count: number, one: string, many = `${one}s`): string {
@@ -246,9 +246,9 @@ export function supplierInsights({
         kind: 'concentration',
         severity: share >= limits.concentration * 2 ? 'high' : 'medium',
         title: 'High concentration risk',
-        summary: `${top.share_pc}% of ordered value sits with ${top.supplier_name ?? `Account ${top.supplier_account_id}`}. Consider a second source.`,
+        summary: `${top.share_pc}% of ordered value sits with ${top.supplier_name ?? `Ledger #${top.supplier_account_id}`}. Consider a second source.`,
         evidence: [
-          `${top.supplier_name ?? `Account ${top.supplier_account_id}`}: ${top.formatted} of ${concentration.total_formatted} ordered`,
+          `${top.supplier_name ?? `Ledger #${top.supplier_account_id}`}: ${top.formatted} of ${concentration.total_formatted} ordered`,
           `Flagged because one supplier holds ${limits.concentration}% or more of the period's ordered value`,
           concentration.basis,
         ],

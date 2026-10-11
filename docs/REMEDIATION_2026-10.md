@@ -77,7 +77,7 @@ Delivered by the shared `awesome-hypatia` work now on each `main` (Purchase #4, 
 - [x] One initiation path per physical movement — dispatch is a `challan_only` delivery challan (moves nothing), the debit note settles it (the one movement); Purchase never posts a `PURCHASE_RETURN` itself
 - [x] Physical return: dispatch confirmed before the accounting step; financial-only adjustment separately authorised (`return.financial_adjustment`, reason, ledger; no stock); recall reverses the challan
 - [x] Return quantities validated against receipts, prior returns and pending returns — received ∧ billed, less every undispatched return, under the order lock (race-tested)
-- [d] Return of goods received but **not yet billed** — refused with guidance (bill what arrived, then return against the bill). A safe single-movement path needs an Inventory "GRN return" that settles the GRN's pending-in; deferred as a design item, not patched
+- [x] Return of goods received but **not yet billed** — implemented after this list was written: migration 015 and `ReceiptReturnService` restate or reverse the GRN in Inventory (one movement), tested in `tests/remediation.php`. (Was deferred here; corrected by E8-PUR F517.)
 - [x] Claim resolution types: financial adjustment, physical return, replacement, refund, non-financial; effect shown and authorised; settled only after the upstream operation (debit note posted, return debited, GRN applied, Books receipt verified); partial settlement; retries on the same key; direct "settle" retired
 
 ### 7. Supplier identity, duplicate bills, periods
@@ -99,7 +99,7 @@ Delivered by the shared `awesome-hypatia` work now on each `main` (Purchase #4, 
 - [x] Every AI feature through AI Pulse (gateway `/api/ai/v1/*`, `X-Pulse-Product: purchases`, the user's own session and Purchases' own gateway key (`PULSE_SERVICE_KEY` as `X-Pulse-Service-Key`) on every call — Pulse accepts a session alone only until 2026-11-15; no provider key or host anywhere — `tests/ai_gateway.php` enforces it); "Using AI Pulse" shown on the Ask drawer and on each Payables answer AI took part in, "Rules only" otherwise
 
 ### 10. Verification
-- [x] Journey tests on real PostgreSQL, concurrency included (`tests/remediation.php`, 54 tests, sections 1–9) and browser checks of every changed screen (`web/tests/remediation.mjs`)
+- [x] Journey tests on real PostgreSQL, concurrency included (`tests/remediation.php`, 89 tests as of October 2026, sections 1–9; plus `tests/launch_readiness.php` for E8-PUR) and browser checks of every changed screen (`web/tests/remediation.mjs`)
 - [x] Producer-verified contracts — Books and Inventory by their own PostgreSQL suites on this branch; Connect by live runs against both of its designs (real Connect API + real Purchase API); Contacts by Purchase's API against a live Contacts on its `fervent-volta` release (candidates, link, idempotent re-link — one `books/ledger_account` reference — conflict 409, outsider 403, foreign contact 404)
 - [x] SmartBooks regression — Books `scripts/check-unit-suite.php` 4577/0, security 119 OK, integration 427 with 1 pre-existing error (`VendorReconciliationImportIntegrationTest`, fails identically on base)
 - [x] Report: changes by repository, tests run, migrations/configuration, historical repair, remaining blockers — [`REMEDIATION_2026-10_REPORT.md`](REMEDIATION_2026-10_REPORT.md)
@@ -115,5 +115,5 @@ Purchase share checks; `web/tests/dashboards.mjs` 25/35 — the 10 failures targ
 regression.
 
 Done: sections 1–9 and the producer checks. Open:
-1. Deferred by design: unbilled-goods returns (needs an Inventory GRN-return); PO sending through
+1. Deferred by design (unbilled-goods returns have since been implemented — migration 015, `ReceiptReturnService`): PO sending through
    a connected channel (no real supplier communication in this phase).
