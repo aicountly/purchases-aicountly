@@ -150,6 +150,11 @@ final class Context
     {
         $result = (new ManageClient())->withSession($auth->sesKey())->companyInfo($this->cmpId);
 
+        // ONE RULE for what Manage said (F493, the rule Contacts uses): only an answer we could READ
+        // is a statement about access. Manage's own refusal — 401/403/404 with its JSON error — or a
+        // readable success:0 / a different company is a denial (403). Anything unreadable — a
+        // maintenance page, an empty or truncated 200, a 5xx, no answer — is "could not ask": 503,
+        // retryable, never an allow and never "you lost access".
         if (!$result['ok']) {
             // Manage ANSWERED, in its own JSON, that this session may not open this company — a
             // removed member, another tenant's company (Manage says 404 "Company not found or
@@ -168,6 +173,11 @@ final class Context
         $resolved = (int) ($company['cmp_id'] ?? $company['comp_id'] ?? $company['id'] ?? 0);
 
         if ($resolved !== $this->cmpId) {
+            $refused = in_array($body['success'] ?? null, [0, '0', false], true)
+                || (array_key_exists('status', $body) && in_array($body['status'], [0, '0', false], true));
+            if ($resolved === 0 && !$refused) {
+                Http::error(503, 'context_unavailable', 'Manage answered without naming the company, so access cannot be confirmed. Please retry.');
+            }
             Http::forbidden('You do not have access to this company.');
         }
         if (!is_array($company['fy_list'] ?? null)) {

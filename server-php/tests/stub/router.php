@@ -529,23 +529,6 @@ if (str_contains($path, '/companyinfo')) {
 }
 
 // --- Inventory ------------------------------------------------------------
-if (str_contains($path, '/v1/capabilities') && $method === 'GET') {
-    $caps = is_file(sys_get_temp_dir() . '/stub-inventory-caps.json')
-        ? json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-inventory-caps.json'), true)
-        : ['validates_stock_effect' => true, 'stock_effects' => [
-            'PURCHASE_RECEIPT' => ['on_invoice', 'defer_inward', 'from_challan', 'from_physical_challan'],
-            'PURCHASE_RETURN'  => ['on_invoice', 'from_challan', 'from_physical_challan'],
-            'INWARD_CHALLAN'   => ['challan_only', 'physical', 'settle_deferred'],
-            'DELIVERY_CHALLAN' => ['challan_only', 'physical'],
-        ]];
-    if ($caps === null) {
-        http_response_code(404);
-        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'no route'], 'message' => 'no route']);
-        exit;
-    }
-    echo json_encode(['data' => $caps]);
-    exit;
-}
 if (str_contains($path, '/v1/valuation/unit-costs')) {
     $ids = array_filter(explode(',', (string) ($_GET['item_ids'] ?? '')));
     echo json_encode(['data' => array_map(static fn ($id) => ['item_id' => (int) $id, 'unit_cost' => 80.0], $ids)]);
@@ -1343,18 +1326,6 @@ $booksWrite = str_contains($path, '/vouchers/drafts') && $method === 'POST';
 if ($booksWrite && !preg_match('/^Bearer\s+\S+/', (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''))) {
     http_response_code(401);
     echo json_encode(['status' => 401, 'error' => 401, 'messages' => ['error' => 'Invalid or expired session'], 'message' => 'Invalid or expired session']);
-    exit;
-}
-if (str_contains($path, '/integration/capabilities') && $method === 'GET') {
-    $caps = is_file(sys_get_temp_dir() . '/stub-books-caps.json')
-        ? json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-books-caps.json'), true)
-        : ['stock_effects' => BOOKS_STOCK_EFFECTS, 'refuses_unknown_stock_effect' => true];
-    if ($caps === null) {
-        http_response_code(404);
-        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'no route'], 'message' => 'no route']);
-        exit;
-    }
-    echo json_encode(['data' => $caps]);
     exit;
 }
 

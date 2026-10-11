@@ -774,12 +774,14 @@ check('a duplicate supplier invoice number is refused', function () use ($ctx, $
 
 check('the PO -> GRN -> bill journey receives the goods once, and the bill settles the GRN', function () use ($ctx, $auth) {
     resetDatabase();
+    // A company that chose challan_only (the pre-020 default, kept by existing companies).
+    receiveStockAtGrn($ctx, false);
     $po = receivedOrder($ctx, $auth);
 
     $grn = inventoryPosts();
     assertSame(1, count($grn), 'one document for the goods receipt');
     assertSame('INWARD_CHALLAN', $grn[0]['document_type'], 'the GRN is an inward challan');
-    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'by default the receipt notes the goods and the bill receives them (receive_stock_at_grn is off)');
+    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'with receive_stock_at_grn off the receipt notes the goods and the bill receives them');
     assertSame('purchases.receipt', $grn[0]['source_document_type'] ?? null, 'filed under the receipt, not the order');
     assertSame((int) $po['receipts'][0]['request_id'], (int) $grn[0]['source_document_id'], 'the receipt is the source');
     assertSame((int) $po['po_id'], (int) ($grn[0]['metadata']['purchase_order_id'] ?? 0), 'the order travels beside it as a reference');
@@ -853,6 +855,60 @@ function receiveStockAtGrn(Context $ctx, bool $on): void
     Db::update('purchase_settings', ['receive_stock_at_grn' => $on], ['cmp_id' => $ctx->cmpId]);
 }
 
+check('E8-INV A11: a new company puts goods into stock at the goods receipt; an existing one keeps its mode', function () use ($ctx, $auth) {
+    resetDatabase();
+    Db::run('DELETE FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
+    assertSame('physical', ReceiptService::stockEffectFor($ctx->cmpId), 'no settings row and no receipt: a new company, the new default');
+    Db::run('INSERT INTO purchase_settings (cmp_id) VALUES (:cmp)', ['cmp' => $ctx->cmpId]);
+    assertSame('physical', ReceiptService::stockEffectFor($ctx->cmpId), 'the column default is on (migration 020)');
+
+    // A company that already recorded receipts under the old default and has no settings row.
+    resetDatabase();
+    receiveStockAtGrn($ctx, false);
+    receivedOrder($ctx, $auth);
+    Db::run('DELETE FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
+    assertSame('challan_only', ReceiptService::stockEffectFor($ctx->cmpId), 'its receipts were notes; nothing flips it silently');
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => '0'];
+    Auth::adopt($auth);
+    try {
+        try {
+            \Aicountly\Api\Controllers\SettingsController::show();
+        } catch (ResponseSent $sent) {
+            assertSame(false, (bool) ($sent->payload['data']['receive_stock_at_grn'] ?? true), 'opening Settings writes the mode it already works under');
+        }
+        assertSame('challan_only', ReceiptService::stockEffectFor($ctx->cmpId), 'still the mode it works under');
+    } finally {
+        Auth::adopt(null);
+    }
+});
+
+check('E8-INV A11: switching the receipt stock mode records who and when, and the order says it', function () use ($ctx, $auth) {
+    resetDatabase();
+    receiveStockAtGrn($ctx, false);
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => '0'];
+    $_SERVER['REQUEST_METHOD'] = 'PUT';
+    Auth::adopt($auth);
+    try {
+        $bodyProp = new \ReflectionProperty(Http::class, 'body');
+        $bodyProp->setValue(null, ['receive_stock_at_grn' => true, 'reason' => 'GRNI ready']);
+        try {
+            \Aicountly\Api\Controllers\SettingsController::update();
+        } catch (ResponseSent $sent) {
+            $row = $sent->payload['data'] ?? [];
+            assertSame(true, (bool) $row['receive_stock_at_grn'], 'switched on');
+            assertTrue(($row['receive_stock_at_grn_changed_by'] ?? '') !== '', 'who changed it');
+            assertTrue(($row['receive_stock_at_grn_changed_at'] ?? null) !== null, 'and when');
+        }
+    } finally {
+        (new \ReflectionProperty(Http::class, 'body'))->setValue(null, null);
+        Auth::adopt(null);
+    }
+    $po = receivedOrder($ctx, $auth);
+    $order = (new PurchaseOrderService($ctx, $auth))->find((int) $po['po_id']);
+    assertSame('physical', $order['grn_stock_effect'], 'the order answers the mode');
+    assertTrue(($order['grn_stock_effect_changed']['by'] ?? '') !== '', 'the receive panel can say who switched it');
+});
+
 check('with receive_stock_at_grn on, the goods receipt puts the goods into stock and its bill settles it', function () use ($ctx, $auth) {
     resetDatabase();
     receiveStockAtGrn($ctx, true);
@@ -880,6 +936,7 @@ check('with receive_stock_at_grn on, the goods receipt puts the goods into stock
 
 check('one bill cannot settle a receipt that put goods into stock with one that only noted them', function () use ($ctx, $auth) {
     resetDatabase();
+    receiveStockAtGrn($ctx, false);
     $orders = new PurchaseOrderService($ctx, $auth);
     $po = $orders->create(poInput());
     $orders->submit((int) $po['po_id']);
@@ -1044,6 +1101,62 @@ check('posting a bill twice is refused, so Books gets one voucher', function () 
     assertThrows(static fn () => $bills->post($requestId), 'already been posted', 'second post');
 
     assertSame(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_bill_requests WHERE status = 'POSTED'"), 'one posted bill');
+});
+
+check('E8-ID F021: Smart Books unavailable at a bill post (what Books now answers when Inventory is down) is FAILED and retryable, and plain Retry posts it', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'F021-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    $requestId = (int) $bill['request_id'];
+
+    stubFail('vouchers/drafts', 503);
+    // A 5xx after a write is an unknown outcome (E8-PUR F007/F283): Books may have acted, so the
+    // command keeps its key and is reconciled on retry — never BLOCKED (revise), never "posted".
+    assertThrows(static fn () => $bills->post($requestId), 'Retry cannot post it twice', 'Books 503 at the post');
+    stubRecover();
+    $failed = $bills->find($requestId);
+    assertTrue(in_array($failed['status'], ['FAILED', 'UNCERTAIN'], true), 'retryable, not BLOCKED (revise): ' . $failed['status']);
+
+    $posted = $bills->post($requestId);
+    assertSame('POSTED', $posted['status'], 'after recovery a plain Retry posts the same bill — no Revise');
+});
+
+check('E8-ID F021: a Books that does not answer is never described by its host, port or address', function () use ($ctx, $auth) {
+    resetDatabase();
+    $po = receivedOrder($ctx, $auth);
+    $bills = new BillService($ctx, $auth);
+    $bill = $bills->enter([
+        'supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'F021T-' . $po['po_id'], 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]],
+    ]);
+    $requestId = (int) $bill['request_id'];
+
+    $before = getenv('BOOKS_API_BASE');
+    putenv('BOOKS_API_BASE=http://127.0.0.1:9');   // nothing listens: cURL says "Failed to connect to 127.0.0.1 port 9"
+    $thrown = '';
+    try {
+        $bills->post($requestId);
+    } catch (\Throwable $e) {
+        $thrown = json_encode($e instanceof ResponseSent ? $e->payload : $e->getMessage());
+    } finally {
+        putenv($before === false ? 'BOOKS_API_BASE' : 'BOOKS_API_BASE=' . $before);
+    }
+    assertTrue($thrown !== '' && !str_contains($thrown, '127.0.0.1') && stripos($thrown, 'port 9') === false && stripos($thrown, 'Failed to connect') === false, 'the answer names no host or port: ' . $thrown);
+    assertTrue(str_contains($thrown, '"retryable":true'), 'and says it can be retried');
+    assertSame('POSTED', $bills->post($requestId)['status'], 'Retry posts it once Books answers');
+
+    // What a command records for an attempt with no answer (the voucher post itself unreachable).
+    $curl = 'Failed to connect to 10.0.3.7 port 8443 after 3001 ms: Connection timed out';
+    foreach ([$curl, 'books_unreachable', 'inventory_timeout'] as $raw) {
+        $shown = IntegrationCommand::publicError($raw, 0);
+        assertTrue(!str_contains($shown, '10.0.3.7') && !str_contains($shown, '8443') && str_contains($shown, 'No answer'), 'no answer is said in words, without the address: ' . $shown);
+    }
+    assertSame('unreadable_response', IntegrationCommand::publicError('unreadable_response', 502), 'an answer with a status keeps its code');
+    assertSame('books_base_unconfigured', IntegrationCommand::publicError('books_base_unconfigured', 0), 'and our own configuration codes are kept');
 });
 
 echo "\nReturns and claims\n";

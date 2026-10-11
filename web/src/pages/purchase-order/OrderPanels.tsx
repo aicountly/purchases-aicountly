@@ -1,3 +1,4 @@
+import { stockModeChangedText } from './stockMode'
 import { useState } from 'react'
 import { Download } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
@@ -33,6 +34,7 @@ function newToken(): string {
  * batch or serials it came with. Each delivery is its own GRN in Inventory; the form carries one
  * token, so pressing Save twice (or a retried request) records it once.
  */
+
 export function ReceiveGoodsPanel({
   po,
   onDone,
@@ -132,6 +134,8 @@ export function ReceiveGoodsPanel({
           {po.grn_stock_effect === 'physical'
             ? "This delivery is recorded in Inventory as its own goods receipt (GRN): the goods are in stock from now, at the order's rate until the supplier's bill trues the cost up. The bill will not receive them again."
             : "This delivery is recorded in Inventory as its own goods receipt (GRN). The goods wait on Inventory's pending register and go into stock when the supplier's bill is posted — once, from this receipt."}
+          {' '}
+          <span data-testid="grn-mode-changed">{stockModeChangedText(po.grn_stock_effect_changed)}</span>
         </Notice>
         {error && (
           <Notice

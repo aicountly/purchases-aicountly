@@ -314,6 +314,8 @@ export interface PurchaseOrder {
   /** The amendment waiting for approval, if one is. */
   amendment_pending_id?: number | null
   amendments?: PoAmendment[]
+  /** Who last switched the company's receipt stock mode, and when (null: never changed since set-up). */
+  grn_stock_effect_changed?: { by: string | null; at: string | null }
 }
 
 export interface PoAmendment {
@@ -584,6 +586,9 @@ export interface PurchaseSettings {
   over_receipt_tolerance_pc?: string
   /** Goods go on hand at the goods receipt (accrued to GRNI) instead of at the bill. */
   receive_stock_at_grn?: boolean
+  /** Who last switched the receipt stock mode, and when (E8-INV A11). */
+  receive_stock_at_grn_changed_by?: string | null
+  receive_stock_at_grn_changed_at?: string | null
   default_warehouse_id: number | null
   updated_at?: string | null
 }

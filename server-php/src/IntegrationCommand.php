@@ -230,7 +230,7 @@ final class IntegrationCommand
     public static function fail(int $commandId, string $leaseToken, string $error, int $statusCode): bool
     {
         return self::settle($commandId, $leaseToken, self::FAILED, [
-            'last_error' => self::trimError($error), 'last_status_code' => $statusCode,
+            'last_error' => self::trimError(self::publicError($error, $statusCode)), 'last_status_code' => $statusCode,
         ]);
     }
 
@@ -238,7 +238,7 @@ final class IntegrationCommand
     public static function uncertain(int $commandId, string $leaseToken, string $error, int $statusCode = 0): bool
     {
         return self::settle($commandId, $leaseToken, self::UNCERTAIN, [
-            'last_error' => self::trimError($error), 'last_status_code' => $statusCode,
+            'last_error' => self::trimError(self::publicError($error, $statusCode)), 'last_status_code' => $statusCode,
         ]);
     }
 
@@ -316,7 +316,7 @@ final class IntegrationCommand
         $body = is_array($row['request_payload'] ?? null) ? $row['request_payload'] : [];
         $response = $send($body, (string) $row['idempotency_key']);
         $outcome = self::classify($response);
-        $message = $response['ok'] ? null : (string) ($response['error'] ?? ('HTTP ' . $response['status']));
+        $message = $response['ok'] ? null : self::publicError((string) ($response['error'] ?? ('HTTP ' . $response['status'])), (int) $response['status']);
 
         match ($outcome) {
             'failed'    => self::fail($commandId, $lease, (string) $message, (int) $response['status']),
@@ -573,6 +573,24 @@ final class IntegrationCommand
     }
 
     /** Keep the cause, drop the novel — an error column is not a log. */
+    /**
+     * E8-ID / F021 — what a person may be shown for an attempt that got NO answer (status 0). A
+     * transport failure's text names internal hosts, ports and addresses ("Failed to connect to
+     * 10.0.3.7 port 8443"): it goes to the log, and the command records only that there was no
+     * answer. Our own short codes (unreadable_response, books_base_unconfigured, …) are kept.
+     */
+    public static function publicError(string $error, int $statusCode): string
+    {
+        if ($statusCode !== 0 || (preg_match('/^[a-z0-9_]{1,80}$/', $error) === 1 && preg_match('/_(unreachable|timeout)$/', $error) !== 1)) {
+            return $error;
+        }
+        if (preg_match('/^[a-z0-9_]{1,80}$/', $error) !== 1) {
+            error_log('[integration] no answer: ' . $error);
+        }
+
+        return 'No answer from the other product (it may be down or unreachable). Nothing is lost: retry once it is back.';
+    }
+
     private static function trimError(string $error): string
     {
         $clean = trim(preg_replace('/\s+/', ' ', $error) ?? $error);
