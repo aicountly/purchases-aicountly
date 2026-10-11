@@ -947,6 +947,23 @@ if (preg_match('#/v1/inventory-documents/(\d+)/revise$#', $path, $vm) === 1 && $
     echo json_encode(['data' => remember($store, $seen, $key, $replacement), 'duplicate' => false]);
     exit;
 }
+// DocumentsController::index with document_ids (and include_lines=1): the documents asked for, in
+// this company, with their lines — one read for an order's GRNs (E8-PUR F402).
+if (preg_match('#/v1/inventory-documents$#', $path) === 1 && $method === 'GET' && isset($_GET['document_ids'])) {
+    $asked = array_values(array_filter(array_map('intval', explode(',', (string) $_GET['document_ids']))));
+    $rows = [];
+    foreach ($asked as $id) {
+        $doc = $documents['by_id'][(string) $id] ?? null;
+        if (is_array($doc)) {
+            if (($_GET['include_lines'] ?? '') !== '1') {
+                unset($doc['lines']);
+            }
+            $rows[] = $doc;
+        }
+    }
+    echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows)]]);
+    exit;
+}
 if (preg_match('#/v1/inventory-documents/(\d+)$#', $path, $gm) === 1 && $method === 'GET') {
     $doc = $documents['by_id'][$gm[1]] ?? null;
     if ($doc === null) {

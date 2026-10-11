@@ -1193,6 +1193,71 @@ check('F373: a draft order is not purchase value — dashboards and Ask count is
     unset($issued);
 });
 
+// ---------------------------------------------------------------------------
+echo "\nF402 — an order's GRNs in one Inventory read; an unreadable answer stops the bill\n";
+
+check('F402: the receipt ledger reads every GRN of an order in one call, and a bill whose GRNs cannot be confirmed live is not sent (503)', function () use ($ctx, $owner) {
+    reset();
+    physicalGrns();
+    $po = orderOf($ctx, $owner);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    foreach ([10, 10, 10] as $i => $qty) {
+        receive($ctx, $owner, (int) $po['po_id'], $lineId, $qty, ['client_token' => 'grn-' . $i]);
+    }
+    $before = count(stubRequests());
+    $ledger = (new Domain\ReceiptLedger($ctx, $owner))->forOrder((int) $po['po_id']);
+    $calls = array_slice(stubRequests(), $before);
+    $single = array_filter($calls, static fn ($r) => preg_match('#/v1/inventory-documents/\d+$#', (string) $r['path']) === 1);
+    $bulk = array_filter($calls, static fn ($r) => preg_match('#/v1/inventory-documents$#', (string) $r['path']) === 1);
+    same(0, count($single), 'no GET per GRN');
+    same(1, count($bulk), 'one read for the order');
+    same(true, $ledger['reachable'], 'and Inventory answered');
+    same(30.0, (float) ($ledger['received_by_line'][$lineId] ?? 0), 'every GRN counted');
+
+    $bills = new BillService($ctx, $owner);
+    $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'F402-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 30, 'rate' => 250]]]);
+    stubControl(['path' => 'v1/inventory-documents', 'status' => 502, 'html' => true]);
+    $r = refused(fn () => $bills->post((int) $bill['request_id']), '', 'Inventory unreadable at post');
+    stubRecover();
+    same(503, $r['status'], 'an unreadable Inventory stops the bill: ' . $r['message']);
+    same(0, vouchersPosted(), 'nothing reached Books');
+    $bills->post((int) $bill['request_id']);
+    same(1, vouchersPosted(), 'once Inventory answers, it posts');
+});
+
+// ---------------------------------------------------------------------------
+echo "\nF374 / F510 — no client method without a caller\n";
+
+check('F374/F510: every public Books and Inventory client method has a caller (dead clients with wrong contracts are gone)', function () {
+    $sources = '';
+    foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(__DIR__ . '/../src')) as $file) {
+        if ($file->isFile() && str_ends_with($file->getFilename(), '.php')) {
+            $sources .= file_get_contents($file->getPathname());
+        }
+    }
+    foreach (glob(__DIR__ . '/../bin/*.php') ?: [] as $file) {
+        $sources .= file_get_contents($file);
+    }
+    $dead = [];
+    foreach ([Clients\BooksClient::class, Clients\InventoryClient::class] as $class) {
+        foreach ((new \ReflectionClass($class))->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            if ($method->getDeclaringClass()->getName() !== $class || $method->isConstructor()) {
+                continue;
+            }
+            $name = $method->getName();
+            if (in_array($name, ['service'], true)) {
+                continue; // the ApiClient contract
+            }
+            if (preg_match_all('/(->|::)' . preg_quote($name, '/') . '\(/', $sources) < 1) {
+                $dead[] = (new \ReflectionClass($class))->getShortName() . '::' . $name;
+            }
+        }
+    }
+    same([], $dead, 'client methods nobody calls');
+    truthy(!method_exists(Clients\BooksClient::class, 'withService'), 'the Books service-key variant (no caller, wrong header) is gone');
+    truthy(!method_exists(Clients\BooksClient::class, 'saveReceiptSettlement'), 'and the replace-all settlement writer');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

@@ -104,11 +104,6 @@ final class InventoryClient extends ApiClient
         return $this->call('GET', 'v1/items/' . $itemId . self::query($ctx->asQuery()));
     }
 
-    public function itemByBarcode(Context $ctx, string $code): array
-    {
-        return $this->call('GET', 'v1/items/by-barcode/' . rawurlencode($code) . self::query($ctx->asQuery()));
-    }
-
     /**
      * One call for many items.
      *
@@ -146,11 +141,6 @@ final class InventoryClient extends ApiClient
     public function itemGroups(Context $ctx): array
     {
         return $this->call('GET', 'v1/item-groups' . self::query(['limit' => 200] + $ctx->asQuery()));
-    }
-
-    public function batches(Context $ctx, int $itemId): array
-    {
-        return $this->call('GET', 'v1/batches' . self::query(['item_id' => $itemId, 'limit' => 200] + $ctx->asQuery()));
     }
 
     // -----------------------------------------------------------------------
@@ -195,11 +185,6 @@ final class InventoryClient extends ApiClient
         return $this->call('GET', 'v1/serials' . self::query(['item_id' => $itemId, 'q' => $serialNo, 'q_mode' => 'prefix', 'limit' => 100] + $ctx->asQuery()));
     }
 
-    public function bom(Context $ctx, int $bomId): array
-    {
-        return $this->call('GET', 'v1/bill-of-materials/' . $bomId . self::query($ctx->asQuery()));
-    }
-
     // -----------------------------------------------------------------------
     // Availability and stock — always live, never cached past the request
     // -----------------------------------------------------------------------
@@ -211,58 +196,14 @@ final class InventoryClient extends ApiClient
         ] + $ctx->asQuery()));
     }
 
-    /**
-     * Available-to-promise for a whole document in one call.
-     *
-     * @param list<array{item_id:int, warehouse_id?:int|null, batch_id?:int|null, qty:float, unit_id?:int|null}> $lines
-     */
-    public function checkAvailability(Context $ctx, array $lines): array
-    {
-        return $this->call('POST', 'v1/availability/check', ['lines' => $lines] + $ctx->asBody());
-    }
-
-    public function stockBalances(Context $ctx, array $filters = []): array
-    {
-        return $this->call('GET', 'v1/stock-balances' . self::query($filters + $ctx->asQuery()));
-    }
-
     public function replenishment(Context $ctx, array $filters = []): array
     {
         return $this->call('GET', 'v1/reports/replenishment' . self::query($filters + $ctx->asQuery()));
     }
 
-    /** Unit cost, for a margin check. Read at the moment of the check; never stored as our own cost. */
-    public function unitCosts(Context $ctx, array $itemIds, ?string $asOf = null): array
-    {
-        return $this->call('GET', 'v1/valuation/unit-costs' . self::query([
-            'item_ids' => implode(',', $itemIds), 'as_of' => $asOf,
-        ] + $ctx->asQuery()));
-    }
-
     // -----------------------------------------------------------------------
     // Reservations — Inventory owns the reservation; we keep its uuid
     // -----------------------------------------------------------------------
-
-    /** @param array<string, mixed> $payload */
-    public function createReservation(Context $ctx, array $payload, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'v1/reservations', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
-    public function releaseReservation(Context $ctx, int $reservationId, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'v1/reservations/' . $reservationId . '/release', $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
-    public function fulfilReservation(Context $ctx, int $reservationId, array $payload, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'v1/reservations/' . $reservationId . '/fulfil', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
-    public function reservations(Context $ctx, array $filters = []): array
-    {
-        return $this->call('GET', 'v1/reservations' . self::query($filters + $ctx->asQuery()));
-    }
 
     // -----------------------------------------------------------------------
     // Inventory documents — Inventory creates and owns them; we keep the uuid
@@ -302,17 +243,23 @@ final class InventoryClient extends ApiClient
         return $this->call('GET', 'v1/inventory-documents/' . $documentId . self::query($ctx->asQuery()));
     }
 
-    public function documentByUuid(Context $ctx, string $uuid): array
-    {
-        return $this->call('GET', 'v1/inventory-documents/by-uuid/' . rawurlencode($uuid) . self::query($ctx->asQuery()));
-    }
-
     /** Find what Inventory made of one of OUR documents — the reconciliation key, used instead of storing a copy. */
     public function documentBySource(Context $ctx, string $sourceApp, string $sourceType, int|string $sourceId): array
     {
         return $this->call('GET', 'v1/inventory-documents/by-source' . self::query([
             'source_app' => $sourceApp, 'source_document_type' => $sourceType, 'source_document_id' => $sourceId,
         ] + $ctx->asQuery()));
+    }
+
+    /**
+     * DocumentsController::index with document_ids + include_lines: the documents named, with status
+     * and lines, in one read (E8-PUR F402). At most 500 ids per call (Inventory's limit).
+     *
+     * @param list<int> $documentIds
+     */
+    public function documentsByIds(Context $ctx, array $documentIds): array
+    {
+        return $this->documents($ctx, ['document_ids' => implode(',', array_map('intval', $documentIds)), 'include_lines' => 1, 'all_fy' => 1, 'limit' => 500]);
     }
 
     public function documents(Context $ctx, array $filters = []): array
@@ -323,15 +270,6 @@ final class InventoryClient extends ApiClient
     public function pendingQuantities(Context $ctx, array $filters = []): array
     {
         return $this->call('GET', 'v1/pending-quantities' . self::query($filters + $ctx->asQuery()));
-    }
-
-    /**
-     * What this Inventory can do for an integration — the stock effects it accepts per
-     * document type, and whether it validates them. An older Inventory answers 404.
-     */
-    public function capabilities(Context $ctx): array
-    {
-        return $this->call('GET', 'v1/capabilities' . self::query($ctx->asQuery()));
     }
 
     public function settings(Context $ctx): array

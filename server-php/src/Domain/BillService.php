@@ -1855,18 +1855,21 @@ final class BillService
             return;
         }
         $inventory = (new InventoryClient())->withService($this->auth->uuid);
+        // One read for every GRN the bill settles (F402), and an answer that cannot be read stops
+        // the bill — it used to be taken as "still live" on any failure but a 404.
+        $read = ReceiptLedger::documents($scope, $inventory, array_keys($documents));
+        if ($read['state'] !== 'ok') {
+            Http::error(503, 'inventory_unavailable', 'Inventory could not confirm that the goods receipts this bill settles are still live, so the bill was not sent. Nothing has changed; try again.', ['retryable' => true, 'detail' => $read['why']]);
+        }
         foreach ($documents as $documentId => $receiptNo) {
-            $response = $inventory->document($scope, $documentId);
-            if (!$response['ok']) {
-                if ((int) $response['status'] === 404) {
-                    Http::conflict(
-                        sprintf('Inventory has no document %d, which this order counts as GRN %s. Reconcile the GRN on the order before billing it, so the bill does not settle goods Inventory never recorded.', $documentId, $receiptNo),
-                        ['receipt_no' => $receiptNo, 'inventory_document_id' => $documentId, 'retryable' => false],
-                    );
-                }
-                continue;
+            $document = $read['by_id'][$documentId] ?? null;
+            if ($document === null) {
+                Http::conflict(
+                    sprintf('Inventory has no document %d, which this order counts as GRN %s. Reconcile the GRN on the order before billing it, so the bill does not settle goods Inventory never recorded.', $documentId, $receiptNo),
+                    ['receipt_no' => $receiptNo, 'inventory_document_id' => $documentId, 'retryable' => false],
+                );
             }
-            $status = strtoupper((string) ($response['body']['data']['status'] ?? ''));
+            $status = strtoupper((string) ($document['status'] ?? ''));
             if (in_array($status, ['REVERSED', 'CANCELLED'], true)) {
                 Http::conflict(
                     sprintf('GRN %s was %s in Inventory, but this order still counts its goods as received. Reverse the GRN on the order to record that here (nothing moves twice), then bill what is left.', $receiptNo, strtolower($status)),
