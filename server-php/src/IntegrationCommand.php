@@ -376,7 +376,8 @@ final class IntegrationCommand
             return is_array($response['body'] ?? null) ? 'completed' : 'uncertain';
         }
         $body = is_array($response['body'] ?? null) ? $response['body'] : null;
-        $code = (string) ($body['error']['code'] ?? $body['code'] ?? '');
+        // CodeIgniter's fail() puts a string code in `error` ({status, error: "code", messages}).
+        $code = self::errorCode($body);
         $retryable = $body['error']['details']['retryable'] ?? $body['details']['retryable'] ?? $body['retryable'] ?? null;
         $message = strtolower((string) ($response['error'] ?? ''));
 
@@ -384,6 +385,10 @@ final class IntegrationCommand
             return 'uncertain';
         }
         if ($status === 409 && $code === '' && (str_contains($message, 'already being posted') || str_contains($message, 'still being posted'))) {
+            // F333: a code-less 409 saying the post is under way (an older Books, a proxy) is not a
+            // decision — the post may complete. BLOCKED would let the bill be withdrawn and raised
+            // again beside a voucher Books then finishes; uncertain retries the same keys. A code-less
+            // 409 with a business message ("Duplicate supplier invoice") stays a refusal.
             return 'uncertain';
         }
         if (in_array($code, self::NO_CHANGE_CODES, true) || ($retryable === true && $status < 500)) {
@@ -397,6 +402,28 @@ final class IntegrationCommand
         }
 
         return 'blocked';
+    }
+
+    /**
+     * The machine code of a refusal: `error.code` ({error:{code,message}}), CodeIgniter's fail()
+     * `error` when it is a code rather than the bare status, or a top-level `code`.
+     *
+     * @param array<string, mixed>|null $body
+     */
+    public static function errorCode(?array $body): string
+    {
+        if ($body === null) {
+            return '';
+        }
+        $error = $body['error'] ?? null;
+        if (is_array($error) && is_string($error['code'] ?? null) && trim($error['code']) !== '') {
+            return trim($error['code']);
+        }
+        if (is_string($error) && trim($error) !== '' && !ctype_digit(trim($error))) {
+            return trim($error);
+        }
+
+        return is_string($body['code'] ?? null) ? trim($body['code']) : '';
     }
 
     /** @return array<string, mixed>|null */

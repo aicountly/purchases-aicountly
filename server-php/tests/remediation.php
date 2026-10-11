@@ -582,6 +582,31 @@ check('a lost Books answer is retried on the same keys and posts one voucher', f
     same('100.0000', (string) Db::scalar('SELECT billed_qty FROM purchase_order_lines WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'billed once');
 });
 
+check('F333: Books\' in-flight 409 (draft_post_in_progress) or a code-less 409 is UNCERTAIN, never BLOCKED or cancellable', function () use ($ctx, $owner) {
+    foreach ([['draft_post_in_progress', 'IN-FLIGHT-1'], ['', 'CODELESS-1']] as [$code, $invoiceNo]) {
+        reset();
+        $po = orderOf($ctx, $owner);
+        receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 100);
+        $bills = new BillService($ctx, $owner);
+        $bill = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => $invoiceNo, 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 100, 'rate' => 250]]]);
+
+        stubFail('/post', 409, false, $code, 'This voucher is already being posted. Refresh in a moment and try again.');
+        refused(fn () => $bills->post((int) $bill['request_id']), 'books_uncertain', '409 ' . ($code ?: 'without a code'));
+        stubRecover();
+        same('UNCERTAIN', Db::scalar('SELECT status FROM purchase_bill_requests'), ($code ?: 'code-less') . ': the bill may yet post');
+        refused(fn () => $bills->cancel((int) $bill['request_id'], ['reason' => 'x']), 'may already hold', 'and cannot be withdrawn and raised again beside it');
+
+        same('POSTED', $bills->post((int) $bill['request_id'])['status'], 'Retry on the same keys finishes it');
+        same(1, count(booksVouchers()), 'Books holds one voucher');
+    }
+    same('blocked', IntegrationCommand::classify(['ok' => false, 'status' => 409, 'body' => ['status' => 409, 'error' => 'source_reference_duplicate', 'messages' => ['error' => 'x']], 'error' => 'x']), 'a CodeIgniter-coded business 409 is still a decision');
+    // CodeIgniter's bare numeric status is no code; a code-less 409 that says the post is under way is
+    // uncertain (a code-less 409 with a business message — "Duplicate supplier invoice" — stays a
+    // refusal: E8-PUR F283's table).
+    $inFlight = 'This voucher is already being posted. Refresh in a moment and try again.';
+    same('uncertain', IntegrationCommand::classify(['ok' => false, 'status' => 409, 'body' => ['status' => 409, 'error' => '409', 'messages' => ['error' => $inFlight]], 'error' => $inFlight]), 'CodeIgniter\'s bare status is no code');
+});
+
 check('what Books recorded is checked, and a voucher that is not this bill is flagged, not trusted', function () use ($ctx, $owner) {
     reset();
     $po = orderOf($ctx, $owner);

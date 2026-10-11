@@ -148,6 +148,9 @@ const OPEN_TO_MEMBERS = [
 
 /** Routes that take no company: the company switcher. */
 const UNSCOPED = ['GET v1/manage/companies', 'GET v1/manage/companyinfo'];
+// Routes only another product's service key opens (Books' signed voucher events, E8-BK-POST A16): a
+// person's session is refused before any company check — 401 "not a Books key" — still a refusal.
+const SERVICE_KEY_ONLY = ['POST v1/integration/books/voucher-events'];
 
 const SCOPE = '?cmp_id=88&fy_id=6&bo_id=0';
 
@@ -243,6 +246,12 @@ check('F424/F450: a company Manage says the caller may not open is 403 company_a
         }
         foreach ([[$stranger, SCOPE], [$owner, '?cmp_id=502&fy_id=6&bo_id=0']] as [$who, $scope]) {
             $r = call($method, $api . '/' . $path . $scope, $who, $method === 'GET' || $method === 'DELETE' ? null : []);
+            if (in_array($method . ' ' . $path, SERVICE_KEY_ONLY, true)) {
+                if (!in_array($r['status'], [401, 403], true)) {
+                    $wrong[] = "{$method} {$path}{$scope} -> {$r['status']} (service-key-only route not refused)";
+                }
+                continue;
+            }
             $code = $r['body']['error']['code'] ?? null;
             if ($r['status'] !== 403 || $code !== 'company_access_denied' || ($r['body']['error']['details']['retryable'] ?? null) !== false) {
                 $wrong[] = "{$method} {$path}{$scope} -> {$r['status']} {$code}";
@@ -274,6 +283,12 @@ check('F357: a member with no Purchases seat is refused (403) everywhere but cho
         $open = in_array($key, OPEN_TO_MEMBERS, true);
         if ($open && in_array($r['status'], [401, 403], true) && !str_starts_with($key, 'POST v1/connect') && !str_starts_with($key, 'GET v1/connect')) {
             $wrong[] = "{$key} -> {$r['status']} (should be open to a member)";
+        }
+        if (in_array($key, SERVICE_KEY_ONLY, true)) {
+            if (!in_array($r['status'], [401, 403], true)) {
+                $wrong[] = "{$key} -> {$r['status']} (service-key-only route not refused)";
+            }
+            continue;
         }
         if (!$open && $r['status'] !== 403) {
             $wrong[] = "{$key} -> {$r['status']}";

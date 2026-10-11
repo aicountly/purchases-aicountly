@@ -7,6 +7,7 @@ namespace Aicountly\Api;
 use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\AnalyticsController;
 use Aicountly\Api\Controllers\BillsController;
+use Aicountly\Api\Controllers\BooksEventsController;
 use Aicountly\Api\Controllers\CatalogController;
 use Aicountly\Api\Controllers\ClaimsController;
 use Aicountly\Api\Controllers\ConnectController;
@@ -31,6 +32,9 @@ final class Routes
 {
     public static function register(Router $router): void
     {
+        // Books tells us it cancelled or edited one of our bills (E8-BK-POST A16). Books' key and signature only.
+        $router->post('v1/integration/books/voucher-events', [BooksEventsController::class, 'voucherEvents']);
+
         // The company switcher. Live reads from Manage, NOT company-scoped --
         // this is what the caller uses to choose the company in the first place.
         $router->get('v1/manage/companies', [ManageController::class, 'companies']);
