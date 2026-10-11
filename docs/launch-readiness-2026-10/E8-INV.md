@@ -44,3 +44,12 @@ Preventing a direct bill from receiving goods already covered by an open GRN is 
    journalled.
 
 Deploy order: Inventory (A04 + true-up) → Books (GRNI) → Purchases (this migration).
+
+## F369 / F166 — dead cross-app client methods (second pass, 2026-10-11)
+
+`BooksClient::capabilities()` (GET `integration/capabilities`) and `InventoryClient::capabilities()`
+(GET `v1/capabilities`) had no caller in Purchases, and neither Books nor Inventory routes either path.
+Both methods are removed, together with the `tests/stub/router.php` branches that answered them with
+shapes the real receivers never serve. Gates: `bash server-php/tests/run.sh` (TEST_DB_NAME=e8in_pur_test,
+STUB_PORT=33220) — 151 + 150 + 23 + 89 passed, 0 failed; `web: npm test / npm run build` — passed.
+Full status of every E8-INV finding: Inventory-aicountly / books-react-app `docs/launch-readiness-2026-10/E8-INV.md`.
