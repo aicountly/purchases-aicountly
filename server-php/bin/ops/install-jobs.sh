@@ -16,6 +16,9 @@
 #   #! app: <name>                      product slug used in markers, lock and log names (required)
 #   #! legacy-marker: <text>            an older hand-installed block "# >>> <text>: <api-dir> >>>" this
 #                                       block replaces (removed on --apply so the job never runs twice)
+#   #! legacy-pattern: <ERE>            hand-installed single lines (outside any aicountly block) this block
+#                                       replaces, e.g. "spark inventory:outbox-dispatch"; removed on --apply
+#                                       and shown in the diff first
 #   <job-name> | <cron schedule> | <command, run from the api dir; {php} is the PHP CLI>
 #
 # WHAT IT WRITES: one block between marker lines that name the API folder, so production and sandbox
@@ -51,6 +54,7 @@ api_dir="$(cd "$api_dir" 2>/dev/null && pwd)" || { echo "No such API folder: $ap
 app="$(sed -n 's/^#![[:space:]]*app:[[:space:]]*\([a-z0-9_-]*\).*/\1/p' "$jobs_file" | head -n 1)"
 [ -n "$app" ] || { echo "$jobs_file has no '#! app: <name>' line" >&2; exit 2; }
 legacy="$(sed -n 's/^#![[:space:]]*legacy-marker:[[:space:]]*//p' "$jobs_file" | head -n 1)"
+legacy_pattern="$(sed -n 's/^#![[:space:]]*legacy-pattern:[[:space:]]*//p' "$jobs_file" | paste -sd'|' -)"
 
 begin="# >>> aicountly-${app} jobs: ${api_dir} >>>"
 end="# <<< aicountly-${app} jobs: ${api_dir} <<<"
@@ -106,6 +110,12 @@ strip() {
     !skip { print }'
 }
 rest="$(printf '%s\n' "$current" | strip | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')"
+if [ -n "$legacy_pattern" ] && [ "$remove" -eq 0 ]; then
+  # Hand-installed lines for the same jobs, outside any managed block (comments are kept).
+  rest="$(printf '%s\n' "$rest" | awk -v pat="$legacy_pattern" '
+    /^# >>> aicountly-/ { inb = 1 } /^# <<< aicountly-/ { inb = 0; print; next }
+    !inb && $0 !~ /^[[:space:]]*#/ && $0 ~ pat { next } { print }' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')"
+fi
 if [ "$remove" -eq 1 ]; then
   new="$rest"
 else
