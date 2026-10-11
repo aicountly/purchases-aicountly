@@ -1382,6 +1382,18 @@ check('F275: bills, returns, claims and supplier profiles carry the supplier\'s 
     same('Northern Distributors', $summary['top_suppliers'][0]['supplier_name'] ?? null, 'Books\' top suppliers by their label');
 });
 
+check('F310: the session names the person as this company knows them, never by the numeric portal id', function () use ($ctx) {
+    reset();
+    $who = person('101', 2);
+    [$status, $payload] = endpoint(fn () => Controllers\SettingsController::session(), $who);
+    same(200, $status, 'session');
+    same(null, $payload['data']['display_name'], 'no name is not "101"');
+    member('101', ['po.view']);
+    Db::run("UPDATE purchase_permission_assignments SET member_label = 'Ravi (Stores)' WHERE user_uuid = '101'");
+    [, $payload] = endpoint(fn () => Controllers\SettingsController::session(), $who);
+    same('Ravi (Stores)', $payload['data']['display_name'], 'the access screen\'s label names them');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

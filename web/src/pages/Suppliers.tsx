@@ -5,6 +5,7 @@ import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
 import { SupplierPicker } from '../components/LivePicker'
 import { SupplierContactCard } from './supplier/SupplierContactCard'
+import { LoadFailed } from '../components/LoadFailed'
 import { Card, DataTable, money, Notice, qty, Select, StatCard, StatusBadge } from '../ui'
 
 const STATUS_BADGE: Record<string, string> = {
@@ -71,6 +72,9 @@ export default function Suppliers() {
       </Notice>
 
       {error && <Notice tone="danger" title="That did not work">{error}</Notice>}
+      {/* A failed load is not "no profiles yet" (F146). */}
+      {profiles.error && <LoadFailed what="supplier profiles" error={profiles.error} onRetry={profiles.reload} />}
+      {scorecard.error && <LoadFailed what="this supplier's scorecard" error={scorecard.error} onRetry={scorecard.reload} />}
 
       {can('supplier.manage') && (
         <Card title="Add a supplier to the procurement list">

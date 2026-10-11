@@ -12,7 +12,8 @@ import { api, ApiError, setScope, type CompanyScope } from '../services/api'
 
 export interface PurchasesSession {
   uuid: string
-  display_name: string
+  /** Null when neither the portal nor this company's access screen gave a name (F310). */
+  display_name: string | null
   kind: 'user' | 'service'
   is_owner: boolean
   /**

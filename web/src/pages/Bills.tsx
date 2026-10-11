@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../services/api'
 import type { BillRequest, CatalogSupplier, PurchaseOrder } from '../services/types'
@@ -8,6 +8,7 @@ import { useUrlFilter, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
 import { ItemPicker, LedgerPicker, SupplierPicker } from '../components/LivePicker'
+import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
 import * as decimal from '../utils/decimal'
@@ -24,14 +25,17 @@ export function BillsList() {
   const status = urlStatus === '' && searchParams.get('exceptions') === '1' ? 'EXCEPTION' : urlStatus
   const supplierId = useUrlId('supplier_id')
 
-  const { data, loading, error } = useApi(
+  // Paged (F145): every bill is reachable, not only the first hundred.
+  const [offset, setOffset] = useState(0)
+  useEffect(() => setOffset(0), [status, supplierId])
+  const { data, loading, error, reload } = useApi(
     (signal) =>
       api.list<BillRequest>(
         'v1/bills',
-        { status: status || undefined, supplier_account_id: supplierId, limit: 100 },
+        { status: status || undefined, supplier_account_id: supplierId, limit: 50, offset },
         signal,
       ),
-    [scope?.cmp_id, scope?.fy_id, status, supplierId],
+    [scope?.cmp_id, scope?.fy_id, status, supplierId, offset],
     Boolean(scope),
   )
 
@@ -48,7 +52,7 @@ export function BillsList() {
         copy them.
       </Notice>
 
-      {error && <Notice tone="danger" title="Could not load bills">{error}</Notice>}
+      {error && <LoadFailed what="bills" error={error} onRetry={reload} />}
 
       <Card
         title={`${data?.meta.total ?? 0} bill${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}
@@ -82,6 +86,7 @@ export function BillsList() {
             { key: 'voucher', header: 'Books voucher', render: (row) => row.books_voucher_no ?? '—' },
           ]}
         />
+        <Pager offset={offset} limit={50} total={data?.meta.total ?? 0} onChange={setOffset} />
       </Card>
     </div>
   )

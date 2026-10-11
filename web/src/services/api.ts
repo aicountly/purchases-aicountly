@@ -13,7 +13,8 @@
  */
 
 import { getApiBaseUrl } from '../config'
-import { ensureSesKey } from '../auth/portal'
+import { AuthError, ensureSesKey, redirectToPortalSso } from '../auth/portal'
+import { clearAllTokens } from '../auth/tokens'
 
 export interface CompanyScope {
   cmp_id: number
@@ -175,8 +176,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     // before it expires locally, and making the user sign in again for that is
     // a bad trade. Anything else is the caller's to handle.
     if (error instanceof ApiError && error.status === 401) {
-      const freshKey = await ensureSesKey(true)
-      return await send<T>(path, options, freshKey)
+      try {
+        const freshKey = await ensureSesKey(true)
+        return await send<T>(path, options, freshKey)
+      } catch (retryError) {
+        // The session is dead (the sign-in itself is spent, or a fresh key is refused too): back to
+        // sign-in, rather than every screen showing an error or, worse, an empty list (F146).
+        if ((retryError instanceof AuthError && retryError.status === 401) || (retryError instanceof ApiError && retryError.status === 401)) {
+          clearAllTokens()
+          redirectToPortalSso()
+        }
+        throw retryError
+      }
     }
     throw error
   }

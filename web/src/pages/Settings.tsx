@@ -3,6 +3,7 @@ import { api, ApiError } from '../services/api'
 import type { MatchPolicy, PurchaseSettings } from '../services/types'
 import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
+import { LoadFailed } from '../components/LoadFailed'
 import { Button, Card, DataTable, Field, Input, money, Notice, qty } from '../ui'
 
 export default function Settings() {
@@ -67,6 +68,16 @@ export default function Settings() {
   }
 
   if (settings.loading) return <p style={{ color: 'var(--muted)' }}>Loading…</p>
+  // Never a form over values that did not load: its boxes would show off where the server has them
+  // on, and Save would write that back (F146).
+  if (settings.error || !settings.data?.data) {
+    return (
+      <div style={{ display: 'grid', gap: '1rem', maxWidth: '52rem' }}>
+        <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Settings</h1>
+        <LoadFailed what="this company's purchase settings" error={settings.error ?? 'The settings did not arrive.'} onRetry={settings.reload} />
+      </div>
+    )
+  }
 
   return (
     <div style={{ display: 'grid', gap: '1rem', maxWidth: '52rem' }}>

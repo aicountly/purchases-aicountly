@@ -81,6 +81,7 @@ export function Card({
   return (
     <section
       style={{
+        minWidth: 0,
         background: 'var(--surface)',
         border: '1px solid var(--border)',
         borderRadius: 'var(--radius)',
@@ -94,7 +95,9 @@ export function Card({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            gap: '1rem',
+            // Wraps on a phone instead of pushing the page sideways (F310).
+            flexWrap: 'wrap',
+            gap: '0.6rem 1rem',
             padding: '0.75rem 1rem',
             borderBottom: '1px solid var(--border)',
           }}

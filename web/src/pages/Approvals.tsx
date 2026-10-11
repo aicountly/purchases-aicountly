@@ -4,6 +4,7 @@ import { api, ApiError } from '../services/api'
 import type { ApprovalRequest, MatchException } from '../services/types'
 import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
+import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, money, Notice, StatusBadge } from '../ui'
 
 type ApprovalRow = ApprovalRequest & {
@@ -30,15 +31,18 @@ export default function Approvals() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Paged (F145): an approval beyond the first page is still reachable.
+  const [offset, setOffset] = useState(0)
+  const [exceptionOffset, setExceptionOffset] = useState(0)
   const approvals = useApi(
-    (signal) => api.list<ApprovalRow>('v1/approvals', { status: 'PENDING', limit: 100 }, signal),
-    [scope?.cmp_id],
+    (signal) => api.list<ApprovalRow>('v1/approvals', { status: 'PENDING', limit: 50, offset }, signal),
+    [scope?.cmp_id, offset],
     Boolean(scope),
   )
 
   const exceptions = useApi(
-    (signal) => api.list<ExceptionRow>('v1/match-exceptions', { limit: 100 }, signal),
-    [scope?.cmp_id],
+    (signal) => api.list<ExceptionRow>('v1/match-exceptions', { limit: 50, offset: exceptionOffset }, signal),
+    [scope?.cmp_id, exceptionOffset],
     Boolean(scope && can('match.view')),
   )
 
@@ -62,7 +66,11 @@ export default function Approvals() {
 
       {error && <Notice tone="danger" title="That did not work">{error}</Notice>}
 
-      <Card title={`${approvals.data?.meta.total ?? 0} waiting on you`}>
+      {/* A failed load is not an empty inbox (F146). */}
+      {approvals.error && <LoadFailed what="the approvals waiting on you" error={approvals.error} onRetry={approvals.reload} />}
+      {exceptions.error && <LoadFailed what="the open match exceptions" error={exceptions.error} onRetry={exceptions.reload} />}
+
+      <Card title={approvals.error ? 'Approvals (not loaded)' : `${approvals.data?.meta.total ?? 0} waiting on you`}>
         <DataTable
           loading={approvals.loading}
           rows={approvals.data?.data ?? []}
@@ -114,6 +122,7 @@ export default function Approvals() {
             },
           ]}
         />
+        <Pager offset={offset} limit={50} total={approvals.data?.meta.total ?? 0} onChange={setOffset} />
         <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.75rem', marginBottom: 0 }}>
           A document cannot be approved by the person who raised it.
         </p>
@@ -136,6 +145,7 @@ export default function Approvals() {
               { key: 'raised', header: 'Found', render: (row) => date(row.created_at) },
             ]}
           />
+          <Pager offset={exceptionOffset} limit={50} total={exceptions.data?.meta.total ?? 0} onChange={setExceptionOffset} />
         </Card>
       )}
     </div>

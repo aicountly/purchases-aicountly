@@ -655,8 +655,11 @@ final class OverviewDashboard extends Dashboard
                 $this->period->params() + $filterParams,
                 'p',
             );
-            $basis = 'Share of ORDERED value raised in ' . $this->period->label()
-                . ' — Smart Books was not available, so posted purchases could not be used as the base.';
+            // Said as it is (F310): Books answering with no posted purchases is not Books being down.
+            $basis = 'Share of ORDERED value raised in ' . $this->period->label() . ' — '
+                . ($books !== null && $books['ok']
+                    ? 'Smart Books has no posted purchases for this period yet, so ordered value is the base.'
+                    : 'Smart Books was not available, so posted purchases could not be used as the base.');
             $source = 'purchases';
         }
 

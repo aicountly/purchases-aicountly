@@ -466,6 +466,13 @@
   .app-shell__scope { order: 3; width: 100%; }
   .app-shell__pill { max-width: 100%; padding-inline: 0.4rem; }
   .app-shell__content > :not(.purchase-workspace):not(.access-workspace):not(.purchase-profile-page) { padding: 1.1rem 0.85rem 3rem; }
+  /* No sideways page scroll at phone width (F310): grid and flex children may shrink below their
+     content, wide tables scroll inside their own box, and form controls never exceed the column. */
+  .app-shell__content * { min-width: 0; }
+  .app-shell__content select,
+  .app-shell__content input,
+  .app-shell__content textarea { max-width: 100%; }
+  .app-shell__content { overflow-x: clip; }
 }
 
 @media (prefers-reduced-motion: reduce) {

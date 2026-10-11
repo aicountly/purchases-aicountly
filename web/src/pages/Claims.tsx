@@ -4,6 +4,7 @@ import type { CatalogSupplier, Claim, ClaimResolution } from '../services/types'
 import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
 import { LedgerPicker, SupplierPicker } from '../components/LivePicker'
+import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, Select, StatusBadge, Textarea } from '../ui'
 
 const KINDS = ['shortage', 'damage', 'rate_difference', 'scheme', 'rebate', 'quality', 'late_delivery', 'other']
@@ -27,9 +28,10 @@ export default function Claims() {
   const [form, setForm] = useState({ supplier: null as { id: number; name: string } | null, kind: 'shortage', amount: '', description: '' })
   const [openClaimId, setOpenClaimId] = useState<number | null>(null)
 
-  const { data, loading, reload } = useApi(
-    (signal) => api.list<Claim>('v1/claims', { limit: 100 }, signal),
-    [scope?.cmp_id, scope?.fy_id],
+  const [offset, setOffset] = useState(0)
+  const { data, loading, reload, error: loadError } = useApi(
+    (signal) => api.list<Claim>('v1/claims', { limit: 50, offset }, signal),
+    [scope?.cmp_id, scope?.fy_id, offset],
     Boolean(scope),
   )
 
@@ -101,7 +103,9 @@ export default function Claims() {
         </Card>
       )}
 
-      <Card title={`${data?.meta.total ?? 0} claim${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}>
+      {loadError && <LoadFailed what="claims" error={loadError} onRetry={reload} />}
+
+      <Card title={loadError ? 'Claims (not loaded)' : `${data?.meta.total ?? 0} claim${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}>
         <DataTable
           loading={loading}
           rows={data?.data ?? []}
@@ -139,6 +143,7 @@ export default function Claims() {
             },
           ]}
         />
+        <Pager offset={offset} limit={50} total={data?.meta.total ?? 0} onChange={setOffset} />
       </Card>
 
       {openClaimId !== null && <ClaimResolutions claimId={openClaimId} onChanged={reload} />}

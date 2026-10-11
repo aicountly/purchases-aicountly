@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Plus, Trash2 } from 'lucide-react'
 import { api, ApiError } from '../services/api'
@@ -10,6 +10,7 @@ import { CommandStrip, recoveryPath } from '../components/CommandStrip'
 import type { IntegrationCommand, ReceiptRequest } from '../services/types'
 import { AmendPanel, OrderCommunicationsPanel, ReceiptReturnPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
+import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
 import * as decimal from '../utils/decimal'
@@ -27,7 +28,10 @@ export function PurchaseOrderList() {
   const [openOnly, setOpenOnly] = useUrlFlag('open_only')
   const supplierId = useUrlId('supplier_id')
 
-  const { data, loading, error } = useApi(
+  // Paged (F145): every order is reachable, not only the first hundred.
+  const [offset, setOffset] = useState(0)
+  useEffect(() => setOffset(0), [status, overdue, openOnly, supplierId])
+  const { data, loading, error, reload } = useApi(
     (signal) =>
       api.list<PurchaseOrder>(
         'v1/purchase-orders',
@@ -36,11 +40,12 @@ export function PurchaseOrderList() {
           overdue: overdue ? 1 : undefined,
           open_only: openOnly ? 1 : undefined,
           supplier_account_id: supplierId,
-          limit: 100,
+          limit: 50,
+          offset,
         },
         signal,
       ),
-    [scope?.cmp_id, scope?.fy_id, status, overdue, openOnly, supplierId],
+    [scope?.cmp_id, scope?.fy_id, status, overdue, openOnly, supplierId, offset],
     Boolean(scope),
   )
 
@@ -55,7 +60,7 @@ export function PurchaseOrderList() {
         )}
       </header>
 
-      {error && <Notice tone="danger" title="Could not load purchase orders">{error}</Notice>}
+      {error && <LoadFailed what="purchase orders" error={error} onRetry={reload} />}
 
       <Card
         title={`${data?.meta.total ?? 0} order${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}
@@ -100,6 +105,7 @@ export function PurchaseOrderList() {
             { key: 'total', header: 'Total', numeric: true, render: (row) => money(row.total_amount, row.currency_code) },
           ]}
         />
+        <Pager offset={offset} limit={50} total={data?.meta.total ?? 0} onChange={setOffset} />
       </Card>
     </div>
   )

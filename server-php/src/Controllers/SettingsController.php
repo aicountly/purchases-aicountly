@@ -58,13 +58,30 @@ final class SettingsController extends Controller
         'is_active',
     ];
 
+    private static function personName(\Aicountly\Api\Auth $auth, \Aicountly\Api\Context $ctx): ?string
+    {
+        $name = $auth->displayName();
+        if ($name !== $auth->uuid && trim($name) !== '') {
+            return $name;
+        }
+        $label = \Aicountly\Api\Db::scalar(
+            'SELECT member_label FROM ' . Permissions::TABLE_ASSIGNMENTS . " WHERE cmp_id = :cmp AND user_uuid = :uuid AND member_label IS NOT NULL AND member_label <> '' ORDER BY updated_at DESC LIMIT 1",
+            ['cmp' => $ctx->cmpId, 'uuid' => $auth->uuid],
+        );
+
+        return is_string($label) && trim($label) !== '' ? trim($label) : null;
+    }
+
     public static function session(): void
     {
         [$auth, $ctx] = self::enter();
 
         Http::data([
             'uuid'         => $auth->uuid,
-            'display_name' => $auth->displayName(),
+            // The portal's session carries no name (validatesession answers ids only), so the name is
+            // the one this company's access screen gave the person, else none — never the numeric
+            // portal id dressed up as a name (F310).
+            'display_name' => self::personName($auth, $ctx),
             'kind'         => $auth->kind,
             'is_owner'     => $auth->ownsCompany($ctx->cmpId),
             // Whether Manage named a role at all. A client that only knows
