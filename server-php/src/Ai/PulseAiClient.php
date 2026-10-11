@@ -141,10 +141,9 @@ final class PulseAiClient
      * Pulse's origin for the host this API is served from.
      *
      * An explicit PULSE_API_ORIGIN wins. Otherwise the rule ApiClient uses for
-     * Books and Inventory: a request arriving at a sandbox host (*.gh.aicountly.com,
-     * gh-*), at localhost, or with no host at all (the CLI) talks to the sandbox
-     * Pulse; everything else to production. Sandbox never reaches production by
-     * accident, and there is no second setting to keep in step.
+     * Books and Inventory: the environment this deployment is CONFIGURED as
+     * (AIC_ENVIRONMENT, else APP_ENV — Environment). The request's Host header is
+     * never read: the caller's session is relayed to this origin (A20).
      */
     public function origin(): string
     {
@@ -153,11 +152,8 @@ final class PulseAiClient
             : trim(Env::get('PULSE_API_ORIGIN'));
 
         if ($origin === '') {
-            $host = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
-            $host = explode(':', preg_replace('/^www\./', '', $host) ?? '')[0];
-            $sandbox = str_contains($host, '.gh.aicountly.com') || str_starts_with($host, 'gh-') || $host === ''
-                || str_contains($host, 'localhost') || str_starts_with($host, '127.');
-            $origin = $sandbox ? self::SANDBOX : self::PRODUCTION;
+            // From this deployment's configured environment, never the request's Host (A20).
+            $origin = \Aicountly\Api\Environment::name() === \Aicountly\Api\Environment::SANDBOX ? self::SANDBOX : self::PRODUCTION;
         }
 
         $origin = rtrim($origin, '/');

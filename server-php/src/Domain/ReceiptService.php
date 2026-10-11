@@ -446,7 +446,7 @@ final class ReceiptService
             'uncertain' => IntegrationCommand::uncertain($commandId, $lease, $message, $status),
             default     => IntegrationCommand::fail($commandId, $lease, $message, $status),
         };
-        $this->markReceipt($requestId, strtoupper($outcome), $message);
+        $this->markReceipt($requestId, strtoupper($outcome), IntegrationCommand::publicError($message, $status));
 
         Http::error(
             $outcome === 'blocked' ? 409 : 502,

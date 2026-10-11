@@ -258,7 +258,7 @@ final class BooksClient extends ApiClient
 
     public function accountLedger(Context $ctx, int $accountId, array $filters = []): array
     {
-        return $this->call('GET', 'reports/account-ledger' . self::query(['account_id' => $accountId] + $filters + $ctx->asQuery()));
+        return $this->call('GET', 'reports/account-ledger' . self::query(['acc_id' => $accountId] + $filters + $ctx->asQuery()));
     }
 
     public function accountSummary(Context $ctx, array $filters = []): array

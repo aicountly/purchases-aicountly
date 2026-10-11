@@ -171,6 +171,7 @@ if ($path === '' || $path === 'health') {
     // Reporting only the former is how a deploy went green on an app whose
     // every real endpoint answered 503.
     $database = Health::database();
+    $environment = Health::environment();
 
     send_json(200, [
         'status' => 'ok',
@@ -178,9 +179,12 @@ if ($path === '' || $path === 'health') {
         'env' => Env::get('APP_ENV', 'unknown'),
         'time' => gmdate('c'),
         'database' => $database,
+        // Which environment this deployment is configured as and whether every sibling base
+        // agrees with it (A20). A production API pointing at a sandbox Books is not usable.
+        'environment' => $environment,
         // One field to read when something is wrong. False means the site
         // is up and the product is not usable.
-        'usable' => $database['reachable'] && ($database['schema']['ready'] ?? false),
+        'usable' => $database['reachable'] && ($database['schema']['ready'] ?? false) && $environment['ok'],
     ]);
 }
 
