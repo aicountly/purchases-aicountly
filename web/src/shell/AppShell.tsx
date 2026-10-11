@@ -225,10 +225,10 @@ export function AppShell() {
 
           <div className="app-shell__user">
             <span className="app-shell__avatar" aria-hidden>
-              {initials(session?.display_name ?? '')}
+              {session?.display_name ? initials(session.display_name) : '•'}
             </span>
             <span className="app-shell__user-name" title={session?.display_name ?? undefined}>
-              {session?.display_name ?? '—'}
+              {session?.display_name ?? 'Signed in'}
             </span>
             <button type="button" className="app-shell__signout" onClick={signOut} aria-label="Log out">
               <LogOut size={15} aria-hidden />

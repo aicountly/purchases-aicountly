@@ -34,6 +34,64 @@ final class ReceiptLedger
     }
 
     /**
+     * The documents named, read from Inventory in one call per 500 (F402) — not one GET per GRN.
+     * state 'ok': by_id holds every document Inventory answered (one it left out is not this
+     * company's, or does not exist: a definite absence); 'unreadable': Inventory could not be
+     * asked or answered in a way that cannot be read — never taken as "all is well".
+     * An Inventory that ignores document_ids/include_lines (no lines on its rows) is read the old
+     * way, one document at a time.
+     *
+     * @param list<int> $documentIds
+     * @return array{state: 'ok'|'unreadable', by_id: array<int, array<string, mixed>>, why: ?string}
+     */
+    public static function documents(Context $ctx, InventoryClient $client, array $documentIds): array
+    {
+        $documentIds = array_values(array_unique(array_filter(array_map('intval', $documentIds), static fn (int $id) => $id > 0)));
+        $byId = [];
+        foreach (array_chunk($documentIds, 500) as $chunk) {
+            $response = $client->documentsByIds($ctx, $chunk);
+            $rows = $response['ok'] && is_array($response['body'] ?? null) ? ($response['body']['data'] ?? null) : null;
+            if (!is_array($rows) || !array_is_list($rows)) {
+                return ['state' => 'unreadable', 'by_id' => [], 'why' => (string) ($response['error'] ?? ('HTTP ' . $response['status']))];
+            }
+            $bulk = true;
+            foreach ($rows as $row) {
+                if (!is_array($row) || !isset($row['document_id'])) {
+                    return ['state' => 'unreadable', 'by_id' => [], 'why' => 'a document Inventory returned cannot be read'];
+                }
+                if (!array_key_exists('lines', $row)) {
+                    $bulk = false;
+                }
+            }
+            if (!$bulk) {
+                foreach ($chunk as $id) {
+                    $one = $client->document($ctx, $id);
+                    if (!$one['ok']) {
+                        if ((int) $one['status'] === 404 && is_array($one['body'] ?? null)) {
+                            continue;
+                        }
+
+                        return ['state' => 'unreadable', 'by_id' => [], 'why' => (string) ($one['error'] ?? ('HTTP ' . $one['status']))];
+                    }
+                    $doc = $one['body']['data'] ?? null;
+                    if (!is_array($doc) || !isset($doc['document_id'])) {
+                        return ['state' => 'unreadable', 'by_id' => [], 'why' => 'a document Inventory returned cannot be read'];
+                    }
+                    $byId[(int) $doc['document_id']] = $doc;
+                }
+                continue;
+            }
+            foreach ($rows as $row) {
+                if (in_array((int) $row['document_id'], $chunk, true)) {
+                    $byId[(int) $row['document_id']] = $row;
+                }
+            }
+        }
+
+        return ['state' => 'ok', 'by_id' => $byId, 'why' => null];
+    }
+
+    /**
      * @return array{
      *   reachable: bool,
      *   received_by_line: array<int, float>,
@@ -60,6 +118,16 @@ final class ReceiptLedger
         $discrepancies = [];
 
         $hasLegacy = false;
+        $wanted = [];
+        foreach ($receipts as $receipt) {
+            if ($receipt['source_document_type'] !== ReceiptService::LEGACY_SOURCE_TYPE && $receipt['applied_at'] !== null && $receipt['inventory_document_id'] !== null) {
+                $wanted[] = (int) $receipt['inventory_document_id'];
+            }
+        }
+        $read = $wanted === [] ? ['state' => 'ok', 'by_id' => [], 'why' => null] : self::documents($this->ctx, $client, $wanted);
+        if ($read['state'] !== 'ok') {
+            $reachable = false;
+        }
         foreach ($receipts as $receipt) {
             if ($receipt['source_document_type'] === ReceiptService::LEGACY_SOURCE_TYPE) {
                 $hasLegacy = true;
@@ -72,23 +140,17 @@ final class ReceiptLedger
                 continue; // rejected in full at the gate: nothing went to Inventory
             }
 
-            $response = $client->document($this->ctx, (int) $receipt['inventory_document_id']);
-            if (!$response['ok']) {
-                if ((int) $response['status'] === 404) {
-                    $discrepancies[] = [
-                        'kind'       => 'missing_in_inventory',
-                        'request_id' => (int) $receipt['request_id'],
-                        'receipt_no' => $receipt['receipt_no'],
-                        'detail'     => sprintf('GRN %s is counted on this order, but Inventory has no document %s.', $receipt['receipt_no'], $receipt['inventory_document_no'] ?? $receipt['inventory_document_id']),
-                    ];
-                    continue;
-                }
-                $reachable = false;
+            if ($read['state'] !== 'ok') {
                 continue;
             }
-            $document = $response['body']['data'] ?? [];
-            if (!is_array($document) || !isset($document['document_id'])) {
-                $reachable = false;
+            $document = $read['by_id'][(int) $receipt['inventory_document_id']] ?? null;
+            if ($document === null) {
+                $discrepancies[] = [
+                    'kind'       => 'missing_in_inventory',
+                    'request_id' => (int) $receipt['request_id'],
+                    'receipt_no' => $receipt['receipt_no'],
+                    'detail'     => sprintf('GRN %s is counted on this order, but Inventory has no document %s.', $receipt['receipt_no'], $receipt['inventory_document_no'] ?? $receipt['inventory_document_id']),
+                ];
                 continue;
             }
             $seen[(int) $document['document_id']] = true;

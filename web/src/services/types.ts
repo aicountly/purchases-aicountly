@@ -71,6 +71,8 @@ export interface RfqLine {
 export interface RfqInvitation {
   invitation_id: number
   supplier_account_id: number
+  /** Smart Books' name for the supplier when they were asked (F275). */
+  supplier_name: string | null
   status: string
   invited_at: string
   responded_at: string | null
@@ -120,11 +122,14 @@ export interface Rfq {
   invitations: RfqInvitation[]
   quotes: Quote[]
   awards: BidAward[]
+  /** Purchases sends nothing to suppliers; this says so (F226). */
+  delivery?: { sent_by_purchases: boolean; note: string }
 }
 
 export interface ComparisonColumn {
   quote_id: number
   supplier_account_id: number
+  supplier_name: string | null
   revision_no: number
   currency_code: string
   payment_terms: string | null
@@ -197,6 +202,8 @@ export interface IntegrationCommand {
   last_error: string | null
   external_reference: Record<string, unknown> | string | null
   last_attempt_at: string | null
+  /** When the attempt holding a POSTING command loses its claim; past it, the attempt is presumed dead. */
+  lease_expires_at?: string | null
   completed_at: string | null
 }
 
@@ -239,6 +246,8 @@ export interface ReceiptRequest {
   pending_return?: { kind: 'return' | 'reverse'; reason: string | null } | string | null
   return_history?: Array<{ kind: string; action: string | null; reason: string | null; applied_at: string }> | string | null
   reversed_at?: string | null
+  /** REQUESTED/POSTING with no live lease: an attempt died; Reconcile and Retry are safe (F301). */
+  recoverable?: boolean
 }
 
 export interface ReceiptAppliedLine {
@@ -300,8 +309,28 @@ export interface PurchaseOrder {
   communications: PoCommunication[]
   /** What a new receipt on this order does to stock: the company's receive_stock_at_grn today. */
   grn_stock_effect?: 'physical' | 'challan_only'
+  /** Applied amendments counted (F167). */
+  version_no?: number
+  /** The amendment waiting for approval, if one is. */
+  amendment_pending_id?: number | null
+  amendments?: PoAmendment[]
   /** Who last switched the company's receipt stock mode, and when (null: never changed since set-up). */
   grn_stock_effect_changed?: { by: string | null; at: string | null }
+}
+
+export interface PoAmendment {
+  amendment_id: number
+  from_version: number
+  to_version: number
+  status: 'PENDING_APPROVAL' | 'APPLIED' | 'REJECTED' | 'WITHDRAWN'
+  reason: string
+  value_before: string
+  value_after: string
+  requested_by: string
+  decided_by: string | null
+  decided_at: string | null
+  decision_note: string | null
+  created_at: string
 }
 
 export interface PoProgress {
@@ -368,6 +397,8 @@ export interface MatchResult {
 export interface BillRequest extends BillRequestSummary {
   po_id: number | null
   supplier_account_id: number
+  /** Smart Books' name for the supplier, resolved by the API (F275); null when Books could not say. */
+  supplier_name?: string | null
   requested_lines: unknown
   receipt_references: unknown
   bill_kind: 'po' | 'direct' | 'service'
@@ -375,6 +406,9 @@ export interface BillRequest extends BillRequestSummary {
   posting_date: string | null
   revision: number
   stock_effect: string | null
+  /** The buyer owes this GST under reverse charge (F220). */
+  is_reverse_charge?: boolean
+  rcm_basis?: string | null
   /** What Books actually recorded, read back after posting — not an HTTP 200. */
   posting_check: { verified: boolean; checked_at: string; problems: string[] } | null
   matches: MatchResult[]
@@ -396,6 +430,8 @@ export interface PurchaseReturn {
   return_date: string
   po_id: number | null
   supplier_account_id: number
+  /** Smart Books' name for the supplier, resolved by the API (F275); null when Books could not say. */
+  supplier_name?: string | null
   status: string
   return_kind: 'physical' | 'financial'
   expect_replacement: boolean
@@ -428,6 +464,8 @@ export interface Claim {
   claim_no: string
   claim_date: string
   supplier_account_id: number
+  /** Smart Books' name for the supplier, resolved by the API (F275); null when Books could not say. */
+  supplier_name?: string | null
   po_id: number | null
   claim_kind: string
   status: string
@@ -445,6 +483,8 @@ export interface Claim {
 export interface SupplierProfile {
   profile_id: number
   supplier_account_id: number
+  /** Smart Books' name for the supplier, resolved by the API (F275); null when Books could not say. */
+  supplier_name?: string | null
   qualification_status: string
   is_preferred: boolean
   approved_categories: unknown

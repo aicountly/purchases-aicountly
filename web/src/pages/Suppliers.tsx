@@ -5,6 +5,7 @@ import { useApi } from '../hooks/useApi'
 import { usePurchases } from '../context/PurchasesContext'
 import { SupplierPicker } from '../components/LivePicker'
 import { SupplierContactCard } from './supplier/SupplierContactCard'
+import { LoadFailed } from '../components/LoadFailed'
 import { Card, DataTable, money, Notice, qty, Select, StatCard, StatusBadge } from '../ui'
 
 const STATUS_BADGE: Record<string, string> = {
@@ -71,6 +72,9 @@ export default function Suppliers() {
       </Notice>
 
       {error && <Notice tone="danger" title="That did not work">{error}</Notice>}
+      {/* A failed load is not "no profiles yet" (F146). */}
+      {profiles.error && <LoadFailed what="supplier profiles" error={profiles.error} onRetry={profiles.reload} />}
+      {scorecard.error && <LoadFailed what="this supplier's scorecard" error={scorecard.error} onRetry={scorecard.reload} />}
 
       {can('supplier.manage') && (
         <Card title="Add a supplier to the procurement list">
@@ -84,9 +88,10 @@ export default function Suppliers() {
           rows={profiles.data?.data ?? []}
           rowKey={(row) => row.profile_id}
           onRowClick={(row) => setOpenId(row.supplier_account_id === openId ? null : row.supplier_account_id)}
-          empty="No procurement profiles yet."
+          empty={profiles.error ? "Not loaded — see above." : "No procurement profiles yet."}
           columns={[
-            { key: 'account', header: 'Books account', render: (row) => `#${row.supplier_account_id}` },
+            { key: 'name', header: 'Supplier', render: (row) => row.supplier_name ?? 'Name unavailable from Smart Books' },
+            { key: 'account', header: 'Books ledger', render: (row) => `#${row.supplier_account_id}` },
             { key: 'status', header: 'Qualification', render: (row) => <StatusBadge status={STATUS_BADGE[row.qualification_status] ?? 'DRAFT'} /> },
             { key: 'preferred', header: 'Preferred', render: (row) => (row.is_preferred ? 'Yes' : '—') },
             { key: 'lead', header: 'Lead days', numeric: true, render: (row) => row.operational_lead_days ?? '—' },

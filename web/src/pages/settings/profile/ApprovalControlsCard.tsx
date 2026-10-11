@@ -15,7 +15,9 @@ import type { ProfileApprovals, ProfileErrors, ProfileForm } from './profileMode
 
 function thresholdHint(raw: string, noun: string): string {
   const value = Number(String(raw).trim() || 0)
-  if (!Number.isFinite(value) || value <= 0) return '0 means always approve'
+  // 0 is no threshold: an order or requisition is approved the moment it is submitted, by
+  // nobody but the person submitting it (F025) — said plainly, not as "always approve".
+  if (!Number.isFinite(value) || value <= 0) return `0: ${noun.toLowerCase()} are approved on submit, whatever the value — no second person checks them`
   return `${noun} above ${money(value)} need approval`
 }
 
@@ -87,7 +89,7 @@ export function ApprovalControlsCard({
         />
         <span>
           <strong>Only allow purchase orders to approved suppliers</strong>
-          <small>Restrict PO creation to approved suppliers only</small>
+          <small>Checked when an order is created, submitted, approved and issued. Blacklisted or suspended suppliers are refused whether or not this is on.</small>
         </span>
       </label>
 

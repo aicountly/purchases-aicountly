@@ -15,11 +15,13 @@ namespace Aicountly\Api;
  *
  *   PENDING ──▶ POSTING ──▶ COMPLETED    the other product accepted; its reference is stored
  *                  │
- *                  ├──────▶ FAILED       it answered with a server error: nothing to
- *                  │                     suggest it acted, and the same key may be sent again
- *                  ├──────▶ UNCERTAIN    no answer at all, or "still processing": it may have
- *                  │                     acted. Retrying on the same key is safe and settles
- *                  │                     it; so does reconciling by our source identity
+ *                  ├──────▶ FAILED       it said nothing was written (a session, a permission,
+ *                  │                     a rate limit, a busy lock, a gate): the same key may
+ *                  │                     be sent again
+ *                  ├──────▶ UNCERTAIN    no answer, an unreadable answer, "still processing",
+ *                  │                     or a server error after the request arrived: it may
+ *                  │                     have acted. Retrying on the same key is safe and
+ *                  │                     settles it; so does reconciling by our source identity
  *                  └──────▶ BLOCKED      a business refusal. Retrying will not help;
  *                                        something has to change, and a changed request is a
  *                                        new revision with a new key
@@ -327,30 +329,71 @@ final class IntegrationCommand
     }
 
     /**
-     * Classify an ApiClient response into the command outcome it implies.
+     * Error codes a receiver sends only BEFORE it writes anything — a gate it could not pass
+     * (company access, scope, integrity hold, configuration) or a lock it could not take
+     * (stock_busy: "Nothing was changed — try again"). A 5xx or 409 carrying one of these is
+     * FAILED: the same key may be sent again and cannot act twice. Every other 5xx after a
+     * write is UNCERTAIN (F007, F283).
+     */
+    public const NO_CHANGE_CODES = [
+        'stock_busy', 'company_access_unavailable', 'company_scope_unavailable', 'context_unavailable',
+        'integrity_hold', 'integration_not_configured', 'database_unavailable', 'service_unavailable',
+        'maintenance', 'manage_unavailable', 'fy_unavailable', 'period_unverified', 'idempotency_unavailable',
+        'not_migrated', 'grants_unavailable',
+    ];
+
+    /** Codes that say "your earlier request with this key is still being processed". */
+    public const IN_FLIGHT_CODES = ['request_in_progress', 'draft_post_in_progress', 'in_flight'];
+
+    /**
+     * Classify an ApiClient response to a WRITE into the command outcome it implies.
+     *
+     *   completed  a 2xx whose body could be read. A 2xx that is not JSON (a splash page, a WAF,
+     *              a proxy's HTML) proves nothing about what the receiver did: UNCERTAIN (F234)
+     *   uncertain  no answer, a timeout, "still processing" (an in-flight code, or Books'
+     *              lost-claim 409 "already being posted", which has no code), or a server error
+     *              after the request arrived — the receiver may have committed and then failed
+     *              (Inventory's books_handoff_unresolved, a fatal after commit, a gateway 502).
+     *              Retry on the same key settles it; so does Reconcile. Never withdrawable.
+     *   failed     nothing was written and the same request can succeed later: a session to
+     *              renew (401), a permission to grant (403), a rate limit (429), or a refusal
+     *              whose code or details.retryable says nothing changed (stock_busy 409, a 503
+     *              from a gate) — F212
+     *   blocked    a business refusal. Retrying will not help; something has to change.
      *
      * @param array{ok:bool, status:int, body:?array, error:?string} $response
      * @return 'completed'|'failed'|'uncertain'|'blocked'
      */
     public static function classify(array $response): string
     {
-        if ($response['ok']) {
-            return 'completed';
-        }
         $status = (int) $response['status'];
-        // A 2xx whose body could not be read (ApiClient: unreadable_response): the receiver may
-        // have applied it. Same key, reconcile on retry; never posted, never a refusal (A10).
+        // A 2xx whose body could not be read, as the HTTP client core marks it (E8-ID A10:
+        // outcome_unknown): the receiver may have applied it. Same key, reconcile on retry.
         if (!empty($response['outcome_unknown'])) {
             return 'uncertain';
         }
-        $code = (string) ($response['body']['error']['code'] ?? $response['body']['code'] ?? '');
-        if ($status === 0 || $code === 'request_in_progress' || $status === 408 || $status === 504) {
+        if ($response['ok']) {
+            return is_array($response['body'] ?? null) ? 'completed' : 'uncertain';
+        }
+        $body = is_array($response['body'] ?? null) ? $response['body'] : null;
+        $code = (string) ($body['error']['code'] ?? $body['code'] ?? '');
+        $retryable = $body['error']['details']['retryable'] ?? $body['details']['retryable'] ?? $body['retryable'] ?? null;
+        $message = strtolower((string) ($response['error'] ?? ''));
+
+        if ($status === 0 || $status === 408 || $status === 504 || in_array($code, self::IN_FLIGHT_CODES, true)) {
             return 'uncertain';
         }
-        if ($status === 401 || $status === 403 || $status === 429 || $status >= 500) {
-            // A session to renew, a permission to grant, a rate limit, a server fault:
-            // nothing was written, and the same request can succeed later.
+        if ($status === 409 && $code === '' && (str_contains($message, 'already being posted') || str_contains($message, 'still being posted'))) {
+            return 'uncertain';
+        }
+        if (in_array($code, self::NO_CHANGE_CODES, true) || ($retryable === true && $status < 500)) {
             return 'failed';
+        }
+        if ($status === 401 || $status === 403 || $status === 429) {
+            return 'failed';
+        }
+        if ($status >= 500) {
+            return 'uncertain';
         }
 
         return 'blocked';

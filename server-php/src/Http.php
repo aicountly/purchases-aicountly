@@ -164,6 +164,25 @@ final class Http
         return $default;
     }
 
+    /**
+     * A YYYY-MM-DD parameter that is a real date, or null when it was not given. Anything else is
+     * the caller's mistake and answered 422 naming it — it used to reach PostgreSQL and come back
+     * as "the database is not reachable" (F266).
+     */
+    public static function dateParam(string $name): ?string
+    {
+        $raw = self::param($name);
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+        $parts = explode('-', $raw);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $raw) !== 1 || !checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
+            self::validationFailed(sprintf('"%s" is not a date (YYYY-MM-DD).', mb_substr($raw, 0, 40)), ['field' => $name]);
+        }
+
+        return $raw;
+    }
+
     public static function intParam(string $name, ?int $default = null): ?int
     {
         $raw = self::param($name);

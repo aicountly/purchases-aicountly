@@ -356,7 +356,7 @@ export function BillsPayablesWorkbench({
                     header: 'Supplier',
                     render: (row) => (
                       <>
-                        {row.supplier_name ?? `Account ${row.supplier_account_id}`}
+                        {row.supplier_name ?? `Ledger #${row.supplier_account_id}`}
                         <span className="purchase-table__sub">{row.bill_ref ?? '—'}</span>
                       </>
                     ),

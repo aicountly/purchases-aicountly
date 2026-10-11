@@ -8,11 +8,12 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { api, setScope, type CompanyScope } from '../services/api'
+import { api, ApiError, setScope, type CompanyScope } from '../services/api'
 
 export interface PurchasesSession {
   uuid: string
-  display_name: string
+  /** Null when neither the portal nor this company's access screen gave a name (F310). */
+  display_name: string | null
   kind: 'user' | 'service'
   is_owner: boolean
   /**
@@ -29,12 +30,15 @@ export interface PurchasesSession {
 
 interface PurchasesContextValue {
   scope: CompanyScope | null
-  setCompanyScope: (scope: CompanyScope) => void
+  /** null forgets the chosen company and returns to the launcher. */
+  setCompanyScope: (scope: CompanyScope | null) => void
   session: PurchasesSession | null
   /** Has this user got that permission? Owners hold everything. */
   can: (permission: string) => boolean
   loading: boolean
   error: string | null
+  /** Why opening the company failed: company_access_denied (Manage said no), context_unavailable (could not ask), … */
+  errorCode: string | null
   reload: () => void
 }
 
@@ -61,6 +65,7 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<PurchasesSession | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorCode, setErrorCode] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
 
   // The API module reads the scope on every call, so it is registered as soon
@@ -69,9 +74,13 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
     setScope(scope)
   }, [scope])
 
-  const setCompanyScope = useCallback((next: CompanyScope) => {
+  const setCompanyScope = useCallback((next: CompanyScope | null) => {
     setScopeState(next)
     try {
+      if (next === null) {
+        window.localStorage.removeItem(SCOPE_KEY)
+        return
+      }
       window.localStorage.setItem(SCOPE_KEY, JSON.stringify(next))
     } catch {
       /* storage refused; the choice still applies for this visit */
@@ -89,6 +98,7 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
 
     setLoading(true)
     setError(null)
+    setErrorCode(null)
 
     api
       .one<PurchasesSession>('v1/session', undefined, controller.signal)
@@ -98,6 +108,7 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
       .catch((err: Error) => {
         if (cancelled || controller.signal.aborted) return
         setError(err.message)
+        setErrorCode(err instanceof ApiError ? err.code : null)
         setSession(null)
       })
       .finally(() => {
@@ -127,9 +138,10 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
       can,
       loading,
       error,
+      errorCode,
       reload: () => setReloadToken((n) => n + 1),
     }),
-    [scope, setCompanyScope, session, can, loading, error],
+    [scope, setCompanyScope, session, can, loading, error, errorCode],
   )
 
   return <PurchasesContextObject.Provider value={value}>{children}</PurchasesContextObject.Provider>

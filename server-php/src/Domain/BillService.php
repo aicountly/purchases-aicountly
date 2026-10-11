@@ -95,6 +95,9 @@ final class BillService
             Http::validationFailed('The due date cannot be before the invoice date.', ['field' => 'due_date']);
         }
         $postingDate = $this->postingDate($input['posting_date'] ?? null, $invoiceDate);
+        // A part of a supplier invoice that spans orders or kinds of goods receipt (F170): the
+        // invoice number stays the supplier's; part 2 onwards says why.
+        [$invoicePart, $partReason] = self::invoicePart($input);
 
         $poId = self::id($input['po_id'] ?? null);
         $lines = $this->normaliseLines($input['lines'] ?? [], $poId);
@@ -102,11 +105,20 @@ final class BillService
             Http::validationFailed('A bill needs at least one line.', ['field' => 'lines']);
         }
         $kind = $poId !== null ? 'po' : (array_filter($lines, static fn (array $l) => !$l['is_service'] && $l['item_id'] !== null) === [] ? 'service' : 'direct');
+        // Goods bought with no order are received by the bill itself. Over goods a receipt of this
+        // supplier already brought in, that receives them twice (A09): asked of Inventory now, and
+        // only a stated confirmation that these are different goods lets the bill go ahead.
+        $openGrnConfirmation = $kind === 'direct' ? $this->openReceiptCheck($supplierId, $lines, $input) : null;
         // The GSTIN printed on the invoice, when the supplier bills from a registration other
         // than the one on their Books ledger: its state is where the goods are supplied from.
         $supplierGstin = PlaceOfSupply::normaliseGstin($input['supplier_gstin'] ?? null, 'supplier_gstin');
+        // The supplier as Books holds it (a creditor of this company; F449), and its GST identity:
+        // a typed GSTIN that is not the ledger's needs a reason, and reverse charge defaults from it.
+        $ledger = (new MasterCheck($this->ctx, $this->auth))->supplier($supplierId);
+        $gstinReason = $this->gstinReason($ledger, $supplierGstin, $input);
+        [$reverseCharge, $rcmBasis] = self::reverseCharge($input, $ledger, $lines);
 
-        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input, $supplierGstin): int {
+        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input, $supplierGstin, $openGrnConfirmation, $gstinReason, $reverseCharge, $rcmBasis, $invoicePart, $partReason): int {
             if ($poId !== null) {
                 $po = PoProgress::lock($poId, $this->ctx->cmpId);
                 if ($po === null) {
@@ -120,17 +132,25 @@ final class BillService
 
             // A duplicate supplier invoice number is the oldest payables fraud and the
             // commonest honest mistake. Caught here, and by a unique index behind it.
-            $duplicate = Db::first(
-                "SELECT request_id FROM purchase_bill_requests
+            $parts = Db::all(
+                "SELECT request_id, invoice_part FROM purchase_bill_requests
                  WHERE cmp_id = :cmp AND supplier_account_id = :supplier
-                   AND lower(supplier_invoice_no) = lower(:invoice) AND status <> 'CANCELLED'",
+                   AND lower(supplier_invoice_no) = lower(:invoice) AND status <> 'CANCELLED'
+                 ORDER BY invoice_part",
                 ['cmp' => $this->ctx->cmpId, 'supplier' => $supplierId, 'invoice' => $invoiceNo],
             );
-            if ($duplicate !== null) {
-                Http::conflict(
-                    'A bill with that invoice number has already been entered for this supplier.',
-                    ['existing_request_id' => (int) $duplicate['request_id']],
-                );
+            foreach ($parts as $existing) {
+                if ((int) $existing['invoice_part'] === $invoicePart) {
+                    Http::conflict(
+                        $invoicePart === 1
+                            ? 'A bill with that invoice number has already been entered for this supplier. If this invoice covers another order or another kind of goods receipt, enter it as part 2 of the same invoice and say why.'
+                            : sprintf('Part %d of this supplier invoice has already been entered.', $invoicePart),
+                        ['existing_request_id' => (int) $existing['request_id'], 'invoice_part' => $invoicePart],
+                    );
+                }
+            }
+            if ($invoicePart > 1 && !in_array(1, array_map(static fn ($r) => (int) $r['invoice_part'], $parts), true)) {
+                Http::validationFailed('Enter part 1 of this supplier invoice first; a later part belongs to an invoice already entered.', ['field' => 'invoice_part']);
             }
 
             try {
@@ -142,13 +162,19 @@ final class BillService
                     'bill_kind'             => $kind,
                     'supplier_account_id'   => $supplierId,
                     'supplier_invoice_no'   => $invoiceNo,
+                    'invoice_part'          => $invoicePart,
+                    'invoice_part_reason'   => $partReason,
                     'supplier_invoice_date' => $invoiceDate,
                     'supplier_gstin'        => $supplierGstin,
+                    'supplier_gstin_reason' => $gstinReason,
+                    'is_reverse_charge'     => $reverseCharge,
+                    'rcm_basis'             => $rcmBasis,
                     'posting_date'          => $postingDate === $invoiceDate ? null : $postingDate,
                     'due_date'              => $dueDate,
                     'status'                => 'MATCHING',
                     'requested_lines'       => $lines,
                     'receipt_references'    => is_array($input['receipt_references'] ?? null) ? $input['receipt_references'] : [],
+                    'open_grn_confirmation' => $openGrnConfirmation,
                     'requested_by'          => $this->auth->uuid,
                 ], 'request_id');
             } catch (\PDOException $e) {
@@ -163,9 +189,7 @@ final class BillService
         $match = (new ThreeWayMatchService($this->ctx, $this->auth))->run($bill);
 
         Db::update('purchase_bill_requests', [
-            'status'     => $match['verdict'] === ThreeWayMatchService::BLOCKED || $match['verdict'] === ThreeWayMatchService::REVIEW_REQUIRED
-                ? 'EXCEPTION'
-                : 'MATCHED',
+            'status'     => ThreeWayMatchService::billStatusFor((int) $match['match_id']),
             'updated_at' => self::now(),
         ], ['request_id' => $requestId]);
 
@@ -244,8 +268,16 @@ final class BillService
             if ($bill['status'] === 'POSTED') {
                 Http::conflict('That bill has already been posted to Smart Books.');
             }
-            if ($bill['status'] === 'CANCELLED') {
+            if ($bill['status'] === 'CANCELLED' || $bill['cancelled_at'] !== null) {
+                // cancelled_at is checked on its own too: a cancelled bill is never posted, whatever
+                // its status column was later made to say (F228).
                 Http::conflict('That bill was cancelled.');
+            }
+            if ($bill['status'] === 'REJECTED') {
+                Http::error(409, 'match_exception_rejected', 'A match exception on this bill was rejected, so it cannot be posted as it stands. Revise the bill (a new revision is matched afresh) or cancel it.', ['request_id' => $requestId, 'revise' => true]);
+            }
+            if (in_array($bill['status'], ['DRAFT', 'MATCHING'], true)) {
+                Http::conflict('This bill has not been matched yet. Re-run the match, then post it.', ['request_id' => $requestId]);
             }
             if ($bill['po_id'] !== null) {
                 $po = PoProgress::lock((int) $bill['po_id'], $this->ctx->cmpId);
@@ -392,29 +424,46 @@ final class BillService
         $supplierGstin = array_key_exists('supplier_gstin', $input)
             ? PlaceOfSupply::normaliseGstin($input['supplier_gstin'], 'supplier_gstin')
             : ($bill['supplier_gstin'] ?? null);
+        $ledger = (new MasterCheck($this->ctx, $this->auth))->supplier((int) $bill['supplier_account_id']);
+        $gstinReason = $supplierGstin === ($bill['supplier_gstin'] ?? null) && !array_key_exists('supplier_gstin_reason', $input)
+            ? ($bill['supplier_gstin_reason'] ?? null)
+            : $this->gstinReason($ledger, $supplierGstin, $input);
+        [$reverseCharge, $rcmBasis] = array_key_exists('reverse_charge', $input)
+            ? self::reverseCharge($input, $ledger, $lines)
+            : [self::truthy($bill['is_reverse_charge'] ?? false), $bill['rcm_basis'] ?? null];
+        // A direct bill Inventory refused because a receipt of the supplier holds the same goods
+        // (open_inward_challan) is revised with the confirmation, or with other lines.
+        $openGrnConfirmation = $bill['po_id'] === null && array_filter($lines, static fn (array $l) => empty($l['is_service']) && !empty($l['item_id'])) !== []
+            ? $this->openReceiptCheck((int) $bill['supplier_account_id'], $lines, $input, $bill['open_grn_confirmation'] === null ? null : Db::jsonColumn($bill['open_grn_confirmation']))
+            : null;
 
-        $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate, $postingDate, $supplierGstin): int {
+        $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate, $postingDate, $supplierGstin, $openGrnConfirmation, $gstinReason, $reverseCharge, $rcmBasis): int {
             $locked = Db::first(
                 'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
                 ['id' => $requestId, 'cmp' => $this->ctx->cmpId],
             );
-            if ($locked['status'] !== 'BLOCKED') {
-                Http::conflict('Only a bill Smart Books refused can be revised; retry anything else as it stands.');
+            if (!in_array($locked['status'], ['BLOCKED', 'REJECTED'], true)) {
+                Http::conflict('Only a bill Smart Books refused, or one whose match exception was rejected, can be revised; retry anything else as it stands.');
             }
             $from = (int) $locked['revision'];
             // The refused revision is finished with: it leaves the strip of open work, and
             // can never be sent again under its old key.
             $command = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_BILL, 'bill_request', $requestId, $from);
-            if ($command !== null) {
-                IntegrationCommand::withdraw((int) $command['command_id'], 'Superseded by revision ' . ($from + 1) . '.', 'superseded');
+            if ($command !== null && $command['status'] !== IntegrationCommand::CANCELLED
+                && !IntegrationCommand::withdraw((int) $command['command_id'], 'Superseded by revision ' . ($from + 1) . '.', 'superseded')) {
+                Http::conflict('Smart Books may already hold this revision of the bill. Retry it to learn the outcome before revising.', ['request_id' => $requestId]);
             }
             Db::update('purchase_bill_requests', [
                 'revision'              => $from + 1,
                 'requested_lines'       => $lines,
                 'supplier_invoice_date' => $invoiceDate,
                 'supplier_gstin'        => $supplierGstin,
+                'supplier_gstin_reason' => $gstinReason,
+                'is_reverse_charge'     => $reverseCharge,
+                'rcm_basis'             => $rcmBasis,
                 'posting_date'          => $postingDate === $invoiceDate ? null : $postingDate,
                 'due_date'              => $dueDate,
+                'open_grn_confirmation' => $openGrnConfirmation,
                 'stock_effect'          => null,
                 'stock_settlements'     => null,
                 'status'                => 'MATCHING',
@@ -427,7 +476,7 @@ final class BillService
 
         Audit::record($this->ctx, $this->auth, 'bill.revised', 'bill_request', $requestId, ['revision' => $revision - 1], ['revision' => $revision], self::text($input['note'] ?? null) ?? '');
 
-        return $this->rematch($requestId);
+        return $this->matchAgain($requestId);
     }
 
     /**
@@ -442,6 +491,26 @@ final class BillService
         $reason = self::text($input['reason'] ?? null);
         if ($reason === null) {
             Http::validationFailed('Say why this bill is being cancelled.', ['field' => 'reason']);
+        }
+
+        // A bill whose post FAILED is withdrawn only once Smart Books shows no voucher for this
+        // supplier's invoice (F007): "nothing written" may have been a server error after Books
+        // committed, under the rules before October 2026. A refusal (BLOCKED) is Books' own
+        // definite answer and needs no second look. Asked before any lock is taken.
+        $entered = $this->find($requestId);
+        $sent = $entered === [] ? null : IntegrationCommand::latest($this->ctx->cmpId, self::COMMAND_BILL, 'bill_request', $requestId);
+        if ($sent !== null && $sent['status'] === IntegrationCommand::FAILED && (int) ($sent['attempts'] ?? 0) > 0) {
+            $held = $this->booksHolds($entered);
+            if ($held['state'] === 'unreadable') {
+                Http::error(503, 'books_unavailable', 'Smart Books could not confirm that it holds no voucher for this bill, so it has not been cancelled. Nothing has changed; try again.', ['request_id' => $requestId, 'retryable' => true, 'detail' => $held['why']]);
+            }
+            if ($held['state'] === 'found') {
+                Http::error(409, 'books_holds_bill', sprintf(
+                    'Smart Books holds voucher %s for this supplier\'s invoice %s, so the bill was not cancelled. Post it again: the same request cannot post twice, and the bill is settled from what Books recorded.',
+                    $held['voucher_no'] ?? ('#' . ($held['voucher_id'] ?? '?')),
+                    $entered['supplier_invoice_no'],
+                ), ['request_id' => $requestId, 'books_voucher_id' => $held['voucher_id'], 'retryable' => true]);
+            }
         }
 
         Db::transaction(function () use ($requestId, $reason): void {
@@ -478,6 +547,177 @@ final class BillService
         return $this->find($requestId);
     }
 
+    /**
+     * Whether Smart Books' purchase register shows a voucher for this bill — the supplier's invoice
+     * number as its bill reference, for this supplier, in the bill's year.
+     *
+     * @param array<string, mixed> $bill
+     * @return array{state: 'found'|'absent'|'unreadable', voucher_id: ?int, voucher_no: ?string, why: string}
+     */
+    private function booksHolds(array $bill): array
+    {
+        $scope = Context::of((int) $bill['cmp_id'], (int) $bill['fy_id'], 0);
+        $reference = trim((string) $bill['supplier_invoice_no']);
+        $register = (new BooksClient())->withSession($this->auth->sesKey())->registers($scope, [
+            'vch_type_id' => BooksClient::VCH_PURCHASE, 'bill_ref' => $reference,
+        ]);
+        $rows = $register['ok'] && is_array($register['body'] ?? null) ? ($register['body']['data'] ?? null) : null;
+        if (!is_array($rows)) {
+            return ['state' => 'unreadable', 'voucher_id' => null, 'voucher_no' => null, 'why' => (string) ($register['error'] ?? ('HTTP ' . (int) $register['status']))];
+        }
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $party = (int) ($row['party_acc_id'] ?? $row['acc_id'] ?? 0);
+            if (strcasecmp(trim((string) ($row['bill_ref'] ?? '')), $reference) === 0 && ($party === 0 || $party === (int) $bill['supplier_account_id'])) {
+                return ['state' => 'found', 'voucher_id' => isset($row['vch_txn_id']) ? (int) $row['vch_txn_id'] : null, 'voucher_no' => isset($row['vch_number']) ? (string) $row['vch_number'] : null, 'why' => ''];
+            }
+        }
+
+        return ['state' => 'absent', 'voucher_id' => null, 'voucher_no' => null, 'why' => ''];
+    }
+
+    /**
+     * Inventory's open goods receipts of this supplier for the items a direct bill names — the
+     * goods that bill would receive a second time (A09, F010). None: null. Some, unconfirmed: 409
+     * open_goods_receipts naming them, with the order each belongs to when it is one of ours, so
+     * the bill can be entered against that order instead. Confirmed (confirm_no_open_grn with a
+     * reason of at least 10 characters): the confirmation to keep on the bill. Inventory cannot be
+     * asked: 503 — a goods bill is not entered blind.
+     *
+     * @param list<array<string, mixed>> $lines normalised bill lines
+     * @param array<string, mixed>       $input
+     * @param array<string, mixed>|null  $earlier a confirmation already on the bill
+     * @return array<string, mixed>|null
+     */
+    private function openReceiptCheck(int $supplierId, array $lines, array $input, ?array $earlier = null): ?array
+    {
+        $items = [];
+        foreach ($lines as $line) {
+            if (empty($line['is_service']) && !empty($line['item_id'])) {
+                $items[(int) $line['item_id']] = true;
+            }
+        }
+        if ($items === []) {
+            return null;
+        }
+        $response = (new InventoryClient())->withService($this->auth->uuid)->pendingQuantities($this->ctx, [
+            'kind' => 'challan', 'direction' => 'in', 'party_ref' => $supplierId, 'status' => 'open,partial',
+            'include' => 'none', 'limit' => 500,
+        ]);
+        $rows = $response['ok'] && is_array($response['body'] ?? null) ? ($response['body']['data'] ?? null) : null;
+        if (!is_array($rows)) {
+            Http::error(503, 'inventory_unavailable', 'Inventory could not be asked whether goods of this supplier are already in on an unbilled receipt, so this bill was not entered. Nothing has changed; try again.', ['retryable' => true, 'detail' => (string) ($response['error'] ?? ('HTTP ' . (int) $response['status']))]);
+        }
+
+        $open = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || !isset($items[(int) ($row['item_id'] ?? 0)]) || (float) ($row['qty_open'] ?? 0) <= 0.00005) {
+                continue;
+            }
+            $documentId = (int) ($row['document_id'] ?? 0);
+            $ours = Db::first(
+                'SELECT r.request_id, r.receipt_no, p.po_id, p.po_no FROM purchase_receipt_requests r
+                   JOIN purchase_orders p ON p.po_id = r.po_id
+                  WHERE r.cmp_id = :cmp AND r.inventory_document_id = :doc',
+                ['cmp' => $this->ctx->cmpId, 'doc' => $documentId],
+            );
+            $open[] = array_filter([
+                'inventory_document_id' => $documentId,
+                'document_no'           => $row['document_no'] ?? null,
+                'document_date'         => $row['document_date'] ?? null,
+                'item_id'               => (int) $row['item_id'],
+                'open_qty'              => round((float) $row['qty_open'], 4),
+                'receipt_no'            => $ours['receipt_no'] ?? null,
+                'po_id'                 => isset($ours['po_id']) ? (int) $ours['po_id'] : null,
+                'po_no'                 => $ours['po_no'] ?? null,
+            ], static fn ($v) => $v !== null);
+        }
+        if ($open === []) {
+            return null;
+        }
+
+        $reason = self::text($input['confirm_no_open_grn_reason'] ?? null);
+        if (empty($input['confirm_no_open_grn']) || $reason === null) {
+            if ($earlier !== null && !empty($earlier['confirmed'])) {
+                return $earlier;
+            }
+            $names = array_values(array_unique(array_map(static fn (array $o) => (string) ($o['receipt_no'] ?? $o['document_no'] ?? ('#' . $o['inventory_document_id'])), $open)));
+            $orders = array_values(array_unique(array_filter(array_map(static fn (array $o) => $o['po_no'] ?? null, $open))));
+            Http::error(409, 'open_goods_receipts', sprintf(
+                'Goods receipt%s %s of this supplier already brought in %s and %s not billed. A bill with no order would receive them again.%s If these are different goods, enter the bill again confirming that, with the reason.',
+                count($names) === 1 ? '' : 's',
+                implode(', ', $names),
+                count($open) === 1 ? 'this item' : 'these items',
+                count($names) === 1 ? 'is' : 'are',
+                $orders !== [] ? ' Enter the bill against ' . implode(', ', $orders) . ' instead.' : ' Bill against the receipt in Smart Books instead.',
+            ), ['receipts' => $open, 'needs' => 'confirm_no_open_grn and confirm_no_open_grn_reason']);
+        }
+        if (mb_strlen($reason) < 10) {
+            Http::validationFailed('Say in a sentence why these goods are not the ones on the open receipts.', ['field' => 'confirm_no_open_grn_reason']);
+        }
+
+        return [
+            'confirmed'    => true,
+            'reason'       => mb_substr($reason, 0, 500),
+            'confirmed_by' => $this->auth->uuid,
+            'confirmed_at' => gmdate('c'),
+            'receipts'     => $open,
+        ];
+    }
+
+    /**
+     * A GSTIN typed on the bill that differs from the one on the supplier's Books ledger moves the
+     * place of supply — CGST/SGST against IGST — so it needs a stated reason (F122). Returns the
+     * reason to keep, or null when there is nothing to explain.
+     *
+     * @param array<string, mixed> $ledger
+     * @param array<string, mixed> $input
+     */
+    private function gstinReason(array $ledger, ?string $typed, array $input): ?string
+    {
+        $onLedger = strtoupper(trim((string) ($ledger['gstin'] ?? '')));
+        if ($typed === null || $onLedger === '' || $typed === $onLedger) {
+            return null;
+        }
+        $reason = self::text($input['supplier_gstin_reason'] ?? null);
+        if ($reason === null || mb_strlen($reason) < 10) {
+            Http::error(422, 'gstin_differs_from_ledger', sprintf(
+                'The GSTIN on this invoice (%s) is not the one on the supplier\'s ledger in Smart Books (%s), and it decides how the GST is split. If the supplier really invoiced from that registration, say so (supplier_gstin_reason); otherwise leave the GSTIN blank.',
+                $typed,
+                $onLedger,
+            ), ['field' => 'supplier_gstin', 'ledger_gstin' => $onLedger, 'needs' => 'supplier_gstin_reason']);
+        }
+
+        return mb_substr($reason, 0, 500);
+    }
+
+    /**
+     * Whether the bill is under reverse charge, and why: as the buyer marked it (reverse_charge
+     * true/false), else from the supplier's ledger — services from a supplier abroad are an import
+     * of services, under reverse charge. Anything else is not assumed (F122, F220).
+     *
+     * @param array<string, mixed> $input
+     * @param array<string, mixed> $ledger
+     * @param list<array<string, mixed>> $lines
+     * @return array{0: bool, 1: ?string}
+     */
+    private static function reverseCharge(array $input, array $ledger, array $lines): array
+    {
+        if (array_key_exists('reverse_charge', $input) && $input['reverse_charge'] !== null && $input['reverse_charge'] !== '') {
+            $marked = self::truthy($input['reverse_charge']);
+
+            return [$marked, $marked ? 'marked' : 'marked_not_rcm'];
+        }
+        $services = array_filter($lines, static fn (array $l) => !empty($l['is_service']) || empty($l['item_id']));
+        if ($services !== [] && PlaceOfSupply::isOverseas($ledger)) {
+            return [true, 'import_of_services'];
+        }
+
+        return [false, null];
+    }
+
     /** @param array<string, mixed> $po locked order row */
     private function assertBillable(array $po): void
     {
@@ -508,7 +748,25 @@ final class BillService
         );
         $blockOnFailure = $settings === null || (bool) $settings['block_bill_on_match_failure'];
 
-        if ($latestMatch === null || !$blockOnFailure) {
+        if ($latestMatch === null) {
+            return;
+        }
+        // A REJECTED exception always stops the post, whatever block_bill_on_match_failure says:
+        // somebody looked at this variance and said no. Rejected used to count as "decided", so
+        // the bill posted at the very variance just rejected (A26).
+        $rejected = (int) Db::scalar(
+            "SELECT COUNT(*) FROM purchase_match_exceptions WHERE match_id = :id AND status = 'REJECTED'",
+            ['id' => (int) $latestMatch['match_id']],
+        );
+        if ($rejected > 0) {
+            Http::error(
+                409,
+                'match_exception_rejected',
+                'A match exception on this bill was rejected, so it cannot be posted as it stands. Revise the bill (a new revision is matched afresh) or cancel it.',
+                ['match_id' => (int) $latestMatch['match_id'], 'rejected_exceptions' => $rejected, 'revise' => true],
+            );
+        }
+        if (!$blockOnFailure) {
             return;
         }
         $openExceptions = (int) Db::scalar(
@@ -688,6 +946,15 @@ final class BillService
             if (($sent['supply_nature'] ?? null) === PlaceOfSupply::SEZ && $cgstSgst > 0.005) {
                 $problems[] = 'The supplier is an SEZ unit: a supply from an SEZ is inter-state (IGST) even within the state, but Smart Books booked CGST and SGST. Have the voucher corrected in Smart Books.';
             }
+            // Reverse charge sent, but Books did not book it as such; or a supply from abroad of
+            // services booked as an ordinary purchase (F220).
+            if (!empty($sent['is_reverse_charge']) && array_key_exists('is_reverse_charge', $voucher) && (int) $voucher['is_reverse_charge'] !== 1) {
+                $problems[] = 'This bill was sent as reverse charge, but Smart Books did not book it under reverse charge: the RCM liability is missing. Have the voucher corrected in Smart Books.';
+            }
+            $services = array_filter((array) ($sent['service_lines'] ?? []), static fn ($l) => is_array($l) && abs((float) ($l['amount'] ?? 0)) > 0.005);
+            if (empty($sent['is_reverse_charge']) && ($sent['party']['pos_state_code'] ?? null) === PlaceOfSupply::OTHER_COUNTRY && $services !== []) {
+                $problems[] = 'Services from a supplier abroad (an import of services) were booked as an ordinary purchase, not under reverse charge. If the buyer owes this GST, revise how it is booked in Smart Books.';
+            }
             $categorised = array_filter(Db::jsonColumn($bill['requested_lines']), static fn (array $l) => !empty($l['tax_cat_id']));
             if ($anyGst <= 0.005 && $categorised !== [] && trim((string) ($sent['party']['pos_state_code'] ?? '')) === '') {
                 $problems[] = 'Smart Books booked no GST on this bill, and Purchase could not tell it where the supplier supplies from (their ledger has no GSTIN or state). Check the voucher\'s tax in Smart Books.';
@@ -717,10 +984,28 @@ final class BillService
         ], static fn ($v) => $v !== null);
     }
 
-    /** Accept or reject a match exception, with a reason. */
+    /**
+     * Accept or reject a match exception, with a reason.
+     *
+     * Only an exception of the bill's LATEST match — the one its current revision was matched
+     * with — and only while the bill is waiting on its match. Accepting is a decision to pay
+     * more than was agreed: nobody accepts a variance on a bill they entered themselves (the
+     * company's segregation-of-duties policy, as for orders and requisitions; F265). Rejecting
+     * stops the bill: it can be revised or cancelled, never posted as it stands (A26).
+     */
     public function resolveException(int $exceptionId, string $action, array $input): array
     {
         Permissions::assert($this->ctx, $this->auth, 'match.resolve');
+        if (!in_array($action, ['accept', 'reject'], true)) {
+            Http::validationFailed('An exception is accepted or rejected.', ['field' => 'action']);
+        }
+
+        $note = self::text($input['note'] ?? null);
+        if ($note === null) {
+            // Accepting a variance costs the company money. Who accepted it and
+            // why is the whole audit value of this control.
+            Http::validationFailed('Say why this variance is being accepted or rejected.', ['field' => 'note']);
+        }
 
         $exception = Db::first(
             'SELECT e.*, m.bill_request_id FROM purchase_match_exceptions e
@@ -731,52 +1016,101 @@ final class BillService
         if ($exception === null) {
             Http::notFound('That match exception does not exist.');
         }
-        if ($exception['status'] !== 'OPEN') {
-            Http::conflict('That exception has already been decided.');
+        $requestId = (int) $exception['bill_request_id'];
+        $bill = $this->find($requestId);
+        if ($bill === []) {
+            Http::notFound('That match exception does not exist.');
+        }
+        if ($action === 'accept') {
+            SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) $bill['requested_by'], 'bill', 'bill_request', $requestId, $note);
         }
 
-        $note = self::text($input['note'] ?? null);
-        if ($note === null) {
-            // Accepting a variance costs the company money. Who accepted it and
-            // why is the whole audit value of this control.
-            Http::validationFailed('Say why this variance is being accepted or rejected.', ['field' => 'note']);
-        }
+        $status = Db::transaction(function () use ($exceptionId, $action, $note, $requestId): string {
+            $locked = Db::first(
+                'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
+                ['id' => $requestId, 'cmp' => $this->ctx->cmpId],
+            );
+            if (!in_array($locked['status'], ['MATCHED', 'EXCEPTION'], true)) {
+                Http::conflict('This bill is ' . strtolower((string) $locked['status']) . '; its match exceptions can no longer be decided.', ['status' => $locked['status']]);
+            }
+            $latest = (int) Db::scalar(
+                'SELECT match_id FROM purchase_match_results WHERE bill_request_id = :id ORDER BY match_id DESC LIMIT 1',
+                ['id' => $requestId],
+            );
+            $current = Db::first(
+                'SELECT * FROM purchase_match_exceptions WHERE exception_id = :id AND cmp_id = :cmp FOR UPDATE',
+                ['id' => $exceptionId, 'cmp' => $this->ctx->cmpId],
+            );
+            if ((int) $current['match_id'] !== $latest) {
+                Http::conflict('That exception belongs to an earlier match of this bill. Decide the exceptions of its latest match.', ['latest_match_id' => $latest]);
+            }
+            if ($current['status'] !== 'OPEN') {
+                Http::conflict('That exception has already been decided.');
+            }
 
-        Db::update('purchase_match_exceptions', [
-            'status'        => $action === 'accept' ? 'ACCEPTED' : 'REJECTED',
-            'decided_by'    => $this->auth->uuid,
-            'decided_at'    => self::now(),
-            'decision_note' => $note,
-        ], ['exception_id' => $exceptionId, 'cmp_id' => $this->ctx->cmpId]);
+            Db::update('purchase_match_exceptions', [
+                'status'        => $action === 'accept' ? 'ACCEPTED' : 'REJECTED',
+                'decided_by'    => $this->auth->uuid,
+                'decided_at'    => self::now(),
+                'decision_note' => $note,
+            ], ['exception_id' => $exceptionId, 'cmp_id' => $this->ctx->cmpId]);
+
+            $status = ThreeWayMatchService::billStatusFor($latest);
+            Db::update('purchase_bill_requests', [
+                'status'     => $status,
+                'last_error' => $status === 'REJECTED' ? 'A match exception was rejected: ' . mb_substr($note, 0, 400) : null,
+                'updated_at' => self::now(),
+            ], ['request_id' => $requestId, 'cmp_id' => $this->ctx->cmpId]);
+
+            return $status;
+        });
 
         Audit::record($this->ctx, $this->auth, 'match.' . $action, 'match_exception', $exceptionId, ['status' => 'OPEN'], [
-            'status' => $action === 'accept' ? 'ACCEPTED' : 'REJECTED',
+            'status' => $action === 'accept' ? 'ACCEPTED' : 'REJECTED', 'bill_status' => $status,
         ], $note);
 
-        return $this->find((int) $exception['bill_request_id']);
+        return $this->find($requestId);
     }
 
-    /** Re-run the match, for instance after a late receipt was recorded. */
+    /**
+     * Re-run the match, for instance after a late receipt was recorded.
+     *
+     * It changes the bill's state, so it needs bill.enter, not match.view (F497). Only a bill
+     * still waiting on its match: never one being posted, posted, refused by Books, cancelled or
+     * rejected — re-matching a cancelled bill used to bring it back to MATCHED and postable
+     * (F228). Decisions taken on this revision carry over to identical findings.
+     */
     public function rematch(int $requestId): array
     {
-        Permissions::assert($this->ctx, $this->auth, 'match.view');
+        Permissions::assert($this->ctx, $this->auth, 'bill.enter');
 
         $bill = $this->find($requestId);
         if ($bill === []) {
             Http::notFound('That bill does not exist.');
         }
-        if ($bill['status'] === 'POSTED') {
-            Http::conflict('That bill has been posted; matching it again would change nothing.');
+        if (!in_array($bill['status'], ['MATCHING', 'MATCHED', 'EXCEPTION'], true) || $bill['cancelled_at'] !== null) {
+            Http::conflict(match ((string) $bill['status']) {
+                'POSTED'    => 'That bill has been posted; matching it again would change nothing.',
+                'CANCELLED' => 'That bill was cancelled; it cannot be matched again.',
+                'REJECTED'  => 'A match exception on this bill was rejected. Revise the bill to match it afresh, or cancel it.',
+                default     => 'This bill is ' . strtolower((string) $bill['status']) . ' and cannot be matched again as it stands.',
+            }, ['status' => $bill['status']]);
         }
 
+        return $this->matchAgain($requestId);
+    }
+
+    /** Match the bill as it now stands and set its status from the stored result. */
+    private function matchAgain(int $requestId): array
+    {
+        $bill = $this->find($requestId);
         $match = (new ThreeWayMatchService($this->ctx, $this->auth))->run($bill);
 
-        Db::update('purchase_bill_requests', [
-            'status'     => in_array($match['verdict'], [ThreeWayMatchService::BLOCKED, ThreeWayMatchService::REVIEW_REQUIRED], true)
-                ? 'EXCEPTION'
-                : 'MATCHED',
-            'updated_at' => self::now(),
-        ], ['request_id' => $requestId]);
+        Db::run(
+            "UPDATE purchase_bill_requests SET status = :status, updated_at = NOW()
+              WHERE request_id = :id AND cmp_id = :cmp AND status IN ('MATCHING', 'MATCHED', 'EXCEPTION') AND cancelled_at IS NULL",
+            ['status' => ThreeWayMatchService::billStatusFor((int) $match['match_id']), 'id' => $requestId, 'cmp' => $this->ctx->cmpId],
+        );
 
         $result = $this->find($requestId);
         $result['match'] = $match;
@@ -898,7 +1232,7 @@ final class BillService
                 $where[] = "b.status = 'POSTED'";
                 break;
             case 'failed':
-                $where[] = "b.status IN ('FAILED', 'EXCEPTION')";
+                $where[] = "b.status IN ('FAILED', 'EXCEPTION', 'REJECTED', 'BLOCKED')";
                 break;
             case 'duplicates':
                 // `o.request_id < b.request_id` — the LATER bill of a pair, not
@@ -993,6 +1327,8 @@ final class BillService
                    AND o.supplier_invoice_date = b.supplier_invoice_date
                    AND o.request_id < b.request_id
                    AND o.status <> 'CANCELLED'
+                   -- Parts of one supplier invoice are not duplicates of each other (F170).
+                   AND NOT (lower(o.supplier_invoice_no) = lower(b.supplier_invoice_no) AND o.invoice_part <> b.invoice_part)
                  ORDER BY o.request_id DESC LIMIT 1
              ) duplicate ON TRUE
              WHERE {$clause}
@@ -1050,8 +1386,9 @@ final class BillService
             'entered_by'          => $row['requested_by'],
             'entered_at'          => $row['created_at'],
             'route'               => '/bills/' . (int) $row['request_id'],
-            'can_edit'            => !$posted && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
-            'can_rematch'         => !$posted && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
+            'can_edit'            => !$posted && $status !== 'CANCELLED' && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
+            'can_rematch'         => in_array($status, ['MATCHING', 'MATCHED', 'EXCEPTION'], true) && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
+            'can_revise'          => in_array($status, ['BLOCKED', 'REJECTED'], true) && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
             'can_resolve'         => $openExceptions > 0 && Permissions::allows($this->ctx, $this->auth, 'match.resolve'),
             'can_post'            => $status === 'MATCHED' && Permissions::allows($this->ctx, $this->auth, 'bill.post'),
         ];
@@ -1092,7 +1429,7 @@ final class BillService
                     COUNT(*) FILTER (WHERE b.status IN ('DRAFT', 'MATCHING')) AS awaiting_review,
                     COUNT(*) FILTER (WHERE b.status = 'MATCHED') AS ready_to_post,
                     COUNT(*) FILTER (WHERE b.status = 'POSTED') AS posted,
-                    COUNT(*) FILTER (WHERE b.status IN ('FAILED', 'EXCEPTION')) AS failed,
+                    COUNT(*) FILTER (WHERE b.status IN ('FAILED', 'EXCEPTION', 'REJECTED', 'BLOCKED')) AS failed,
                     COUNT(*) FILTER (WHERE EXISTS (
                         SELECT 1 FROM purchase_match_results m
                           JOIN purchase_match_exceptions e ON e.match_id = m.match_id
@@ -1238,6 +1575,33 @@ final class BillService
         ];
         if (($supply['supply_nature'] ?? null) !== null) {
             $payload['supply_nature'] = $supply['supply_nature'];
+        }
+        if (self::truthy($bill['is_reverse_charge'] ?? false)) {
+            // The buyer owes this GST to the government, not to the supplier: Books books the RCM
+            // liability and the input credit (ReverseChargeGst::applies reads is_reverse_charge).
+            $payload['is_reverse_charge'] = 1;
+        }
+        if ((int) $bill['bo_id'] === 0) {
+            // A company-level bill (entered under All branches) has no branch GSTIN for Books to take
+            // the company's GST state from: say it — the registered office's, as Manage reports it —
+            // so the CGST/SGST-or-IGST split is known (A13). Absent, Books resolves it itself.
+            $companyState = Context::of((int) $bill['cmp_id'], (int) $bill['fy_id'], 0)->companyStateCode();
+            if ($companyState !== null) {
+                $payload['company_state_code'] = $companyState;
+            }
+        }
+        $confirmation = $bill['open_grn_confirmation'] ?? null;
+        $confirmation = is_string($confirmation) ? Db::jsonColumn($confirmation) : $confirmation;
+        // Part 2 onwards of one supplier invoice (F170): the bill reference stays the supplier's
+        // invoice number, and Books is told why it appears again (its duplicate register records it).
+        if ((int) ($bill['invoice_part'] ?? 1) > 1) {
+            $payload['supplier_invoice_duplicate_reason'] = sprintf('Part %d of supplier invoice %s (Aicountly Purchases bill %d): %s', (int) $bill['invoice_part'], (string) $bill['supplier_invoice_no'], (int) $bill['request_id'], (string) ($bill['invoice_part_reason'] ?? ''));
+        }
+        if ($inventoryLines !== [] && $plan['stock_effect'] === 'on_invoice' && is_array($confirmation) && !empty($confirmation['confirmed'])) {
+            // Said by the person who entered the bill, against the receipts Inventory named (A09);
+            // Books carries it to Inventory, where it stays on the stock document.
+            $payload['confirm_no_open_grn'] = true;
+            $payload['confirm_no_open_grn_reason'] = (string) ($confirmation['reason'] ?? '');
         }
 
         if ($inventoryLines !== [] && $plan['stock_effect'] !== null) {
@@ -1511,18 +1875,21 @@ final class BillService
             return;
         }
         $inventory = (new InventoryClient())->withService($this->auth->uuid);
+        // One read for every GRN the bill settles (F402), and an answer that cannot be read stops
+        // the bill — it used to be taken as "still live" on any failure but a 404.
+        $read = ReceiptLedger::documents($scope, $inventory, array_keys($documents));
+        if ($read['state'] !== 'ok') {
+            Http::error(503, 'inventory_unavailable', 'Inventory could not confirm that the goods receipts this bill settles are still live, so the bill was not sent. Nothing has changed; try again.', ['retryable' => true, 'detail' => $read['why']]);
+        }
         foreach ($documents as $documentId => $receiptNo) {
-            $response = $inventory->document($scope, $documentId);
-            if (!$response['ok']) {
-                if ((int) $response['status'] === 404) {
-                    Http::conflict(
-                        sprintf('Inventory has no document %d, which this order counts as GRN %s. Reconcile the GRN on the order before billing it, so the bill does not settle goods Inventory never recorded.', $documentId, $receiptNo),
-                        ['receipt_no' => $receiptNo, 'inventory_document_id' => $documentId, 'retryable' => false],
-                    );
-                }
-                continue;
+            $document = $read['by_id'][$documentId] ?? null;
+            if ($document === null) {
+                Http::conflict(
+                    sprintf('Inventory has no document %d, which this order counts as GRN %s. Reconcile the GRN on the order before billing it, so the bill does not settle goods Inventory never recorded.', $documentId, $receiptNo),
+                    ['receipt_no' => $receiptNo, 'inventory_document_id' => $documentId, 'retryable' => false],
+                );
             }
-            $status = strtoupper((string) ($response['body']['data']['status'] ?? ''));
+            $status = strtoupper((string) ($document['status'] ?? ''));
             if (in_array($status, ['REVERSED', 'CANCELLED'], true)) {
                 Http::conflict(
                     sprintf('GRN %s was %s in Inventory, but this order still counts its goods as received. Reverse the GRN on the order to record that here (nothing moves twice), then bill what is left.', $receiptNo, strtolower($status)),
@@ -1606,10 +1973,40 @@ final class BillService
                 'rate'            => $rate,
                 'discount_pc'     => $discountPc,
                 'amount'          => round($gross - ($gross * $discountPc / 100), 4),
+                // A charge the order itself agreed (its freight or other charges), declared as such
+                // on a service line (F163): the match compares it with the order's charge instead
+                // of treating it as a line nobody ordered.
+                'charge_kind'     => ($isService || $itemId === null) && $poLineId === null && in_array($line['charge_kind'] ?? null, ['freight', 'other_charges'], true)
+                    ? (string) $line['charge_kind'] : null,
             ];
         }
 
         return $lines;
+    }
+
+    /**
+     * Which part of the supplier's invoice this bill is (1 when not split) and, for part 2 onwards,
+     * why it is split — at least 10 characters (F170).
+     *
+     * @param array<string, mixed> $input
+     * @return array{0: int, 1: ?string}
+     */
+    private static function invoicePart(array $input): array
+    {
+        $raw = $input['invoice_part'] ?? 1;
+        if (!is_numeric($raw) || (int) $raw < 1 || (int) $raw > 20 || (string) (int) $raw !== trim((string) $raw)) {
+            Http::validationFailed('The invoice part is a whole number from 1 to 20.', ['field' => 'invoice_part']);
+        }
+        $part = (int) $raw;
+        if ($part === 1) {
+            return [1, null];
+        }
+        $reason = self::text($input['invoice_part_reason'] ?? null);
+        if ($reason === null || mb_strlen($reason) < 10) {
+            Http::validationFailed('Say why this supplier invoice is entered in parts (for example: it covers two purchase orders).', ['field' => 'invoice_part_reason']);
+        }
+
+        return [$part, $reason];
     }
 
     private static function truthy(mixed $value): bool

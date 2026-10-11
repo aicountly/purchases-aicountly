@@ -17,7 +17,7 @@ import Claims from './pages/Claims'
 import Suppliers from './pages/Suppliers'
 import Approvals from './pages/Approvals'
 import Settings from './pages/Settings'
-import { Notice } from './ui'
+import { Button, Notice } from './ui'
 import { initAnalytics, trackPageView } from './utils/analytics'
 
 /**
@@ -67,12 +67,31 @@ function PageViews() {
  * would be a screen full of 400s. Asking once, up front, is kinder than that.
  */
 function RequireScope({ children }: { children: React.ReactNode }) {
-  const { session, loading, error } = usePurchases()
+  const { session, loading, error, errorCode, setCompanyScope, reload } = usePurchases()
 
   // The missing-scope case never reaches here: Framed sends it to the launcher
   // before the application frame is drawn at all.
   if (loading && !session) return <p style={{ color: 'var(--muted)' }}>Opening…</p>
-  if (error) return <Notice tone="danger" title="Could not open that company">{error}</Notice>
+  if (error && (errorCode === 'company_access_denied' || errorCode === 'no_purchases_access')) {
+    // A definite no — removed from the company, another tenant's, or no Purchases seat. Retrying
+    // will not change it; choosing another company, or asking the owner, will (F450, F310).
+    return (
+      <Notice
+        tone="warning"
+        title={errorCode === 'no_purchases_access' ? 'You have no access to Purchases here' : 'You do not have access to this company'}
+        action={<Button onClick={() => setCompanyScope(null)}>Choose another company</Button>}
+      >
+        {error}
+      </Notice>
+    )
+  }
+  if (error) {
+    return (
+      <Notice tone="danger" title="Could not open that company" action={<Button onClick={reload}>Try again</Button>}>
+        {error}
+      </Notice>
+    )
+  }
 
   return <>{children}</>
 }

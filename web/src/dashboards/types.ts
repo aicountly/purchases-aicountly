@@ -383,7 +383,10 @@ export interface AskAnswer {
   question: string
   method: string
   method_label: string
+  /** The factual sentence, from the rules. Never replaced by a model (F305). */
   answer: string
+  /** AI Pulse commentary over the same records, shown beside the answer and labelled; null when none. */
+  narrative?: string | null
   scope: Record<string, unknown>
   sources: { id: string; label: string; as_of: string | null; status?: string }[]
   records: Record<string, unknown>[]

@@ -40,8 +40,6 @@ final class BooksClient extends ApiClient
     public const VCH_JOURNAL     = 5;
 
     private string $authorization = '';
-    private string $serviceKey = '';
-    private string $actorUuid = '';
 
     public function service(): string
     {
@@ -66,27 +64,19 @@ final class BooksClient extends ApiClient
     public function withSession(string $sesKey): self
     {
         $this->authorization = 'Bearer ' . $sesKey;
-        $this->serviceKey = '';
 
         return $this;
     }
 
-    public function withService(string $actorUuid): self
-    {
-        $this->serviceKey = Env::get('BOOKS_SERVICE_KEY');
-        $this->actorUuid = $actorUuid;
-        $this->authorization = '';
-
-        return $this;
-    }
-
-    /** @return array<string, string> */
+    /**
+     * Every Books call is made as the signed-in person (their own session). The service-key
+     * variant had no caller and sent a header Books does not read for these routes (F374/F510);
+     * it is gone rather than left to be wired against the wrong contract.
+     *
+     * @return array<string, string>
+     */
     private function authHeaders(): array
     {
-        if ($this->serviceKey !== '') {
-            return ['X-Service-Key' => $this->serviceKey, 'X-Actor-Uuid' => $this->actorUuid];
-        }
-
         return ['Authorization' => $this->authorization];
     }
 
@@ -110,25 +100,9 @@ final class BooksClient extends ApiClient
         return $this->call('GET', 'masters/accounts/' . $accountId . self::query($ctx->asQuery()));
     }
 
-    /** @param array<string, mixed> $payload */
-    public function createAccount(Context $ctx, array $payload, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'masters/accounts', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
     public function taxCategories(Context $ctx): array
     {
         return $this->call('GET', 'masters/tax-categories' . self::query(['limit' => 200] + $ctx->asQuery()));
-    }
-
-    public function voucherTypes(Context $ctx): array
-    {
-        return $this->call('GET', 'registers/types' . self::query($ctx->asQuery()));
-    }
-
-    public function companySettings(Context $ctx): array
-    {
-        return $this->call('GET', 'company/settings' . self::query($ctx->asQuery()));
     }
 
     // -----------------------------------------------------------------------
@@ -222,11 +196,6 @@ final class BooksClient extends ApiClient
         ] + $ctx->asQuery()));
     }
 
-    public function cancelVoucher(Context $ctx, int $voucherId, string $reason, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'vouchers/' . $voucherId . '/cancel', ['reason' => $reason] + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
     /** Voucher register — the live list of invoices, receipts or bills behind any of our screens. */
     public function registers(Context $ctx, array $filters = []): array
     {
@@ -247,102 +216,17 @@ final class BooksClient extends ApiClient
         return $this->call('GET', 'reports/bill-by-bill' . self::query($filters + $ctx->asQuery()));
     }
 
-    public function accountLedger(Context $ctx, int $accountId, array $filters = []): array
-    {
-        return $this->call('GET', 'reports/account-ledger' . self::query(['acc_id' => $accountId] + $filters + $ctx->asQuery()));
-    }
-
-    public function accountSummary(Context $ctx, array $filters = []): array
-    {
-        return $this->call('GET', 'reports/account-summary' . self::query($filters + $ctx->asQuery()));
-    }
-
-    public function dayBook(Context $ctx, array $filters = []): array
-    {
-        return $this->call('GET', 'reports/day-book' . self::query($filters + $ctx->asQuery()));
-    }
-
-    public function salesDashboard(Context $ctx, array $filters = []): array
-    {
-        return $this->call('GET', 'dashboard/sales' . self::query($filters + $ctx->asQuery()));
-    }
-
     public function purchaseDashboard(Context $ctx, array $filters = []): array
     {
         return $this->call('GET', 'dashboard/purchase' . self::query($filters + $ctx->asQuery()));
-    }
-
-    /** Invoices a receipt could be allocated against. Books decides what is still open. */
-    public function allocatableInvoices(Context $ctx, int $receiptVoucherId): array
-    {
-        return $this->call('GET', 'receipt-vouchers/' . $receiptVoucherId . '/allocatable-invoices' . self::query($ctx->asQuery()));
-    }
-
-    public function allocatableBills(Context $ctx, int $paymentVoucherId): array
-    {
-        return $this->call('GET', 'payment-vouchers/' . $paymentVoucherId . '/allocatable-bills' . self::query($ctx->asQuery()));
-    }
-
-    public function saveReceiptSettlement(Context $ctx, int $receiptVoucherId, array $allocations, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'receipt-vouchers/' . $receiptVoucherId . '/settlement', ['allocations' => $allocations] + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
-    public function savePaymentSettlement(Context $ctx, int $paymentVoucherId, array $allocations, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'payment-vouchers/' . $paymentVoucherId . '/settlement', ['allocations' => $allocations] + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
     }
 
     // -----------------------------------------------------------------------
     // Statutory — Books owns the IRN and the e-Way Bill. We only ask.
     // -----------------------------------------------------------------------
 
-    public function generateEInvoice(Context $ctx, int $voucherId, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'gst/einvoice/generate', ['vch_txn_id' => $voucherId] + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
-    public function eInvoiceStatus(Context $ctx, int $voucherId): array
-    {
-        return $this->call('GET', 'gst/einvoice/' . $voucherId . '/status' . self::query($ctx->asQuery()));
-    }
-
-    public function cancelEInvoice(Context $ctx, int $voucherId, array $payload, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'gst/einvoice/' . $voucherId . '/cancel', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
-    public function generateEWayBill(Context $ctx, int $voucherId, array $payload, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'gst/eway/generate', ['vch_txn_id' => $voucherId] + $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
-    public function eWayBillStatus(Context $ctx, int $voucherId): array
-    {
-        return $this->call('GET', 'gst/eway/' . $voucherId . '/status' . self::query($ctx->asQuery()));
-    }
-
-    public function updateEWayBill(Context $ctx, int $voucherId, array $payload, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'gst/eway/' . $voucherId . '/update', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
-    public function cancelEWayBill(Context $ctx, int $voucherId, array $payload, string $idempotencyKey): array
-    {
-        return $this->call('POST', 'gst/eway/' . $voucherId . '/cancel', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
-    }
-
     // -----------------------------------------------------------------------
     // Printing — reuse Books' own invoice PDF rather than re-rendering a second one
     // -----------------------------------------------------------------------
 
-    public function salesInvoicePdfUrl(Context $ctx, int $voucherId): string
-    {
-        return $this->apiRoot() . '/sales-vouchers/' . $voucherId . '/invoice/pdf' . self::query($ctx->asQuery());
-    }
-
-    public function access(Context $ctx): array
-    {
-        return $this->call('GET', 'access/me' . self::query($ctx->asQuery()));
-    }
 }

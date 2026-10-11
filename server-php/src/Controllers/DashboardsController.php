@@ -40,6 +40,7 @@ final class DashboardsController extends Controller
     public static function show(string $view): void
     {
         [$auth, $ctx] = self::enter();
+        Permissions::assertSeat($ctx, $auth);
 
         if (!in_array($view, self::VIEWS, true)) {
             Http::notFound('There is no "' . $view . '" dashboard. Try one of: ' . implode(', ', self::VIEWS) . '.');
@@ -52,6 +53,7 @@ final class DashboardsController extends Controller
     public static function ask(): void
     {
         [$auth, $ctx] = self::enter();
+        Permissions::assertSeat($ctx, $auth);
 
         $dashboard = new InsightsDashboard($ctx, $auth, Period::fromRequest(), Filters::fromRequest());
         Http::data($dashboard->ask());

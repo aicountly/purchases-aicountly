@@ -35,6 +35,14 @@ final class Context
     private static array $answers = [];
 
     /**
+     * The company's registered-office GST state as Manage reported it (companyinfo ro_state), when
+     * it is a GST state code — per company, from the same answer that confirmed access.
+     *
+     * @var array<int, ?string>
+     */
+    private static array $companyStates = [];
+
+    /**
      * The financial year's dates as Manage reported them, by "cmp:fy", for checks that
      * need them (a bill's posting date). Only for a year Manage confirmed.
      *
@@ -90,6 +98,10 @@ final class Context
             self::$answers[$key] = $this->askManage($auth);
         }
         $company = self::$answers[$key]['company'];
+        $roState = trim((string) ($company['ro_state'] ?? ''));
+        self::$companyStates[$this->cmpId] = preg_match('/^\d{1,2}$/', $roState) === 1 && (int) $roState >= 1 && ((int) $roState <= 38 || (int) $roState === 97)
+            ? str_pad($roState, 2, '0', STR_PAD_LEFT)
+            : null;
 
         // The year and branch are claims too, and the same answer settles them. A year that
         // is not this company's would scope every query to rows that belong to nobody, and
@@ -144,12 +156,15 @@ final class Context
         // maintenance page, an empty or truncated 200, a 5xx, no answer — is "could not ask": 503,
         // retryable, never an allow and never "you lost access".
         if (!$result['ok']) {
-            if (in_array((int) $result['status'], [401, 403, 404], true) && is_array($result['body'])) {
-                Http::forbidden('You do not have access to this company.');
+            // Manage ANSWERED, in its own JSON, that this session may not open this company — a
+            // removed member, another tenant's company (Manage says 404 "Company not found or
+            // access denied"). That is a definite no: 403, not a 503 telling them to retry forever
+            // (F424, F450). Anything Manage did not clearly say — no answer, a 5xx, a page that is
+            // not its JSON — stays 503: unreachable is not "allowed", and not "refused" either.
+            if (in_array((int) $result['status'], [401, 403, 404], true) && is_array($result['body'] ?? null)) {
+                Http::error(403, 'company_access_denied', 'You do not have access to this company. Ask its owner to add you in Manage, or choose another company.', ['retryable' => false]);
             }
-            // Unreachable is not "allowed". A tenant check that fails open is not
-            // a tenant check.
-            Http::error(503, 'context_unavailable', 'Cannot confirm company access right now. Please retry.');
+            Http::error(503, 'context_unavailable', 'Cannot confirm company access right now. Please retry.', ['retryable' => true]);
         }
 
         $body = $result['body'] ?? [];
@@ -202,10 +217,21 @@ final class Context
         return new self($cmpId, $fyId, max(0, $boId));
     }
 
+    /**
+     * The company's own GST state (its registered office), for a company-level document — one
+     * entered under "All branches" (bo_id 0), which has no branch GSTIN to take it from (A13).
+     * Null when Manage did not report one as a GST state code, or was not asked on this request.
+     */
+    public function companyStateCode(): ?string
+    {
+        return self::$companyStates[$this->cmpId] ?? null;
+    }
+
     /** Drop the memoised company checks. Tests only — a request never needs it. */
     public static function forgetVerified(): void
     {
         self::$answers = [];
+        self::$companyStates = [];
         self::$fyRanges = [];
     }
 

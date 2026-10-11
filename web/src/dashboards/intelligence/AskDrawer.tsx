@@ -194,6 +194,12 @@ function Answer({
       <section className="purchase-answer__summary">
         <h3>Summary</h3>
         <p>{answer.answer}</p>
+        {answer.narrative && (
+          <div className="purchase-answer__narrative">
+            <h4>AI commentary</h4>
+            <p>{answer.narrative}</p>
+          </div>
+        )}
         <p className="purchase-muted">{answer.method_label}</p>
       </section>
 

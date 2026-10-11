@@ -80,7 +80,7 @@ final class PulseAiClient
     public function __construct(
         private string $product = self::PRODUCT,  // sent as X-Pulse-Product
         private ?string $origin = null,
-        private float $timeoutSeconds = 20.0,     // an Ask answer is waited on in an open drawer
+        private float $timeoutSeconds = 8.0,      // an Ask answer is waited on in an open drawer: rules answer after 8 s at most (F305)
         ?callable $transport = null,
     ) {
         $this->transport = $transport !== null ? \Closure::fromCallable($transport) : self::curl(...);

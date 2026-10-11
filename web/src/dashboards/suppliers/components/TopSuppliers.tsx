@@ -49,9 +49,12 @@ export function TopSuppliers({
       description="Ranked by overall performance score"
       flush
       action={
-        rows.length > SHOWN ? (
+        // Expanding also shows the lead-time, trend, exposure and next-action columns, so it is
+        // offered even when every supplier already fits — otherwise those columns were unreachable
+        // for a company with five suppliers or fewer (F451).
+        rows.length > 0 ? (
           <button type="button" className="purchase-button purchase-button--quiet" onClick={onToggleExpanded}>
-            {expanded ? 'Show the top 5' : 'View all'}
+            {rows.length > SHOWN ? (expanded ? 'Show the top 5' : 'View all') : expanded ? 'Fewer columns' : 'More columns'}
           </button>
         ) : undefined
       }
@@ -98,7 +101,7 @@ export function TopSuppliers({
                       <td className="is-wide">
                         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <strong style={{ fontWeight: 650, color: 'var(--purchase-ink)' }}>
-                            {row.supplier_name ?? `Account ${row.supplier_account_id}`}
+                            {row.supplier_name ?? `Ledger #${row.supplier_account_id}`}
                           </strong>
                           {row.is_preferred && (
                             <ShieldCheck size={12} aria-label="Preferred supplier" style={{ color: 'var(--purchase-brand-strong)', flexShrink: 0 }} />

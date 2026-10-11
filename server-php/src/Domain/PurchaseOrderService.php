@@ -42,11 +42,21 @@ final class PurchaseOrderService
         if ($lines === []) {
             Http::validationFailed('A purchase order needs at least one line.', ['field' => 'lines']);
         }
+        $header = $this->header($input);
+
+        // What the order names is confirmed with its owners before anything is stored: the
+        // supplier is a creditor ledger of THIS company in Books, and its name on the order is
+        // Books' name, never the one typed; the items and warehouses are this company's in
+        // Inventory (F176, F420, F430, F449).
+        $masters = new MasterCheck($this->ctx, $this->auth);
+        $supplierName = $masters->supplierName($supplierId);
+        $masters->items(array_values(array_filter(array_map(static fn (array $l) => $l['item_id'], $lines))));
+        $masters->warehouses(array_merge([self::id($input['delivery_warehouse_id'] ?? null)], array_map(static fn (array $l) => $l['warehouse_id'], $lines)), 'warehouse_id');
 
         $settings = $this->settings();
-        $this->guardApprovedVendor($supplierId, $settings);
+        $this->guardApprovedVendor($supplierId, $settings, $input);
 
-        return Db::transaction(function () use ($input, $supplierId, $lines, $settings) {
+        return Db::transaction(function () use ($input, $supplierId, $lines, $settings, $header, $supplierName) {
             $lineRefs = [];
             foreach ($lines as $line) {
                 if ($line['requisition_line_id'] !== null) {
@@ -55,14 +65,14 @@ final class PurchaseOrderService
             }
             (new RequisitionService($this->ctx, $this->auth))->assertSourceable(self::id($input['requisition_id'] ?? null), $lineRefs, true);
             $no = NumberSeries::next($this->ctx, 'po');
-            $totals = self::totals($lines, (float) ($input['freight_amount'] ?? 0), (float) ($input['other_charges'] ?? 0));
+            $totals = self::totals($lines, $header['freight_amount'], $header['other_charges']);
 
             $poId = (int) Db::insert('purchase_orders', [
                 'cmp_id'                 => $this->ctx->cmpId,
                 'fy_id'                  => $this->ctx->fyId,
                 'bo_id'                  => $this->ctx->boId,
                 'po_no'                  => $no,
-                'po_date'                => self::date($input['po_date'] ?? null),
+                'po_date'                => $header['po_date'],
                 'requisition_id'         => self::id($input['requisition_id'] ?? null),
                 'rfq_id'                 => self::id($input['rfq_id'] ?? null),
                 'quote_id'               => self::id($input['quote_id'] ?? null),
@@ -71,15 +81,15 @@ final class PurchaseOrderService
                 // The supplier's linked Contacts contact, as Purchases last read it from Contacts —
                 // never a client-asserted id (G14#10).
                 'contact_id'             => Db::scalar('SELECT contact_id FROM purchase_supplier_profiles WHERE cmp_id = :cmp AND supplier_account_id = :supplier', ['cmp' => $this->ctx->cmpId, 'supplier' => $supplierId]),
-                'supplier_name_snapshot' => self::text($input['supplier_name'] ?? null),
+                'supplier_name_snapshot' => $supplierName ?? self::text($input['supplier_name'] ?? null),
                 'status'                 => 'DRAFT',
                 'delivery_warehouse_id'  => self::id($input['delivery_warehouse_id'] ?? null) ?? self::id($settings['default_warehouse_id'] ?? null),
                 'delivery_address'       => is_array($input['delivery_address'] ?? null) ? $input['delivery_address'] : null,
-                'promised_date'          => self::text($input['promised_date'] ?? null),
+                'promised_date'          => $header['promised_date'],
                 'payment_terms'          => self::text($input['payment_terms'] ?? null),
                 'incoterm'               => self::text($input['incoterm'] ?? null),
-                'currency_code'          => self::text($input['currency_code'] ?? null) ?? 'INR',
-                'exchange_rate'          => (float) ($input['exchange_rate'] ?? 1),
+                'currency_code'          => $header['currency_code'],
+                'exchange_rate'          => $header['exchange_rate'],
                 'subtotal_amount'        => $totals['subtotal'],
                 'discount_amount'        => $totals['discount'],
                 'freight_amount'         => $totals['freight'],
@@ -116,6 +126,10 @@ final class PurchaseOrderService
         }
 
         $settings = $this->settings();
+        // The supplier's standing is checked again at every step, not only when the draft was
+        // made: a supplier blacklisted since, or a company that has started enforcing approved
+        // suppliers, stops the order here (F025).
+        $this->guardApprovedVendor((int) $po['supplier_account_id'], $settings, []);
         $threshold = (float) ($settings['po_approval_above_amount'] ?? 0);
         $value = (float) $po['total_amount'];
         $needsApproval = $threshold > 0 && $value > $threshold;
@@ -160,6 +174,9 @@ final class PurchaseOrderService
         if ($po === []) {
             Http::notFound('That purchase order does not exist.');
         }
+        if ($po['status'] !== 'APPROVAL_PENDING' && !empty($po['amendment_pending_id'])) {
+            return $this->decideAmendment($po, (int) $po['amendment_pending_id'], $action, $input);
+        }
         if ($po['status'] !== 'APPROVAL_PENDING') {
             Http::conflict('This purchase order is not waiting for approval.');
         }
@@ -167,6 +184,9 @@ final class PurchaseOrderService
         $note = self::text($input['note'] ?? null);
         if (!$approved && $note === null) {
             Http::validationFailed('Say why this purchase order is being rejected.', ['field' => 'note']);
+        }
+        if ($approved) {
+            $this->guardApprovedVendor((int) $po['supplier_account_id'], $this->settings(), $input);
         }
 
         // Segregation of duties, as the company's stated policy (SegregationOfDuties).
@@ -209,6 +229,7 @@ final class PurchaseOrderService
         if ($po['status'] !== 'APPROVED') {
             Http::conflict('Approve the purchase order before issuing it to the supplier.');
         }
+        $this->guardApprovedVendor((int) $po['supplier_account_id'], $this->settings(), []);
 
         Db::update('purchase_orders', ['status' => 'ISSUED', 'issued_at' => self::now(), 'updated_at' => self::now()], [
             'po_id' => $poId, 'cmp_id' => $this->ctx->cmpId,
@@ -438,7 +459,20 @@ final class PurchaseOrderService
 
             Db::update('purchase_orders', [
                 'status' => 'CANCELLED', 'cancelled_at' => self::now(), 'cancel_reason' => $reason, 'updated_at' => self::now(),
+                'amendment_pending_id' => null,
             ], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+            // Nothing is left waiting on a cancelled order: its approval request, and any amendment
+            // waiting for one, are withdrawn — not left in the inbox to be approved into a 409 (F482).
+            Db::run(
+                "UPDATE purchase_approval_requests SET status = 'WITHDRAWN', decided_by = :by, decided_at = NOW(), decision_note = :note
+                  WHERE cmp_id = :cmp AND entity_type = 'purchase_order' AND entity_id = :po AND status = 'PENDING'",
+                ['by' => $this->auth->uuid, 'note' => 'The purchase order was cancelled: ' . $reason, 'cmp' => $this->ctx->cmpId, 'po' => $poId],
+            );
+            Db::run(
+                "UPDATE purchase_po_amendments SET status = 'WITHDRAWN', decided_by = :by, decided_at = NOW(), decision_note = 'The purchase order was cancelled.'
+                  WHERE cmp_id = :cmp AND po_id = :po AND status = 'PENDING_APPROVAL'",
+                ['by' => $this->auth->uuid, 'cmp' => $this->ctx->cmpId, 'po' => $poId],
+            );
 
             return (string) $po['status'];
         });
@@ -544,6 +578,419 @@ final class PurchaseOrderService
         return $this->find($poId);
     }
 
+    /** Orders that may be amended: before receipt, during it, and once received but not closed. */
+    private const AMENDABLE = ['DRAFT', 'APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED'];
+
+    /**
+     * Amend an order: change what was agreed with the supplier — a line's quantity, rate, discount
+     * or promised date, a new line, the promised date, payment terms or charges — as a new version
+     * with the old and new terms kept (F167, F420).
+     *
+     *   - A line cannot drop below what has already arrived (or is on its way to Inventory) and
+     *     been billed; receipts and bills are not rewritten, and later ones are matched against
+     *     the amended terms.
+     *   - A higher rate on a line is ordering above the agreed rate: it needs price.override.
+     *   - An amendment that raises the order's value above the company's approval threshold waits
+     *     for an approver (segregation of duties applies); until then the order works on its
+     *     current terms. Anything else applies at once. A draft is simply edited.
+     *
+     * @param array<string, mixed> $input {reason, lines?: [{line_id?, ordered_qty?, agreed_rate?, discount_pc?,
+     *                                     promised_date?, …new line fields}], promised_date?, payment_terms?,
+     *                                     freight_amount?, other_charges?, terms_text?}
+     */
+    public function amend(int $poId, array $input): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'po.amend');
+        $reason = self::text($input['reason'] ?? null);
+        if ($reason === null) {
+            Http::validationFailed('Say why the order is being amended — what was agreed with the supplier.', ['field' => 'reason']);
+        }
+
+        $current = $this->find($poId);
+        if ($current === []) {
+            Http::notFound('That purchase order does not exist.');
+        }
+        $header = $this->header($input + ['po_date' => $current['po_date']], $current);
+        $requested = is_array($input['lines'] ?? null) ? array_values($input['lines']) : [];
+        $newItems = [];
+        foreach ($requested as $want) {
+            if (is_array($want) && empty($want['line_id']) && !empty($want['item_id'])) {
+                $newItems[] = (int) $want['item_id'];
+            }
+        }
+        $masters = new MasterCheck($this->ctx, $this->auth);
+        $masters->items($newItems);
+        $masters->warehouses(array_map(static fn ($w) => is_array($w) ? self::id($w['warehouse_id'] ?? null) : null, $requested), 'warehouse_id');
+
+        $outcome = Db::transaction(function () use ($poId, $input, $reason, $header, $requested): array {
+            $po = PoProgress::lock($poId, $this->ctx->cmpId);
+            if ($po === null) {
+                Http::notFound('That purchase order does not exist.');
+            }
+            if (!in_array($po['status'], self::AMENDABLE, true)) {
+                Http::conflict(match ((string) $po['status']) {
+                    'APPROVAL_PENDING' => 'This order is waiting for approval. Approve or reject it before amending it.',
+                    'CLOSED' => 'This order is closed. Reopen it first if more is still to come.',
+                    'CANCELLED' => 'This order was cancelled.',
+                    default => 'This order cannot be amended in its current state.',
+                }, ['status' => $po['status']]);
+            }
+            if (!empty($po['amendment_pending_id'])) {
+                Http::conflict('An earlier amendment of this order is waiting for approval. Have it decided first.', ['amendment_id' => (int) $po['amendment_pending_id']]);
+            }
+
+            $lines = [];
+            foreach (Db::all('SELECT * FROM purchase_order_lines WHERE po_id = :po AND cmp_id = :cmp ORDER BY line_no FOR UPDATE', ['po' => $poId, 'cmp' => $this->ctx->cmpId]) as $line) {
+                $lines[(int) $line['line_id']] = $line;
+            }
+            $inFlight = [];
+            foreach (Db::all(
+                "SELECT requested_lines FROM purchase_receipt_requests
+                  WHERE po_id = :po AND cmp_id = :cmp AND applied_at IS NULL AND status IN ('REQUESTED', 'POSTING', 'FAILED', 'UNCERTAIN')",
+                ['po' => $poId, 'cmp' => $this->ctx->cmpId],
+            ) as $row) {
+                foreach (Db::jsonColumn($row['requested_lines']) as $l) {
+                    $inFlight[(int) ($l['line_id'] ?? 0)] = ($inFlight[(int) ($l['line_id'] ?? 0)] ?? 0.0) + (float) ($l['qty'] ?? 0);
+                }
+            }
+
+            $before = self::termsOf($po, $lines);
+            $after = $before;
+            $rateUp = false;
+            $nextNo = $lines === [] ? 0 : max(array_map(static fn ($l) => (int) $l['line_no'], $lines));
+            foreach ($requested as $index => $want) {
+                if (!is_array($want)) {
+                    continue;
+                }
+                $lineId = self::id($want['line_id'] ?? null);
+                if ($lineId === null) {
+                    // A new line, checked as a draft's line is.
+                    $fresh = $this->normaliseLines([$want])[0] ?? null;
+                    if ($fresh === null) {
+                        continue;
+                    }
+                    $fresh['line_no'] = ++$nextNo;
+                    $after['lines']['new:' . $index] = self::lineTerms($fresh, null);
+                    continue;
+                }
+                $line = $lines[$lineId] ?? null;
+                if ($line === null) {
+                    Http::validationFailed('That line is not on this purchase order.', ['field' => 'lines', 'index' => $index, 'line_id' => $lineId]);
+                }
+                $merged = $this->normaliseLines([[
+                    'item_id'          => $line['item_id'],
+                    'unit_id'          => $line['unit_id'],
+                    'warehouse_id'     => $want['warehouse_id'] ?? $line['warehouse_id'],
+                    'is_service'       => self::truthy($line['is_service']),
+                    'description'      => $want['description'] ?? $line['description'],
+                    'ordered_qty'      => $want['ordered_qty'] ?? $line['ordered_qty'],
+                    'agreed_rate'      => $want['agreed_rate'] ?? $line['agreed_rate'],
+                    'discount_pc'      => $want['discount_pc'] ?? $line['discount_pc'],
+                    'tax_cat_id'       => $line['tax_cat_id'],
+                    'estimated_tax_pc' => $want['estimated_tax_pc'] ?? $line['estimated_tax_pc'],
+                    'promised_date'    => array_key_exists('promised_date', $want) ? $want['promised_date'] : $line['promised_date'],
+                    'hsn_sac'          => $line['hsn_sac'],
+                ]])[0];
+                // Never below what this order has already taken: received (net of returns) plus
+                // what is on its way to Inventory, short-closed, and billed.
+                $floor = max(
+                    (float) $line['received_qty'] - (float) $line['returned_qty'] + ($inFlight[$lineId] ?? 0.0) + (float) $line['short_closed_qty'],
+                    (float) $line['billed_qty'] - (float) $line['debited_qty'],
+                );
+                if ($merged['ordered_qty'] + 0.00005 < $floor) {
+                    Http::validationFailed(
+                        sprintf('Line %d cannot be cut to %s: %s has already arrived, is on its way or is billed against it.', (int) $line['line_no'], self::qtyText($merged['ordered_qty']), self::qtyText($floor)),
+                        ['field' => 'lines', 'line_id' => $lineId, 'minimum' => $floor],
+                    );
+                }
+                if ($merged['agreed_rate'] > (float) $line['agreed_rate'] + 0.00005 || $merged['discount_pc'] + 0.0005 < (float) $line['discount_pc']) {
+                    $rateUp = true;
+                }
+                $merged['line_no'] = (int) $line['line_no'];
+                $after['lines'][(string) $lineId] = self::lineTerms($merged, $lineId);
+            }
+            foreach (['promised_date', 'payment_terms', 'terms_text'] as $field) {
+                if (array_key_exists($field, $input)) {
+                    $after['header'][$field] = $field === 'promised_date' ? $header['promised_date'] : self::text($input[$field]);
+                }
+            }
+            if (array_key_exists('freight_amount', $input)) {
+                $after['header']['freight_amount'] = $header['freight_amount'];
+            }
+            if (array_key_exists('other_charges', $input)) {
+                $after['header']['other_charges'] = $header['other_charges'];
+            }
+            if ($after === $before) {
+                Http::validationFailed('Nothing in this amendment changes the order.');
+            }
+            if ($rateUp && $po['status'] !== 'DRAFT') {
+                // Ordering above the rate agreed (a higher rate, or less discount): its own authority.
+                Permissions::assert($this->ctx, $this->auth, 'price.override');
+            }
+
+            $valueBefore = (float) $po['total_amount'];
+            $valueAfter = self::totals(array_values($after['lines']), (float) $after['header']['freight_amount'], (float) $after['header']['other_charges'])['total'];
+            $threshold = (float) ($this->settings()['po_approval_above_amount'] ?? 0);
+            $needsApproval = $po['status'] !== 'DRAFT' && $threshold > 0 && $valueAfter > $threshold && $valueAfter > $valueBefore + 0.005;
+
+            $fromVersion = (int) ($po['version_no'] ?? 0);
+            $toVersion = $po['status'] === 'DRAFT' ? $fromVersion : $fromVersion + 1;
+            $amendmentId = (int) Db::insert('purchase_po_amendments', [
+                'cmp_id'       => $this->ctx->cmpId,
+                'po_id'        => $poId,
+                'from_version' => $fromVersion,
+                'to_version'   => $needsApproval ? $toVersion : $toVersion,
+                'status'       => $needsApproval ? 'PENDING_APPROVAL' : 'APPLIED',
+                'reason'       => $reason,
+                'before_terms' => $before,
+                'after_terms'  => $after,
+                'value_before' => $valueBefore,
+                'value_after'  => $valueAfter,
+                'requested_by' => $this->auth->uuid,
+                'decided_by'   => $needsApproval ? null : $this->auth->uuid,
+                'decided_at'   => $needsApproval ? null : self::now(),
+            ], 'amendment_id');
+
+            if ($needsApproval) {
+                Db::update('purchase_orders', ['amendment_pending_id' => $amendmentId, 'updated_at' => self::now()], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+                Db::insert('purchase_approval_requests', [
+                    'cmp_id'              => $this->ctx->cmpId,
+                    'fy_id'               => $this->ctx->fyId,
+                    'entity_type'         => 'purchase_order',
+                    'entity_id'           => $poId,
+                    'amendment_id'        => $amendmentId,
+                    'required_permission' => 'po.approve',
+                    'reason_kind'         => 'amendment',
+                    'reason_detail'       => sprintf('Amendment to version %d raises the order from %s to %s, above the %s approval threshold: %s', $toVersion, self::money($valueBefore), self::money($valueAfter), self::money($threshold), $reason),
+                    'threshold_value'     => $threshold,
+                    'actual_value'        => $valueAfter,
+                    'requested_by'        => $this->auth->uuid,
+                ], 'approval_id');
+            } else {
+                $this->applyTerms($poId, $after, $toVersion);
+            }
+
+            return ['amendment_id' => $amendmentId, 'pending' => $needsApproval, 'to_version' => $toVersion, 'value_after' => $valueAfter];
+        });
+
+        Audit::record($this->ctx, $this->auth, $outcome['pending'] ? 'po.amendment_requested' : 'po.amended', 'purchase_order', $poId, null, $outcome, $reason);
+
+        return $this->find($poId);
+    }
+
+    /** Approve or reject an amendment waiting for approval. @param array<string, mixed> $po */
+    private function decideAmendment(array $po, int $amendmentId, string $action, array $input): array
+    {
+        $poId = (int) $po['po_id'];
+        $approved = $action === 'approve';
+        $note = self::text($input['note'] ?? null);
+        if (!$approved && $note === null) {
+            Http::validationFailed('Say why this amendment is being rejected.', ['field' => 'note']);
+        }
+        $amendment = Db::first('SELECT * FROM purchase_po_amendments WHERE amendment_id = :id AND cmp_id = :cmp', ['id' => $amendmentId, 'cmp' => $this->ctx->cmpId]);
+        if ($amendment === null || $amendment['status'] !== 'PENDING_APPROVAL') {
+            Http::conflict('This amendment is not waiting for approval.');
+        }
+        SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) $amendment['requested_by'], 'amendment', 'purchase_order', $poId, $note);
+
+        Db::transaction(function () use ($poId, $amendmentId, $approved, $note): void {
+            $locked = PoProgress::lock($poId, $this->ctx->cmpId);
+            $amendment = Db::first('SELECT * FROM purchase_po_amendments WHERE amendment_id = :id AND cmp_id = :cmp FOR UPDATE', ['id' => $amendmentId, 'cmp' => $this->ctx->cmpId]);
+            if ($locked === null || $amendment['status'] !== 'PENDING_APPROVAL' || (int) ($locked['amendment_pending_id'] ?? 0) !== $amendmentId) {
+                Http::conflict('This amendment is no longer waiting for approval.');
+            }
+            if ($approved) {
+                // What arrived while it waited still sets the floor: re-checked under the lock.
+                $after = Db::jsonColumn($amendment['after_terms']);
+                foreach ($after['lines'] as $line) {
+                    if (!isset($line['line_id'])) {
+                        continue;
+                    }
+                    $now = Db::first('SELECT * FROM purchase_order_lines WHERE line_id = :id AND cmp_id = :cmp', ['id' => (int) $line['line_id'], 'cmp' => $this->ctx->cmpId]);
+                    $floor = max((float) $now['received_qty'] - (float) $now['returned_qty'] + (float) $now['short_closed_qty'], (float) $now['billed_qty'] - (float) $now['debited_qty']);
+                    if ((float) $line['ordered_qty'] + 0.00005 < $floor) {
+                        Http::conflict(sprintf('Line %d has had %s received or billed since this amendment was asked for, more than it allows. Reject it and amend again.', (int) $now['line_no'], self::qtyText($floor)));
+                    }
+                }
+                $this->applyTerms($poId, $after, (int) $amendment['to_version']);
+            }
+            Db::update('purchase_po_amendments', [
+                'status' => $approved ? 'APPLIED' : 'REJECTED', 'decided_by' => $this->auth->uuid, 'decided_at' => self::now(), 'decision_note' => $note,
+            ], ['amendment_id' => $amendmentId]);
+            Db::update('purchase_orders', ['amendment_pending_id' => null, 'updated_at' => self::now()], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+            Db::run(
+                "UPDATE purchase_approval_requests SET status = :status, decided_by = :by, decided_at = NOW(), decision_note = :note
+                  WHERE cmp_id = :cmp AND entity_type = 'purchase_order' AND entity_id = :po AND amendment_id = :aid AND status = 'PENDING'",
+                ['status' => $approved ? 'APPROVED' : 'REJECTED', 'by' => $this->auth->uuid, 'note' => $note, 'cmp' => $this->ctx->cmpId, 'po' => $poId, 'aid' => $amendmentId],
+            );
+        });
+
+        Audit::record($this->ctx, $this->auth, 'po.amendment_' . ($approved ? 'approved' : 'rejected'), 'purchase_order', $poId, null, ['amendment_id' => $amendmentId], $note ?? '');
+
+        return $this->find($poId);
+    }
+
+    /**
+     * Reopen what a short-close stopped waiting for: the quantity it recorded as never coming is
+     * expected again (all of it, or per line), and the order's status follows (F420).
+     *
+     * @param array<string, mixed> $input {reason, lines?: [{line_id, qty}]}
+     */
+    public function reopen(int $poId, array $input): array
+    {
+        Permissions::assert($this->ctx, $this->auth, 'po.close');
+        $reason = self::text($input['reason'] ?? null);
+        if ($reason === null) {
+            Http::validationFailed('Say why more is coming after all.', ['field' => 'reason']);
+        }
+        $reopened = Db::transaction(function () use ($poId, $input): array {
+            $po = PoProgress::lock($poId, $this->ctx->cmpId);
+            if ($po === null) {
+                Http::notFound('That purchase order does not exist.');
+            }
+            if (!in_array($po['status'], ['APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED'], true)) {
+                Http::conflict('Only an approved order that was short-closed can be reopened; this one is ' . strtolower((string) $po['status']) . '.');
+            }
+            $requested = is_array($input['lines'] ?? null) && $input['lines'] !== [] ? $input['lines'] : null;
+            $out = [];
+            foreach (Db::all('SELECT * FROM purchase_order_lines WHERE po_id = :po AND cmp_id = :cmp ORDER BY line_no FOR UPDATE', ['po' => $poId, 'cmp' => $this->ctx->cmpId]) as $line) {
+                $closed = (float) $line['short_closed_qty'];
+                if ($closed <= 0.00005) {
+                    continue;
+                }
+                $qty = $closed;
+                if ($requested !== null) {
+                    $match = null;
+                    foreach ($requested as $want) {
+                        if (is_array($want) && (int) ($want['line_id'] ?? 0) === (int) $line['line_id']) {
+                            $match = $want;
+                        }
+                    }
+                    if ($match === null) {
+                        continue;
+                    }
+                    $qty = round((float) ($match['qty'] ?? $closed), 4);
+                    if ($qty <= 0 || $qty > $closed + 0.00005) {
+                        Http::validationFailed(sprintf('Line %d had %s short-closed; at most that can be reopened.', (int) $line['line_no'], self::qtyText($closed)), ['field' => 'lines', 'line_id' => (int) $line['line_id']]);
+                    }
+                }
+                Db::run('UPDATE purchase_order_lines SET short_closed_qty = short_closed_qty - :qty, updated_at = NOW() WHERE line_id = :id AND cmp_id = :cmp', ['qty' => $qty, 'id' => (int) $line['line_id'], 'cmp' => $this->ctx->cmpId]);
+                $out[] = ['line_id' => (int) $line['line_id'], 'line_no' => (int) $line['line_no'], 'reopened_qty' => $qty];
+            }
+            if ($out === []) {
+                Http::conflict('Nothing on this order was short-closed, so there is nothing to reopen.');
+            }
+            PoProgress::recompute($poId, $this->ctx->cmpId, $this->auth->uuid);
+
+            return $out;
+        });
+        Audit::record($this->ctx, $this->auth, 'po.reopened', 'purchase_order', $poId, null, ['lines' => $reopened], $reason);
+
+        return $this->find($poId);
+    }
+
+    /**
+     * The terms an amendment compares and changes. @param array<string, mixed> $po
+     * @param array<int, array<string, mixed>> $lines
+     * @return array{header: array<string, mixed>, lines: array<string, array<string, mixed>>}
+     */
+    private static function termsOf(array $po, array $lines): array
+    {
+        $out = ['header' => [
+            'promised_date'  => isset($po['promised_date']) ? substr((string) $po['promised_date'], 0, 10) : null,
+            'payment_terms'  => $po['payment_terms'] ?? null,
+            'terms_text'     => $po['terms_text'] ?? null,
+            'freight_amount' => round((float) ($po['freight_amount'] ?? 0), 4),
+            'other_charges'  => round((float) ($po['other_charges'] ?? 0), 4),
+        ], 'lines' => []];
+        foreach ($lines as $lineId => $line) {
+            $out['lines'][(string) $lineId] = self::lineTerms($line, (int) $lineId);
+        }
+
+        return $out;
+    }
+
+    /**
+     * One line's terms in one shape, whether read from the table or built from an amendment, so
+     * two sets of terms compare equal exactly when they say the same thing.
+     *
+     * @param array<string, mixed> $line
+     * @return array<string, mixed>
+     */
+    private static function lineTerms(array $line, ?int $lineId): array
+    {
+        $amount = round((float) $line['line_amount'], 4);
+        $taxPc = round((float) $line['estimated_tax_pc'], 3);
+
+        return [
+            'line_id'          => $lineId,
+            'line_no'          => (int) $line['line_no'],
+            'item_id'          => $line['item_id'] === null ? null : (int) $line['item_id'],
+            'unit_id'          => $line['unit_id'] === null ? null : (int) $line['unit_id'],
+            'warehouse_id'     => $line['warehouse_id'] === null ? null : (int) $line['warehouse_id'],
+            'is_service'       => self::truthy($line['is_service']),
+            'description'      => $line['description'] === null ? null : (string) $line['description'],
+            'ordered_qty'      => round((float) $line['ordered_qty'], 4),
+            'agreed_rate'      => round((float) $line['agreed_rate'], 4),
+            'discount_pc'      => round((float) $line['discount_pc'], 3),
+            'discount_amount'  => round((float) $line['discount_amount'], 4),
+            'tax_cat_id'       => $line['tax_cat_id'] === null ? null : (int) $line['tax_cat_id'],
+            'estimated_tax_pc' => $taxPc,
+            'estimated_tax'    => round($amount * $taxPc / 100, 4),
+            'line_amount'      => $amount,
+            'promised_date'    => $line['promised_date'] === null ? null : substr((string) $line['promised_date'], 0, 10),
+            'hsn_sac'          => $line['hsn_sac'] === null ? null : (string) $line['hsn_sac'],
+        ];
+    }
+
+    /** Write amended terms onto the order, its lines and its totals. @param array<string, mixed> $terms */
+    private function applyTerms(int $poId, array $terms, int $version): void
+    {
+        foreach ($terms['lines'] as $key => $line) {
+            $values = [
+                'warehouse_id'     => $line['warehouse_id'] ?? null,
+                'description'      => $line['description'] ?? null,
+                'ordered_qty'      => $line['ordered_qty'],
+                'agreed_rate'      => $line['agreed_rate'],
+                'discount_pc'      => $line['discount_pc'],
+                'discount_amount'  => $line['discount_amount'],
+                'estimated_tax_pc' => $line['estimated_tax_pc'],
+                'line_amount'      => $line['line_amount'],
+                'promised_date'    => $line['promised_date'] ?? null,
+                'updated_at'       => self::now(),
+            ];
+            if (!empty($line['line_id']) && !str_starts_with((string) $key, 'new:')) {
+                Db::update('purchase_order_lines', $values, ['line_id' => (int) $line['line_id'], 'po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+            } else {
+                $this->writeLines($poId, [$line + ['requisition_line_id' => null, 'quote_line_id' => null]]);
+            }
+        }
+        $all = Db::all('SELECT * FROM purchase_order_lines WHERE po_id = :po AND cmp_id = :cmp', ['po' => $poId, 'cmp' => $this->ctx->cmpId]);
+        foreach ($all as $i => $row) {
+            $all[$i]['estimated_tax'] = round((float) $row['line_amount'] * (float) $row['estimated_tax_pc'] / 100, 4);
+        }
+        $totals = self::totals($all, (float) $terms['header']['freight_amount'], (float) $terms['header']['other_charges']);
+        Db::update('purchase_orders', [
+            'promised_date'        => $terms['header']['promised_date'],
+            'payment_terms'        => $terms['header']['payment_terms'],
+            'terms_text'           => $terms['header']['terms_text'],
+            'subtotal_amount'      => $totals['subtotal'],
+            'discount_amount'      => $totals['discount'],
+            'freight_amount'       => $totals['freight'],
+            'other_charges'        => $totals['other'],
+            'estimated_tax_amount' => $totals['tax'],
+            'total_amount'         => $totals['total'],
+            'version_no'           => $version,
+            'updated_at'           => self::now(),
+        ], ['po_id' => $poId, 'cmp_id' => $this->ctx->cmpId]);
+        PoProgress::recompute($poId, $this->ctx->cmpId, $this->auth->uuid);
+    }
+
+    private static function qtyText(float $value): string
+    {
+        return rtrim(rtrim(number_format($value, 4, '.', ''), '0'), '.');
+    }
+
     /** @return array<string, mixed> */
     public function find(int $poId): array
     {
@@ -588,6 +1035,31 @@ final class PurchaseOrderService
             $entities[] = ['purchase_return', (int) $return['return_id']];
         }
         $row['commands'] = IntegrationCommand::forEntities($this->ctx, $entities);
+
+        // A receipt left REQUESTED or POSTING by an attempt that died (a deploy restart, a worker
+        // killed mid-call) holds its quantity against the order until somebody acts. Once no live
+        // lease protects it, Reconcile (asks Inventory) and Retry (same key, same body) are safe
+        // and offered (F301). No cron: the person on the order decides.
+        $leases = [];
+        foreach ($row['commands'] as $command) {
+            if ($command['entity_type'] === 'receipt_request' && $command['command_type'] === ReceiptService::COMMAND_RECEIPT) {
+                $leases[(int) $command['entity_id']] = $command;
+            }
+        }
+        foreach ($row['receipts'] as $i => $receipt) {
+            $stuck = false;
+            if ($receipt['applied_at'] === null && in_array($receipt['status'], ['REQUESTED', 'POSTING'], true)) {
+                $command = $leases[(int) $receipt['request_id']] ?? null;
+                if ($command === null) {
+                    $stuck = strtotime((string) $receipt['updated_at']) < time() - IntegrationCommand::LEASE_SECONDS;
+                } elseif ($command['status'] === IntegrationCommand::POSTING) {
+                    $stuck = $command['lease_expires_at'] === null || strtotime((string) $command['lease_expires_at']) < time();
+                } else {
+                    $stuck = in_array($command['status'], [IntegrationCommand::PENDING, IntegrationCommand::FAILED, IntegrationCommand::UNCERTAIN], true);
+                }
+            }
+            $row['receipts'][$i]['recoverable'] = $stuck;
+        }
         // Prepared, sent, acknowledged — three facts, each with who, when and how.
         $row['communications'] = Db::all(
             'SELECT communication_id, kind, channel, recipient, source, evidence, note, document_fingerprint, occurred_on, recorded_by, created_at
@@ -599,6 +1071,13 @@ final class PurchaseOrderService
              WHERE cmp_id = :cmp AND entity_type = 'purchase_order' AND entity_id = :id ORDER BY approval_id",
             ['cmp' => $this->ctx->cmpId, 'id' => $poId],
         );
+        // Every amendment: what was agreed before and after, who asked, who decided.
+        $row['amendments'] = array_map(static function (array $a): array {
+            $a['before_terms'] = Db::jsonColumn($a['before_terms']);
+            $a['after_terms'] = Db::jsonColumn($a['after_terms']);
+
+            return $a;
+        }, Db::all('SELECT * FROM purchase_po_amendments WHERE cmp_id = :cmp AND po_id = :id ORDER BY amendment_id DESC', ['cmp' => $this->ctx->cmpId, 'id' => $poId]));
 
         return $row;
     }
@@ -648,27 +1127,111 @@ final class PurchaseOrderService
 
     // -----------------------------------------------------------------------
 
-    /** @param array<string, mixed> $settings */
-    private function guardApprovedVendor(int $supplierId, array $settings): void
-    {
-        if (empty($settings['enforce_approved_vendors'])) {
-            return;
-        }
+    /** Supplier standings nobody orders from, whatever the company's enforcement setting. */
+    private const BARRED = ['blacklisted', 'suspended'];
 
+    /**
+     * May this company order from this supplier now? Asked when the draft is made AND at submit,
+     * approval and issue (F025):
+     *
+     *   blacklisted or suspended  refused always — unless somebody who may approve suppliers
+     *                             overrides it for this order, saying why (audited)
+     *   anything but approved     refused when the company enforces approved suppliers
+     *
+     * @param array<string, mixed> $settings
+     * @param array<string, mixed> $input  vendor_override_reason, from the caller
+     */
+    private function guardApprovedVendor(int $supplierId, array $settings, array $input): void
+    {
         $status = Db::scalar(
             'SELECT qualification_status FROM purchase_supplier_profiles WHERE cmp_id = :cmp AND supplier_account_id = :supplier',
             ['cmp' => $this->ctx->cmpId, 'supplier' => $supplierId],
         );
-
-        if ($status !== 'approved') {
-            Http::error(
-                409,
-                'vendor_not_approved',
-                'This company only orders from approved suppliers, and this one is '
-                . ($status === null ? 'not set up in Purchases yet' : strtolower(str_replace('_', ' ', (string) $status))) . '.',
-                ['supplier_account_id' => $supplierId, 'qualification_status' => $status],
-            );
+        $status = $status === null ? null : (string) $status;
+        $barred = $status !== null && in_array($status, self::BARRED, true);
+        $enforced = !empty($settings['enforce_approved_vendors']) && $status !== 'approved';
+        if (!$barred && !$enforced) {
+            return;
         }
+
+        $override = self::text($input['vendor_override_reason'] ?? null);
+        if ($barred && $override !== null && Permissions::allows($this->ctx, $this->auth, 'supplier.approve')) {
+            Audit::record($this->ctx, $this->auth, 'po.vendor_override', 'supplier', $supplierId, ['qualification_status' => $status], null, $override);
+
+            return;
+        }
+
+        Http::error(
+            409,
+            'vendor_not_approved',
+            $barred
+                ? sprintf('This supplier is %s in Purchases, so it cannot be ordered from. Somebody who may approve suppliers can override this for one order, saying why.', $status)
+                : 'This company only orders from approved suppliers, and this one is '
+                    . ($status === null ? 'not set up in Purchases yet' : strtolower(str_replace('_', ' ', $status))) . '.',
+            ['supplier_account_id' => $supplierId, 'qualification_status' => $status, 'override' => $barred ? 'vendor_override_reason with supplier.approve' : null],
+        );
+    }
+
+    /**
+     * The order's header values, checked before anything is stored (F266, F430): a date that is a
+     * real date and inside the financial year this request is in, a promised date that is a real
+     * date, charges that are not negative, a currency with a usable exchange rate.
+     *
+     * @param array<string, mixed> $input
+     * @return array{po_date: string, promised_date: ?string, freight_amount: float, other_charges: float, currency_code: string, exchange_rate: float}
+     */
+    private function header(array $input, ?array $current = null): array
+    {
+        $poDate = self::strictDate($input['po_date'] ?? null, 'po_date') ?? ($current['po_date'] ?? null) ?? gmdate('Y-m-d');
+        $range = $this->ctx->fyRange();
+        if ($current === null && $range !== null && ($poDate < $range['from'] || $poDate > $range['to'])) {
+            Http::validationFailed(sprintf('The order date %s is outside the financial year you are in (%s to %s). Switch to the year it belongs to, or date it in this one.', $poDate, $range['from'], $range['to']), ['field' => 'po_date', 'fy_from' => $range['from'], 'fy_to' => $range['to']]);
+        }
+        $promised = array_key_exists('promised_date', $input) ? self::strictDate($input['promised_date'], 'promised_date') : ($current['promised_date'] ?? null);
+        $freight = self::amount($input['freight_amount'] ?? ($current['freight_amount'] ?? 0), 'freight_amount');
+        $other = self::amount($input['other_charges'] ?? ($current['other_charges'] ?? 0), 'other_charges');
+        $currency = strtoupper(self::text($input['currency_code'] ?? null) ?? (string) ($current['currency_code'] ?? 'INR'));
+        if (preg_match('/^[A-Z]{3}$/', $currency) !== 1) {
+            Http::validationFailed('The currency is a three-letter code, like INR or USD.', ['field' => 'currency_code']);
+        }
+        $rawRate = $input['exchange_rate'] ?? ($current['exchange_rate'] ?? 1);
+        if (!is_numeric($rawRate) || (float) $rawRate <= 0 || (float) $rawRate > 100000) {
+            Http::validationFailed('The exchange rate must be a positive number: rupees for one unit of the order\'s currency.', ['field' => 'exchange_rate']);
+        }
+        $rate = round((float) $rawRate, 6);
+        if ($currency === 'INR' && abs($rate - 1.0) > 0.000001) {
+            Http::validationFailed('An order in rupees has an exchange rate of 1.', ['field' => 'exchange_rate']);
+        }
+
+        return ['po_date' => $poDate, 'promised_date' => $promised, 'freight_amount' => $freight, 'other_charges' => $other, 'currency_code' => $currency, 'exchange_rate' => $rate];
+    }
+
+    /** A date given that is not a real YYYY-MM-DD date is a 422, not today and not a 503. */
+    private static function strictDate(mixed $value, string $field): ?string
+    {
+        if ($value === null || (is_string($value) && trim($value) === '')) {
+            return null;
+        }
+        $text = is_string($value) ? trim($value) : '';
+        $parts = explode('-', $text);
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $text) !== 1 || !checkdate((int) $parts[1], (int) $parts[2], (int) $parts[0])) {
+            Http::validationFailed(sprintf('"%s" is not a date (YYYY-MM-DD).', is_scalar($value) ? (string) $value : gettype($value)), ['field' => $field]);
+        }
+
+        return $text;
+    }
+
+    /** A money amount that is a number, not negative and not absurd. */
+    private static function amount(mixed $value, string $field, float $max = 1e12): float
+    {
+        if ($value === null || $value === '') {
+            return 0.0;
+        }
+        if (!is_numeric($value) || (float) $value < 0 || (float) $value > $max) {
+            Http::validationFailed(sprintf('%s must be a number from 0 to %s.', str_replace('_', ' ', ucfirst($field)), number_format($max, 0, '.', '')), ['field' => $field]);
+        }
+
+        return round((float) $value, 4);
     }
 
     /** @param list<array<string, mixed>> $lines */
@@ -703,17 +1266,36 @@ final class PurchaseOrderService
             if (!$isService && $itemId === null) {
                 Http::validationFailed('Every stock line needs an item.', ['field' => 'lines', 'line_no' => $lineNo + 1]);
             }
-            $quantity = round((float) ($line['ordered_qty'] ?? $line['quantity'] ?? 0), 4);
-            if ($quantity <= 0) {
-                Http::validationFailed('Quantity must be more than zero.', ['field' => 'lines', 'line_no' => $lineNo + 1]);
+            $at = ['field' => 'lines', 'line_no' => $lineNo + 1];
+            $rawQty = $line['ordered_qty'] ?? $line['quantity'] ?? 0;
+            if (!is_numeric($rawQty) || (float) $rawQty <= 0 || (float) $rawQty > 1e11) {
+                Http::validationFailed(sprintf('Line %d: the quantity must be a number above zero.', $lineNo + 1), $at + ['reason' => 'qty']);
             }
+            $quantity = round((float) $rawQty, 4);
 
-            $rate = round((float) ($line['agreed_rate'] ?? $line['rate'] ?? 0), 4);
-            $discountPc = round((float) ($line['discount_pc'] ?? 0), 3);
+            // A negative rate, a discount over 100% or a negative discount amount produced orders
+            // whose totals meant nothing and still went out to suppliers (F430, F266).
+            $rawRate = $line['agreed_rate'] ?? $line['rate'] ?? 0;
+            if (!is_numeric($rawRate) || (float) $rawRate < 0 || (float) $rawRate > 1e11) {
+                Http::validationFailed(sprintf('Line %d: the rate must be a number, zero or more.', $lineNo + 1), $at + ['reason' => 'rate']);
+            }
+            $rate = round((float) $rawRate, 4);
+            $rawDiscount = $line['discount_pc'] ?? 0;
+            if (!is_numeric($rawDiscount) || (float) $rawDiscount < 0 || (float) $rawDiscount > 100) {
+                Http::validationFailed(sprintf('Line %d: the discount is a percentage from 0 to 100.', $lineNo + 1), $at + ['reason' => 'discount_pc']);
+            }
+            $discountPc = round((float) $rawDiscount, 3);
             $gross = round($quantity * $rate, 4);
+            if (isset($line['discount_amount']) && (!is_numeric($line['discount_amount']) || (float) $line['discount_amount'] < 0 || (float) $line['discount_amount'] > $gross + 0.00005)) {
+                Http::validationFailed(sprintf('Line %d: the discount cannot be negative or more than the line.', $lineNo + 1), $at + ['reason' => 'discount_amount']);
+            }
             $discountAmount = isset($line['discount_amount']) ? round((float) $line['discount_amount'], 4) : round($gross * $discountPc / 100, 4);
             $net = round($gross - $discountAmount, 4);
-            $taxPc = round((float) ($line['estimated_tax_pc'] ?? 0), 3);
+            $rawTax = $line['estimated_tax_pc'] ?? 0;
+            if (!is_numeric($rawTax) || (float) $rawTax < 0 || (float) $rawTax > 100) {
+                Http::validationFailed(sprintf('Line %d: the estimated tax is a percentage from 0 to 100.', $lineNo + 1), $at + ['reason' => 'estimated_tax_pc']);
+            }
+            $taxPc = round((float) $rawTax, 3);
 
             $lines[] = [
                 'line_no'             => ++$lineNo,
@@ -732,7 +1314,7 @@ final class PurchaseOrderService
                 'estimated_tax_pc'    => $taxPc,
                 'line_amount'         => $net,
                 'estimated_tax'       => round($net * $taxPc / 100, 4),
-                'promised_date'       => self::text($line['promised_date'] ?? null),
+                'promised_date'       => self::strictDate($line['promised_date'] ?? null, 'lines'),
                 'hsn_sac'             => self::text($line['hsn_sac'] ?? null),
             ];
         }

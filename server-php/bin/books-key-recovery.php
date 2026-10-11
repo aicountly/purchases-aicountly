@@ -38,6 +38,13 @@ declare(strict_types=1);
 
 namespace Aicountly\Api;
 
+// A worker, never a web page (F483). .htaccess refuses bin/ over HTTP; this holds on a server that
+// ignores .htaccess.
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/../src/Env.php';
 require __DIR__ . '/../src/Autoload.php';
 

@@ -49,8 +49,10 @@ jobs:
       - name: PHP syntax check
         run: find server-php -name '*.php' -not -path '*/vendor/*' -print0 | xargs -0 -n1 php -l
 
-      # The documented suite: migrates the throwaway database, starts the local stub and the
-      # real front controller with `php -S`, and runs tests/integration.php against them.
+      # The documented suite: migrates the throwaway database, starts the local stub, runs the
+      # service suites (integration, AI gateway, remediation, launch readiness) against it, and
+      # tests/http_gate.php starts the REAL front controller with `php -S` and walks every route
+      # over HTTP (401/403/503 gates, tenant refusals, CORS). Manual-only workflow (no push/PR runs).
       - name: Integration suite (server-php/tests/run.sh)
         run: bash server-php/tests/run.sh
 
