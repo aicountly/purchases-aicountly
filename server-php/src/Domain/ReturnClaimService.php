@@ -663,6 +663,12 @@ final class ReturnClaimService
      */
     public function updateClaim(int $claimId, string $action, array $input): array
     {
+        // Who may do it is decided before what exists: a stranger is refused, not told whether
+        // the claim is there.
+        $needs = ['submit' => 'claim.create', 'respond' => 'claim.create', 'approve' => 'claim.settle', 'reject' => 'claim.settle', 'close' => 'claim.settle', 'settle' => 'claim.settle'][$action] ?? null;
+        if ($needs !== null) {
+            Permissions::assert($this->ctx, $this->auth, $needs);
+        }
         $claim = $this->findClaim($claimId);
         if ($claim === []) {
             Http::notFound('That claim does not exist.');

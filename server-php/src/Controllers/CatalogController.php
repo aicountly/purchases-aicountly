@@ -110,9 +110,12 @@ final class CatalogController extends Controller
             $profiles[(int) $profile['supplier_account_id']] = $profile;
         }
 
+        // The profile (qualification, risk flag) is Purchases' own judgement of the supplier: for
+        // those who may view supplier profiles, not every member who can pick a supplier (F497).
+        $seesProfiles = Permissions::allows($ctx, $auth, 'supplier.view');
         foreach ($rows as $index => $row) {
             $accountId = (int) ($row['acc_id'] ?? $row['account_id'] ?? 0);
-            $rows[$index]['procurement_profile'] = $profiles[$accountId] ?? null;
+            $rows[$index]['procurement_profile'] = $seesProfiles ? ($profiles[$accountId] ?? null) : null;
         }
         $body['data'] = $rows;
 

@@ -284,6 +284,11 @@ if (str_contains($path, '/validatesession')) {
     // rules need: an approval inbox that showed you your own orders would be
     // testing nothing. The real portal's keys are opaque and carry none of this.
     $incoming = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    if (stripos($incoming, 'revoked') !== false) {
+        // A signed-out or revoked session, as the portal answers it: status 0, nobody.
+        echo json_encode(['status' => 0, 'message' => 'Invalid or expired session']);
+        exit;
+    }
     $uuid = preg_match('/as-([a-z0-9_-]+)/i', $incoming, $m) === 1 ? strtolower($m[1]) : 'user-owner';
     echo json_encode([
         'status'      => 1,
@@ -468,6 +473,15 @@ if (str_contains($path, '/companyinfo')) {
     $cmpId = (int) ($_GET['comp_id'] ?? 0);
     $bearer = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     $role = preg_match('/role-([a-z0-9]+)/i', $bearer, $m) === 1 ? strtolower($m[1]) : '1';
+    // A session that is not a member of this company — removed, or another tenant's (`role-none`),
+    // and company 502, which belongs to another tenant for every stub session — is answered as
+    // Manage answers it: 404 {success:false, message:"Company not found or access denied"}
+    // (index.php companyinfo → Response::error). The stub used to answer 200 for any company.
+    if ($role === 'none' || $cmpId === 502) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'Company not found or access denied']);
+        exit;
+    }
 
     $company = [
         'comp_id' => $cmpId,

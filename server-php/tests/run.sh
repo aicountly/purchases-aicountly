@@ -32,6 +32,8 @@ INVENTORY_API_BASE=http://127.0.0.1:$STUB_PORT
 MANAGE_API_BASE=http://127.0.0.1:$STUB_PORT
 PULSE_API_ORIGIN=http://127.0.0.1:$STUB_PORT
 CONTACTS_API_BASE=http://127.0.0.1:$STUB_PORT/api
+PORTAL_AUTH_BASE=http://127.0.0.1:$STUB_PORT
+CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173
 BOOKS_SERVICE_KEY=test-books-key
 INVENTORY_SERVICE_KEY=test-inventory-key
 PULSE_SERVICE_KEY=$PULSE_KEY
@@ -79,6 +81,8 @@ php "$ROOT/tests/ai_gateway.php" || status=$?
 php "$ROOT/tests/remediation.php" || status=$?
 # Launch readiness 2026-10 (E8-PUR): one check per finding, each failing before its correction.
 php "$ROOT/tests/launch_readiness.php" || status=$?
+# The HTTP gate: the real front controller under php -S, every route, every caller (F219).
+API_PORT="${API_PORT:-$((STUB_PORT + 1))}" php "$ROOT/tests/http_gate.php" || status=$?
 # Against a REAL Contacts when CONTACTS_CONTRACT_BASE is set (the e2e harness); skips otherwise.
 php "$ROOT/tests/contacts_contract.php" || status=$?
 exit $status

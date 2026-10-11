@@ -91,12 +91,14 @@ final class SettingsController extends Controller
     public static function show(): void
     {
         [$auth, $ctx] = self::enter();
+        // Approval thresholds, tolerances and the segregation policy are how to stay under a
+        // control: for people with a seat in Purchases, not any member of the company (F357).
+        Permissions::assertSeat($ctx, $auth);
 
-        $row = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
-        if ($row === null) {
-            Db::insert('purchase_settings', ['cmp_id' => $ctx->cmpId], 'cmp_id');
-            $row = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
-        }
+        // A read writes nothing: a company with no row yet is shown the defaults its first save
+        // will store (the table's own column defaults, read without inserting).
+        $row = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId])
+            ?? self::defaultSettings($ctx->cmpId);
 
         // `meta` rather than a second endpoint: the profile-type list and the
         // number format are what the SCREEN needs to render this row, and a
@@ -241,6 +243,26 @@ final class SettingsController extends Controller
     }
 
     /** Three-way match tolerances. */
+    /**
+     * The row a company with no settings yet would get on its first save — PostgreSQL's own column
+     * defaults, inside a transaction that is rolled back, so nothing is stored by a read.
+     *
+     * @return array<string, mixed>
+     */
+    private static function defaultSettings(int $cmpId): array
+    {
+        $pdo = Db::connect();
+        $pdo->beginTransaction();
+        try {
+            Db::insert('purchase_settings', ['cmp_id' => $cmpId], 'cmp_id');
+            $row = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $cmpId]) ?? [];
+        } finally {
+            $pdo->rollBack();
+        }
+
+        return $row;
+    }
+
     public static function matchPolicies(): void
     {
         [$auth, $ctx] = self::enter();

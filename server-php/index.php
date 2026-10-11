@@ -267,4 +267,4 @@ try {
     Http::error(500, 'server_error', 'Something went wrong handling that request.');
 }
 
-send_json(404, ['message' => 'Not found.']);
+send_json(404, ['error' => ['code' => 'not_found', 'message' => 'Not found.', 'details' => []], 'message' => 'Not found.']);

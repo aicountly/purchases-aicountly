@@ -147,6 +147,10 @@ final class PurchaseOrdersController extends Controller
     public static function retryReceiptReturn(string $id): void
     {
         [$auth, $ctx] = self::enter();
+        // Refused before the receipt is looked up, so a stranger to Purchases learns nothing of it.
+        if (!Permissions::allows($ctx, $auth, 'receipt.request') && !Permissions::allows($ctx, $auth, 'return.approve')) {
+            Permissions::assert($ctx, $auth, 'receipt.request');
+        }
         Http::data((new ReceiptReturnService($ctx, $auth))->retry((int) $id));
     }
 

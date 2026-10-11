@@ -89,6 +89,23 @@ final class Permissions
         Http::forbidden('You do not have permission to ' . self::describe($permission) . '.');
     }
 
+    /**
+     * Has this caller any seat in Purchases here — the owner, a member holding at least one
+     * permission, or a product key allowed anything? For reads that belong to no single
+     * permission but are Purchases' own (its settings, its dashboards, the question box): a
+     * member of the company with no Purchases profile is a stranger to this product (F357).
+     */
+    public static function assertSeat(Context $ctx, Auth $auth): void
+    {
+        if ($auth->ownsCompany($ctx->cmpId) || self::granted($ctx, $auth) !== []) {
+            return;
+        }
+        if ($auth->isService()) {
+            Http::forbidden('The ' . $auth->sourceApp . ' service key is not allowed anything in Purchases.');
+        }
+        Http::error(403, 'no_purchases_access', 'You have no access to Purchases in this company. Ask the company owner or a Purchases administrator to give you a profile.');
+    }
+
     public static function allows(Context $ctx, Auth $auth, string $permission): bool
     {
         // A trusted product backend acts for a human its own side already authorised — but

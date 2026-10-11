@@ -139,9 +139,15 @@ final class Context
         $result = (new ManageClient())->withSession($auth->sesKey())->companyInfo($this->cmpId);
 
         if (!$result['ok']) {
-            // Unreachable is not "allowed". A tenant check that fails open is not
-            // a tenant check.
-            Http::error(503, 'context_unavailable', 'Cannot confirm company access right now. Please retry.');
+            // Manage ANSWERED, in its own JSON, that this session may not open this company — a
+            // removed member, another tenant's company (Manage says 404 "Company not found or
+            // access denied"). That is a definite no: 403, not a 503 telling them to retry forever
+            // (F424, F450). Anything Manage did not clearly say — no answer, a 5xx, a page that is
+            // not its JSON — stays 503: unreachable is not "allowed", and not "refused" either.
+            if (in_array((int) $result['status'], [401, 403, 404], true) && is_array($result['body'] ?? null)) {
+                Http::error(403, 'company_access_denied', 'You do not have access to this company. Ask its owner to add you in Manage, or choose another company.', ['retryable' => false]);
+            }
+            Http::error(503, 'context_unavailable', 'Cannot confirm company access right now. Please retry.', ['retryable' => true]);
         }
 
         $body = $result['body'] ?? [];
