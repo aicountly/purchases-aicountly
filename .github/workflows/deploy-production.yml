@@ -212,8 +212,8 @@ jobs:
             printf '%s\n' "$KNOWN_HOSTS" | sed 's/\r$//' > ~/.ssh/known_hosts
             echo "Using the pinned host key(s) from PROD_SSH_KNOWN_HOSTS:"
             ssh-keygen -l -f ~/.ssh/known_hosts | sed 's/^/    /'
-          elif [ "$ALLOW_KEYSCAN" = "true" ]; then
-            echo "::warning::PROD_SSH_KNOWN_HOSTS is not set; trusting the key the host presents now (DEPLOY_ALLOW_KEYSCAN=true). Pin it."
+          elif [ "$ALLOW_KEYSCAN" != "false" ]; then
+            echo "::warning::PROD_SSH_KNOWN_HOSTS is not set; trusting the key the host presents now, as deploys did before the pin. Store it in PROD_SSH_KNOWN_HOSTS to pin it (DEPLOY_ALLOW_KEYSCAN=false refuses instead)."
             if ! ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
               echo "::error::ssh-keyscan could not reach the host on the configured port."
               sed 's/^/    /' /tmp/keyscan.err
@@ -221,7 +221,7 @@ jobs:
             fi
             ssh-keygen -l -f ~/.ssh/known_hosts | sed 's/^/    /'
           else
-            echo "::error::PROD_SSH_KNOWN_HOSTS is not set. Store the server's known_hosts line(s) in that secret (ssh-keyscan -p <port> <host>, verified against the host), or set the repository variable DEPLOY_ALLOW_KEYSCAN=true to trust the key presented now."
+            echo "::error::PROD_SSH_KNOWN_HOSTS is not set and DEPLOY_ALLOW_KEYSCAN=false refuses an unpinned host key. Store the server's known_hosts line(s) in PROD_SSH_KNOWN_HOSTS (ssh-keyscan -p <port> <host>, verified against the host), or unset DEPLOY_ALLOW_KEYSCAN."
             exit 1
           fi
           if [ ! -s ~/.ssh/known_hosts ]; then
