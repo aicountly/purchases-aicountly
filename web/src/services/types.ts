@@ -397,6 +397,9 @@ export interface BillRequest extends BillRequestSummary {
   posting_date: string | null
   revision: number
   stock_effect: string | null
+  /** The buyer owes this GST under reverse charge (F220). */
+  is_reverse_charge?: boolean
+  rcm_basis?: string | null
   /** What Books actually recorded, read back after posting — not an HTTP 200. */
   posting_check: { verified: boolean; checked_at: string; problems: string[] } | null
   matches: MatchResult[]

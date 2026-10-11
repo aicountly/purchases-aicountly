@@ -109,8 +109,13 @@ final class BillService
         // The GSTIN printed on the invoice, when the supplier bills from a registration other
         // than the one on their Books ledger: its state is where the goods are supplied from.
         $supplierGstin = PlaceOfSupply::normaliseGstin($input['supplier_gstin'] ?? null, 'supplier_gstin');
+        // The supplier as Books holds it (a creditor of this company; F449), and its GST identity:
+        // a typed GSTIN that is not the ledger's needs a reason, and reverse charge defaults from it.
+        $ledger = (new MasterCheck($this->ctx, $this->auth))->supplier($supplierId);
+        $gstinReason = $this->gstinReason($ledger, $supplierGstin, $input);
+        [$reverseCharge, $rcmBasis] = self::reverseCharge($input, $ledger, $lines);
 
-        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input, $supplierGstin, $openGrnConfirmation): int {
+        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input, $supplierGstin, $openGrnConfirmation, $gstinReason, $reverseCharge, $rcmBasis): int {
             if ($poId !== null) {
                 $po = PoProgress::lock($poId, $this->ctx->cmpId);
                 if ($po === null) {
@@ -148,6 +153,9 @@ final class BillService
                     'supplier_invoice_no'   => $invoiceNo,
                     'supplier_invoice_date' => $invoiceDate,
                     'supplier_gstin'        => $supplierGstin,
+                    'supplier_gstin_reason' => $gstinReason,
+                    'is_reverse_charge'     => $reverseCharge,
+                    'rcm_basis'             => $rcmBasis,
                     'posting_date'          => $postingDate === $invoiceDate ? null : $postingDate,
                     'due_date'              => $dueDate,
                     'status'                => 'MATCHING',
@@ -403,13 +411,20 @@ final class BillService
         $supplierGstin = array_key_exists('supplier_gstin', $input)
             ? PlaceOfSupply::normaliseGstin($input['supplier_gstin'], 'supplier_gstin')
             : ($bill['supplier_gstin'] ?? null);
+        $ledger = (new MasterCheck($this->ctx, $this->auth))->supplier((int) $bill['supplier_account_id']);
+        $gstinReason = $supplierGstin === ($bill['supplier_gstin'] ?? null) && !array_key_exists('supplier_gstin_reason', $input)
+            ? ($bill['supplier_gstin_reason'] ?? null)
+            : $this->gstinReason($ledger, $supplierGstin, $input);
+        [$reverseCharge, $rcmBasis] = array_key_exists('reverse_charge', $input)
+            ? self::reverseCharge($input, $ledger, $lines)
+            : [self::truthy($bill['is_reverse_charge'] ?? false), $bill['rcm_basis'] ?? null];
         // A direct bill Inventory refused because a receipt of the supplier holds the same goods
         // (open_inward_challan) is revised with the confirmation, or with other lines.
         $openGrnConfirmation = $bill['po_id'] === null && array_filter($lines, static fn (array $l) => empty($l['is_service']) && !empty($l['item_id'])) !== []
             ? $this->openReceiptCheck((int) $bill['supplier_account_id'], $lines, $input, $bill['open_grn_confirmation'] === null ? null : Db::jsonColumn($bill['open_grn_confirmation']))
             : null;
 
-        $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate, $postingDate, $supplierGstin, $openGrnConfirmation): int {
+        $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate, $postingDate, $supplierGstin, $openGrnConfirmation, $gstinReason, $reverseCharge, $rcmBasis): int {
             $locked = Db::first(
                 'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
                 ['id' => $requestId, 'cmp' => $this->ctx->cmpId],
@@ -430,6 +445,9 @@ final class BillService
                 'requested_lines'       => $lines,
                 'supplier_invoice_date' => $invoiceDate,
                 'supplier_gstin'        => $supplierGstin,
+                'supplier_gstin_reason' => $gstinReason,
+                'is_reverse_charge'     => $reverseCharge,
+                'rcm_basis'             => $rcmBasis,
                 'posting_date'          => $postingDate === $invoiceDate ? null : $postingDate,
                 'due_date'              => $dueDate,
                 'open_grn_confirmation' => $openGrnConfirmation,
@@ -634,6 +652,57 @@ final class BillService
             'confirmed_at' => gmdate('c'),
             'receipts'     => $open,
         ];
+    }
+
+    /**
+     * A GSTIN typed on the bill that differs from the one on the supplier's Books ledger moves the
+     * place of supply — CGST/SGST against IGST — so it needs a stated reason (F122). Returns the
+     * reason to keep, or null when there is nothing to explain.
+     *
+     * @param array<string, mixed> $ledger
+     * @param array<string, mixed> $input
+     */
+    private function gstinReason(array $ledger, ?string $typed, array $input): ?string
+    {
+        $onLedger = strtoupper(trim((string) ($ledger['gstin'] ?? '')));
+        if ($typed === null || $onLedger === '' || $typed === $onLedger) {
+            return null;
+        }
+        $reason = self::text($input['supplier_gstin_reason'] ?? null);
+        if ($reason === null || mb_strlen($reason) < 10) {
+            Http::error(422, 'gstin_differs_from_ledger', sprintf(
+                'The GSTIN on this invoice (%s) is not the one on the supplier\'s ledger in Smart Books (%s), and it decides how the GST is split. If the supplier really invoiced from that registration, say so (supplier_gstin_reason); otherwise leave the GSTIN blank.',
+                $typed,
+                $onLedger,
+            ), ['field' => 'supplier_gstin', 'ledger_gstin' => $onLedger, 'needs' => 'supplier_gstin_reason']);
+        }
+
+        return mb_substr($reason, 0, 500);
+    }
+
+    /**
+     * Whether the bill is under reverse charge, and why: as the buyer marked it (reverse_charge
+     * true/false), else from the supplier's ledger — services from a supplier abroad are an import
+     * of services, under reverse charge. Anything else is not assumed (F122, F220).
+     *
+     * @param array<string, mixed> $input
+     * @param array<string, mixed> $ledger
+     * @param list<array<string, mixed>> $lines
+     * @return array{0: bool, 1: ?string}
+     */
+    private static function reverseCharge(array $input, array $ledger, array $lines): array
+    {
+        if (array_key_exists('reverse_charge', $input) && $input['reverse_charge'] !== null && $input['reverse_charge'] !== '') {
+            $marked = self::truthy($input['reverse_charge']);
+
+            return [$marked, $marked ? 'marked' : 'marked_not_rcm'];
+        }
+        $services = array_filter($lines, static fn (array $l) => !empty($l['is_service']) || empty($l['item_id']));
+        if ($services !== [] && PlaceOfSupply::isOverseas($ledger)) {
+            return [true, 'import_of_services'];
+        }
+
+        return [false, null];
     }
 
     /** @param array<string, mixed> $po locked order row */
@@ -863,6 +932,15 @@ final class BillService
             $anyGst = $cgstSgst + abs((float) ($tax['igst'] ?? 0));
             if (($sent['supply_nature'] ?? null) === PlaceOfSupply::SEZ && $cgstSgst > 0.005) {
                 $problems[] = 'The supplier is an SEZ unit: a supply from an SEZ is inter-state (IGST) even within the state, but Smart Books booked CGST and SGST. Have the voucher corrected in Smart Books.';
+            }
+            // Reverse charge sent, but Books did not book it as such; or a supply from abroad of
+            // services booked as an ordinary purchase (F220).
+            if (!empty($sent['is_reverse_charge']) && array_key_exists('is_reverse_charge', $voucher) && (int) $voucher['is_reverse_charge'] !== 1) {
+                $problems[] = 'This bill was sent as reverse charge, but Smart Books did not book it under reverse charge: the RCM liability is missing. Have the voucher corrected in Smart Books.';
+            }
+            $services = array_filter((array) ($sent['service_lines'] ?? []), static fn ($l) => is_array($l) && abs((float) ($l['amount'] ?? 0)) > 0.005);
+            if (empty($sent['is_reverse_charge']) && ($sent['party']['pos_state_code'] ?? null) === PlaceOfSupply::OTHER_COUNTRY && $services !== []) {
+                $problems[] = 'Services from a supplier abroad (an import of services) were booked as an ordinary purchase, not under reverse charge. If the buyer owes this GST, revise how it is booked in Smart Books.';
             }
             $categorised = array_filter(Db::jsonColumn($bill['requested_lines']), static fn (array $l) => !empty($l['tax_cat_id']));
             if ($anyGst <= 0.005 && $categorised !== [] && trim((string) ($sent['party']['pos_state_code'] ?? '')) === '') {
@@ -1482,6 +1560,11 @@ final class BillService
         ];
         if (($supply['supply_nature'] ?? null) !== null) {
             $payload['supply_nature'] = $supply['supply_nature'];
+        }
+        if (self::truthy($bill['is_reverse_charge'] ?? false)) {
+            // The buyer owes this GST to the government, not to the supplier: Books books the RCM
+            // liability and the input credit (ReverseChargeGst::applies reads is_reverse_charge).
+            $payload['is_reverse_charge'] = 1;
         }
         if ((int) $bill['bo_id'] === 0) {
             // A company-level bill (entered under All branches) has no branch GSTIN for Books to take

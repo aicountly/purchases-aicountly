@@ -871,6 +871,64 @@ check('A13: under All branches Purchase tells Books the company\'s GST state (Ma
     same('CANCELLED', (new BillService($scope, $owner))->cancel((int) $b['request_id'], ['reason' => 'Re-enter under the Pune branch'])['status'], 'cancelled in one step');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nF122 / F220 — reverse charge and the supplier GSTIN\n";
+
+function ledgers(array $byAccount): void
+{
+    file_put_contents(sys_get_temp_dir() . '/stub-accounts.json', json_encode($byAccount));
+}
+
+function serviceBill(Context $ctx, Auth $auth, string $invoice, array $extra = []): array
+{
+    $bills = new BillService($ctx, $auth);
+    $b = $bills->enter($extra + ['supplier_account_id' => 601, 'supplier_invoice_no' => $invoice, 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['description' => 'Software subscription', 'is_service' => true, 'purchase_acc_id' => 7301, 'tax_cat_id' => 18, 'qty' => 1, 'rate' => 10000]]]);
+    $approver = member('user-approver-' . substr(md5($invoice), 0, 6), ['match.resolve']);
+    foreach (latestExceptions((int) $b['request_id']) as $e) {
+        if ($e['status'] === 'OPEN') {
+            (new BillService($ctx, $approver))->resolveException((int) $e['exception_id'], 'accept', ['note' => 'Service bill, reviewed.']);
+        }
+    }
+
+    return $b;
+}
+
+check('F220: services from a supplier abroad default to reverse charge and reach Books as is_reverse_charge; the buyer can mark RCM; posting_check flags an import of services booked as ordinary', function () use ($ctx, $owner) {
+    reset();
+    ledgers(['601' => ['gstin' => '', 'gst_reg_type' => 'overseas', 'country_code' => 'US', 'state_code' => '']]);
+    $b = serviceBill($ctx, $owner, 'IMP-1');
+    same(true, (bool) Db::scalar('SELECT is_reverse_charge FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $b['request_id']]), 'defaulted from the ledger');
+    same('import_of_services', Db::scalar('SELECT rcm_basis FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $b['request_id']]), 'with its basis');
+    $posted = (new BillService($ctx, $owner))->post((int) $b['request_id']);
+    same(1, IntegrationCommand::latest(88, BillService::COMMAND_BILL, 'bill_request', (int) $b['request_id'])['request_payload']['is_reverse_charge'] ?? null, 'sent to Books');
+    same(true, $posted['posting_check']['verified'], 'and booked as such: ' . json_encode($posted['posting_check']['problems']));
+
+    // Marked not RCM: booked as ordinary, and the read-back says so.
+    $plain = serviceBill($ctx, $owner, 'IMP-2', ['reverse_charge' => false]);
+    $checked = (new BillService($ctx, $owner))->post((int) $plain['request_id']);
+    truthy(str_contains(implode(' ', $checked['posting_check']['problems'] ?? []), 'import of services'), 'flagged: ' . json_encode($checked['posting_check']));
+
+    // A domestic supply the buyer marks RCM (a notified service).
+    ledgers([]);
+    $marked = serviceBill($ctx, $owner, 'RCM-3', ['reverse_charge' => true]);
+    (new BillService($ctx, $owner))->post((int) $marked['request_id']);
+    same(1, IntegrationCommand::latest(88, BillService::COMMAND_BILL, 'bill_request', (int) $marked['request_id'])['request_payload']['is_reverse_charge'] ?? null, 'marked by the buyer');
+});
+
+check('F122: a typed GSTIN must pass its check digit, and one that differs from the ledger\'s needs a reason', function () use ($ctx, $owner) {
+    reset();
+    $bills = new BillService($ctx, $owner);
+    $input = ['supplier_account_id' => 601, 'supplier_invoice_date' => '2026-09-19', 'lines' => [['description' => 'Repairs', 'is_service' => true, 'purchase_acc_id' => 7301, 'qty' => 1, 'rate' => 500]]];
+    same(422, refused(fn () => $bills->enter($input + ['supplier_invoice_no' => 'G-1', 'supplier_gstin' => '29ABCDE1234F1Z5']), 'check digit', 'an invented GSTIN')['status'], 'refused');
+    $r = refused(fn () => $bills->enter($input + ['supplier_invoice_no' => 'G-2', 'supplier_gstin' => '29AABCU9603R1ZJ']), 'gstin_differs_from_ledger', 'another registration, unexplained');
+    same(422, $r['status'], '422');
+    $ok = $bills->enter($input + ['supplier_invoice_no' => 'G-3', 'supplier_gstin' => '29AABCU9603R1ZJ', 'supplier_gstin_reason' => 'Invoiced from their Bengaluru unit.']);
+    same('Invoiced from their Bengaluru unit.', Db::scalar('SELECT supplier_gstin_reason FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $ok['request_id']]), 'kept');
+    $same = $bills->enter($input + ['supplier_invoice_no' => 'G-4', 'supplier_gstin' => '27AAPFU0939F1ZV']);
+    same(null, Db::scalar('SELECT supplier_gstin_reason FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $same['request_id']]), 'the ledger\'s own GSTIN needs nothing');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

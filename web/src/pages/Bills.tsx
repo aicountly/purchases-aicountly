@@ -165,6 +165,7 @@ export function BillDetail() {
           </h1>
           <p style={{ margin: '0.3rem 0 0', color: 'var(--muted)' }}>
             {bill.bill_kind === 'service' ? 'Service bill' : bill.bill_kind === 'direct' ? 'Direct purchase' : 'Against an order'} · Account {bill.supplier_account_id}
+            {bill.is_reverse_charge ? ' · reverse charge' : ''}
             {bill.supplier_invoice_date && ` · dated ${date(bill.supplier_invoice_date)}`}
             {bill.posting_date && ` · booked ${date(bill.posting_date)}`}
             {bill.due_date && ` · due ${date(bill.due_date)}`}
@@ -511,6 +512,11 @@ export function BillEditor() {
   const [invoiceNo, setInvoiceNo] = useState('')
   // The GSTIN printed on the invoice, only when it is not the one on the supplier's ledger.
   const [supplierGstin, setSupplierGstin] = useState('')
+  // Why the invoice's GSTIN is not the one on the supplier's ledger — asked only when they differ (F122).
+  const [gstinReason, setGstinReason] = useState('')
+  const [gstinDiffers, setGstinDiffers] = useState<string | null>(null)
+  // '' = as the supplier's ledger implies (services from abroad are reverse charge); 'yes' / 'no' as marked (F220).
+  const [reverseCharge, setReverseCharge] = useState<'' | 'yes' | 'no'>('')
   const [invoiceDate, setInvoiceDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [dueDate, setDueDate] = useState('')
   const [postingDate, setPostingDate] = useState('')
@@ -564,6 +570,8 @@ export function BillEditor() {
     due_date: dueDate || undefined,
     posting_date: postingDate || undefined,
     supplier_gstin: supplierGstin.trim() || undefined,
+    supplier_gstin_reason: gstinDiffers && gstinReason.trim() ? gstinReason.trim() : undefined,
+    reverse_charge: reverseCharge === '' ? undefined : reverseCharge === 'yes',
   }
 
   async function save() {
@@ -605,6 +613,11 @@ export function BillEditor() {
       const response = await api.post<BillRequest>('v1/bills', body)
       navigate(`/bills/${response.data.request_id}`)
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'gstin_differs_from_ledger') {
+        setGstinDiffers(String(err.details.ledger_gstin ?? ''))
+        setError(err.message)
+        return
+      }
       if (err instanceof ApiError && err.code === 'open_goods_receipts' && Array.isArray(err.details.receipts)) {
         setOpenReceipts(err.details.receipts as OpenReceipt[])
         setError(null)
@@ -651,6 +664,18 @@ export function BillEditor() {
           </Field>
           <Field label="Supplier GSTIN on the invoice (optional)" hint="Only when it differs from the one on their ledger in Smart Books. Its state decides how the GST is split.">
             <Input value={supplierGstin} maxLength={15} onChange={(e) => setSupplierGstin(e.target.value.toUpperCase())} />
+          </Field>
+          {gstinDiffers !== null && (
+            <Field label={`Why not their ledger's GSTIN${gstinDiffers ? ` (${gstinDiffers})` : ''}?`} hint="Recorded with the bill. Leave the GSTIN blank to use the ledger's.">
+              <Input value={gstinReason} onChange={(e) => setGstinReason(e.target.value)} />
+            </Field>
+          )}
+          <Field label="Reverse charge" hint="You owe this GST to the government, not the supplier: import of services, or a notified supply.">
+            <Select value={reverseCharge} onChange={(e) => setReverseCharge(e.target.value as '' | 'yes' | 'no')}>
+              <option value="">As the supplier's ledger implies</option>
+              <option value="yes">Yes — reverse charge</option>
+              <option value="no">No — an ordinary purchase</option>
+            </Select>
           </Field>
           <Field label="Invoice date" hint="As printed on the supplier's invoice."><Input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} /></Field>
           <Field label="Due date (optional)"><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>

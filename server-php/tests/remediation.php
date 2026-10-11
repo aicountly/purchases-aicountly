@@ -1912,14 +1912,14 @@ function acceptOpenExceptions(BillService $bills, int $requestId): void
 check('the place of supply is where the supplier supplies from: its GSTIN, the invoice\'s, abroad, or its state', function () {
     $pos = static fn (array $ledger, ?string $billGstin = null) => array_values(array_intersect_key(Domain\PlaceOfSupply::decide($ledger, $billGstin), ['pos_state_code' => 1, 'supply_nature' => 1]));
     same(['27', null], $pos(['gstin' => '27AAPFU0939F1ZV', 'state_code' => '29']), 'the GSTIN\'s state, before the ledger\'s address');
-    same(['29', null], $pos(['gstin' => '27AAPFU0939F1ZV'], '29AABCU9603R1ZM'), 'the GSTIN on the invoice, when it names another registration');
+    same(['29', null], $pos(['gstin' => '27AAPFU0939F1ZV'], '29AABCU9603R1ZJ'), 'the GSTIN on the invoice, when it names another registration');
     same(['96', null], $pos(['gstin' => '', 'gst_reg_type' => 'overseas', 'country_code' => 'US']), 'a supplier abroad: Other Country, an import');
     same(['96', null], $pos(['gstin' => '', 'country_code' => 'DE']), 'a foreign address too');
     same(['96', null], $pos(['gstin' => '', 'is_non_resident' => 1]), 'and a non-resident');
     same(['07', null], $pos(['gstin' => '', 'state_code' => '7']), 'an unregistered supplier: the state on its ledger');
     same([null, null], $pos(['gstin' => '', 'state_code' => '']), 'nothing to go on: unknown, and nothing is sent');
     same(['24', 'sez'], $pos(['gstin' => '24AAACS1234A1Z5', 'gst_reg_type' => 'sez']), 'an SEZ unit carries Books\' own SEZ nature');
-    same('29AABCU9603R1ZM', Domain\PlaceOfSupply::normaliseGstin(' 29aabcu9603r1zm ', 'supplier_gstin'), 'a GSTIN as typed');
+    same('29AABCU9603R1ZJ', Domain\PlaceOfSupply::normaliseGstin(' 29aabcu9603r1zj ', 'supplier_gstin'), 'a GSTIN as typed');
     refused(fn () => Domain\PlaceOfSupply::normaliseGstin('GST-29', 'supplier_gstin'), 'not a GSTIN', 'and not anything else');
 });
 
@@ -1934,7 +1934,7 @@ check('a bill tells Books where the supplier supplies from, so its GST is split,
     $voucher = array_values(booksVouchers())[0];
     same([900.0, 900.0, 0.0], [(float) $voucher['tax_summary']['cgst'], (float) $voucher['tax_summary']['sgst'], (float) $voucher['tax_summary']['igst']], 'same state as the branch: CGST and SGST');
 
-    $other = taxedServiceBill($bills, 'POS-2', ['supplier_gstin' => '29AABCU9603R1ZM']);
+    $other = taxedServiceBill($bills, 'POS-2', ['supplier_gstin' => '29AABCU9603R1ZJ', 'supplier_gstin_reason' => 'Supplier invoiced from its Karnataka registration.']);
     $posted = $bills->post((int) $other['request_id']);
     same('29', lastDraftOf(11)['party']['pos_state_code'] ?? null, 'invoiced from its Karnataka registration');
     same(1800.0, (float) array_values(booksVouchers())[1]['tax_summary']['igst'], 'another state: IGST');

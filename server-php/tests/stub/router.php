@@ -1438,6 +1438,8 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         'tax_summary' => ['taxable_value' => round($taxable, 4), 'cgst' => round($cgst, 4), 'sgst' => round($sgst, 4), 'igst' => round($igst, 4), 'grand_total' => $grandTotal],
         'pos_state_code' => $posState === '' ? null : $posState,
         'supply_nature' => $voucherPayload['supply_nature'] ?? null,
+        // VoucherReadService answers the header's flag as is_reverse_charge (0 / 1).
+        'is_reverse_charge' => (int) (!empty($voucherPayload['is_reverse_charge'])),
         'stock'       => $stock,
         'challan_settlements' => $voucherPayload['challan_settlements'] ?? [],
         'source_document_id'  => $voucherPayload['source_document_id'] ?? null,
