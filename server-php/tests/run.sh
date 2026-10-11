@@ -37,6 +37,18 @@ INVENTORY_SERVICE_KEY=test-inventory-key
 PULSE_SERVICE_KEY=$PULSE_KEY
 ENVEOF
 
+# Each run keeps the stub's state (its request log, control and mode files, idempotency store,
+# documents, vouchers...) in a directory of its own. The stub and the suites find it through
+# sys_get_temp_dir(), which reads TMPDIR — so two runs on one host (two checkouts, two ports)
+# no longer read and reset each other's files (F448). STUB_STATE_DIR names one explicitly.
+STATE_DIR="${STUB_STATE_DIR:-}"
+if [ -z "$STATE_DIR" ]; then
+  STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/purchases-stub.${STUB_PORT}.XXXXXX")"
+  OWN_STATE_DIR=1
+fi
+mkdir -p "$STATE_DIR"
+export TMPDIR="$STATE_DIR"
+
 php "$ROOT/bin/migrate.php" > /dev/null
 
 # Where the database name and username come from (Console's SaaS Database Details, or DB_NAME / DB_USER) and what is
@@ -48,7 +60,11 @@ php "$ROOT/tests/console_database.php"
 # serialises its own state with a file lock, as the real services do per key.
 STUB_PULSE_SERVICE_KEY="$PULSE_KEY" PHP_CLI_SERVER_WORKERS=6 php -S "127.0.0.1:$STUB_PORT" "$ROOT/tests/stub/router.php" > /dev/null 2>&1 &
 STUB_PID=$!
-trap 'kill $STUB_PID 2>/dev/null || true' EXIT
+cleanup() {
+  kill $STUB_PID 2>/dev/null || true
+  if [ "${OWN_STATE_DIR:-0}" = 1 ] && [ -n "${STATE_DIR:-}" ]; then rm -rf "${STATE_DIR:?}"; fi
+}
+trap cleanup EXIT
 
 # Wait for the stub rather than sleeping a guessed amount.
 for _ in $(seq 1 40); do
@@ -61,6 +77,8 @@ status=0
 php "$ROOT/tests/integration.php" || status=$?
 php "$ROOT/tests/ai_gateway.php" || status=$?
 php "$ROOT/tests/remediation.php" || status=$?
+# Launch readiness 2026-10 (E8-PUR): one check per finding, each failing before its correction.
+php "$ROOT/tests/launch_readiness.php" || status=$?
 # Against a REAL Contacts when CONTACTS_CONTRACT_BASE is set (the e2e harness); skips otherwise.
 php "$ROOT/tests/contacts_contract.php" || status=$?
 exit $status

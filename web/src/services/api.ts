@@ -182,6 +182,32 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 }
 
+/**
+ * A POST that may be a decision on one's own document. The company's segregation-of-duties policy
+ * lets the owner decide on what they raised only by saying why (sod_reason_required): the reason
+ * is asked for here and the same request is sent once more with it as its note. Every other
+ * refusal — including sod_self_decision, where nobody may — is the caller's to show.
+ */
+async function postDeciding<T>(path: string, body?: unknown, params?: QueryParams): Promise<ItemResponse<T>> {
+  try {
+    return await request<ItemResponse<T>>(path, { method: 'POST', body: body ?? {}, params })
+  } catch (error) {
+    if (
+      error instanceof ApiError &&
+      error.code === 'sod_reason_required' &&
+      typeof window !== 'undefined' &&
+      typeof window.prompt === 'function' &&
+      (body === undefined || (typeof body === 'object' && body !== null && !Array.isArray(body)))
+    ) {
+      const reason = window.prompt(`${error.message}\n\nWhy are you deciding on it yourself?`)
+      if (reason && reason.trim() !== '') {
+        return await request<ItemResponse<T>>(path, { method: 'POST', body: { ...((body as Record<string, unknown>) ?? {}), note: reason.trim() }, params })
+      }
+    }
+    throw error
+  }
+}
+
 export const api = {
   get: <T>(path: string, params?: QueryParams, signal?: AbortSignal) =>
     request<T>(path, { method: 'GET', params, signal }),
@@ -192,8 +218,7 @@ export const api = {
   one: <T>(path: string, params?: QueryParams, signal?: AbortSignal) =>
     request<ItemResponse<T>>(path, { method: 'GET', params, signal }),
 
-  post: <T>(path: string, body?: unknown, params?: QueryParams) =>
-    request<ItemResponse<T>>(path, { method: 'POST', body: body ?? {}, params }),
+  post: <T>(path: string, body?: unknown, params?: QueryParams) => postDeciding<T>(path, body, params),
 
   put: <T>(path: string, body?: unknown, params?: QueryParams) =>
     request<ItemResponse<T>>(path, { method: 'PUT', body: body ?? {}, params }),

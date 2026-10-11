@@ -10,8 +10,9 @@ import { CommandStrip } from '../components/CommandStrip'
 import { ItemPicker, LedgerPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
+import * as decimal from '../utils/decimal'
 
-const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'POSTING', 'UNCERTAIN', 'POSTED', 'FAILED', 'BLOCKED', 'CANCELLED']
+const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'REJECTED', 'POSTING', 'UNCERTAIN', 'POSTED', 'FAILED', 'BLOCKED', 'CANCELLED']
 
 export function BillsList() {
   const navigate = useNavigate()
@@ -110,6 +111,7 @@ export function BillDetail() {
   const [revisePosting, setRevisePosting] = useState('')
   const [reviseNote, setReviseNote] = useState('')
   const [reviseGstin, setReviseGstin] = useState('')
+  const [reviseLines, setReviseLines] = useState<ReviseLine[]>([])
   const [cancelReason, setCancelReason] = useState('')
 
   const { data, loading, reload } = useApi(
@@ -138,6 +140,17 @@ export function BillDetail() {
 
   const latest = bill.matches[0]
   const openExceptions = latest?.exceptions.filter((e) => e.status === 'OPEN') ?? []
+  const rejectedExceptions = latest?.exceptions.filter((e) => e.status === 'REJECTED') ?? []
+  // Re-running the match changes the bill's state: only while it is waiting on its match, and
+  // only for someone who enters bills (never a cancelled, rejected, refused or posted one).
+  const canRematch = ['MATCHING', 'MATCHED', 'EXCEPTION'].includes(bill.status) && can('bill.enter')
+  const canPost = ['MATCHED', 'EXCEPTION', 'FAILED', 'UNCERTAIN', 'POSTING'].includes(bill.status) && can('bill.post')
+  const canRevise = ['BLOCKED', 'REJECTED'].includes(bill.status) && can('bill.enter')
+
+  function openRevise() {
+    setReviseLines(revisableLines(bill?.requested_lines))
+    setPanel('revise')
+  }
 
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
@@ -164,16 +177,16 @@ export function BillDetail() {
 
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           <DiscussInConnect entityType="purchase_bill" entityId={Number(id)} />
-          {bill.status !== 'POSTED' && can('match.view') && (
+          {canRematch && (
             <Button disabled={busy} onClick={() => act(`v1/bills/${id}/rematch`)}>Re-run the match</Button>
           )}
-          {!['POSTED', 'CANCELLED', 'BLOCKED'].includes(bill.status) && can('bill.post') && (
-            <Button tone="primary" disabled={busy || openExceptions.length > 0} onClick={() => act(`v1/bills/${id}/post`)}>
+          {canPost && (
+            <Button tone="primary" disabled={busy || openExceptions.length > 0 || rejectedExceptions.length > 0} onClick={() => act(`v1/bills/${id}/post`)}>
               Post to Smart Books
             </Button>
           )}
-          {bill.status === 'BLOCKED' && can('bill.enter') && (
-            <Button tone="primary" disabled={busy} onClick={() => setPanel('revise')}>Revise</Button>
+          {canRevise && (
+            <Button tone="primary" disabled={busy} onClick={openRevise}>Revise</Button>
           )}
           {bill.status === 'POSTED' && can('bill.post') && (
             <Button disabled={busy} onClick={() => act(`v1/bills/${id}/verify`)}>Check again in Smart Books</Button>
@@ -187,6 +200,13 @@ export function BillDetail() {
       {error && <Notice tone="danger" title="That did not work" onDismiss={() => setError(null)}>{error}</Notice>}
 
       <CommandStrip commands={bill.commands} busy={busy} onRetry={() => act(`v1/bills/${id}/post`)} />
+
+      {bill.status === 'REJECTED' && (
+        <Notice tone="danger" title="A match exception was rejected">
+          This bill cannot be posted as it stands. Revise it — the revision is matched afresh — or cancel it.
+          {bill.last_error ? ` ${bill.last_error}` : ''}
+        </Notice>
+      )}
 
       {bill.status === 'POSTED' && bill.posting_check && (
         <Notice
@@ -204,11 +224,41 @@ export function BillDetail() {
       )}
 
       {panel === 'revise' && (
-        <Card title="Revise what Smart Books refused">
+        <Card title={bill.status === 'REJECTED' ? 'Revise the rejected bill' : 'Revise what Smart Books refused'}>
           <div style={{ display: 'grid', gap: '0.6rem' }}>
             <p style={{ margin: 0, fontSize: '0.88rem' }}>
-              {bill.last_error ?? 'Smart Books refused this bill.'} A revision is a new request; the refused one is withdrawn and cannot be sent again.
+              {bill.last_error ?? (bill.status === 'REJECTED' ? 'A match exception was rejected.' : 'Smart Books refused this bill.')} A revision is a new request, matched afresh; the old one is withdrawn and cannot be sent again.
             </p>
+            {reviseLines.length > 0 && (
+              <div className="table-scroll" style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ textAlign: 'left', color: 'var(--muted)' }}>
+                      <th>Line</th><th>Description</th><th>Quantity</th><th>Rate</th><th>Discount %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reviseLines.map((line, index) => (
+                      <tr key={line.key} data-testid="revise-line">
+                        <td>{line.line_no}</td>
+                        <td>{line.description ?? (line.item_id ? `Item ${line.item_id}` : 'Service')}</td>
+                        {(['qty', 'rate', 'discount_pc'] as const).map((field) => (
+                          <td key={field}>
+                            <Input
+                              aria-label={`${field} of line ${line.line_no}`}
+                              inputMode="decimal"
+                              value={line[field]}
+                              onChange={(e) => setReviseLines(reviseLines.map((l, i) => (i === index ? { ...l, [field]: e.target.value } : l)))}
+                              style={{ width: '7rem' }}
+                            />
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.6rem' }}>
               <Field label="Supplier invoice date"><Input type="date" value={reviseDate} onChange={(e) => setReviseDate(e.target.value)} /></Field>
               <Field label="Posting date"><Input type="date" value={revisePosting} onChange={(e) => setRevisePosting(e.target.value)} /></Field>
@@ -223,7 +273,13 @@ export function BillDetail() {
                 tone="primary"
                 disabled={busy}
                 onClick={async () => {
-                  await act(`v1/bills/${id}/revise`, { supplier_invoice_date: reviseDate || undefined, posting_date: revisePosting || undefined, supplier_gstin: reviseGstin.trim() || undefined, note: reviseNote || undefined })
+                  await act(`v1/bills/${id}/revise`, {
+                    supplier_invoice_date: reviseDate || undefined,
+                    posting_date: revisePosting || undefined,
+                    supplier_gstin: reviseGstin.trim() || undefined,
+                    note: reviseNote || undefined,
+                    lines: reviseLines.length > 0 ? reviseLines.map(revisedLine) : undefined,
+                  })
                   setPanel('none')
                 }}
               >
@@ -339,6 +395,53 @@ export function BillDetail() {
   )
 }
 
+interface ReviseLine {
+  key: string
+  line_no: number
+  description: string | null
+  item_id: number | null
+  qty: string
+  rate: string
+  discount_pc: string
+  /** Everything else the line carries (order line, ledger, tax category, warehouse), sent back as it was. */
+  rest: Record<string, unknown>
+}
+
+/** The bill's stored lines as an editable list: quantity, rate and discount are what a revision changes. */
+function revisableLines(raw: unknown): ReviseLine[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((l): l is Record<string, unknown> => typeof l === 'object' && l !== null)
+    .map((l, i) => ({
+      key: `${i}-${String(l.line_no ?? i)}`,
+      line_no: Number(l.line_no ?? i + 1),
+      description: typeof l.description === 'string' ? l.description : null,
+      item_id: l.item_id == null ? null : Number(l.item_id),
+      qty: String(l.qty ?? ''),
+      rate: String(l.rate ?? ''),
+      discount_pc: String(l.discount_pc ?? '0'),
+      rest: l,
+    }))
+}
+
+function revisedLine(line: ReviseLine): Record<string, unknown> {
+  const { rest } = line
+  return {
+    po_line_id: rest.po_line_id ?? undefined,
+    item_id: rest.item_id ?? undefined,
+    unit_id: rest.unit_id ?? undefined,
+    warehouse_id: rest.warehouse_id ?? undefined,
+    is_service: rest.is_service ?? undefined,
+    purchase_acc_id: rest.purchase_acc_id ?? undefined,
+    description: rest.description ?? undefined,
+    tax_cat_id: rest.tax_cat_id ?? undefined,
+    hsn_sac: rest.hsn_sac ?? undefined,
+    qty: line.qty,
+    rate: line.rate,
+    discount_pc: line.discount_pc,
+  }
+}
+
 function LegCard({ title, owner, detail }: { title: string; owner: string; detail: string }) {
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.7rem' }}>
@@ -387,6 +490,9 @@ export function BillEditor() {
   const [postingDate, setPostingDate] = useState('')
   const [quantities, setQuantities] = useState<Record<number, string>>({})
   const [rates, setRates] = useState<Record<number, string>>({})
+  // The order line's discount, carried onto the bill: the bill is matched on the NET rate (A31),
+  // so defaulting to the gross rate with no discount would show a variance nobody agreed.
+  const [discounts, setDiscounts] = useState<Record<number, string>>({})
   const [narration, setNarration] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -409,14 +515,17 @@ export function BillEditor() {
     setSeeded(true)
     const nextQty: Record<number, string> = {}
     const nextRates: Record<number, string> = {}
+    const nextDiscounts: Record<number, string> = {}
     const progress = new Map((po.progress?.lines ?? []).map((l) => [l.line_id, l]))
     for (const line of po.lines) {
       const toBill = progress.get(line.line_id)?.to_bill_qty ?? Math.max(0, Number(line.received_qty) - Number(line.billed_qty))
       nextQty[line.line_id] = String(toBill > 0 ? toBill : 0)
       nextRates[line.line_id] = line.agreed_rate
+      nextDiscounts[line.line_id] = line.discount_pc ?? '0'
     }
     setQuantities(nextQty)
     setRates(nextRates)
+    setDiscounts(nextDiscounts)
   }
 
   const dates = {
@@ -440,7 +549,12 @@ export function BillEditor() {
             narration: narration || undefined,
             lines: po.lines
               .filter((line) => Number(quantities[line.line_id] ?? 0) > 0)
-              .map((line) => ({ po_line_id: line.line_id, qty: Number(quantities[line.line_id] ?? 0), rate: Number(rates[line.line_id] ?? line.agreed_rate) })),
+              .map((line) => ({
+                po_line_id: line.line_id,
+                qty: quantities[line.line_id] ?? '0',
+                rate: rates[line.line_id] ?? line.agreed_rate,
+                discount_pc: discounts[line.line_id] ?? line.discount_pc ?? '0',
+              })),
           }
         : {
             supplier_account_id: supplier?.acc_id,
@@ -452,8 +566,8 @@ export function BillEditor() {
               .filter((l) => Number(l.qty || 0) > 0 && Number(l.rate || 0) > 0)
               .map((l) =>
                 l.kind === 'service'
-                  ? { is_service: true, description: l.description.trim() || 'Service', purchase_acc_id: l.purchase_acc_id ?? undefined, qty: Number(l.qty), rate: Number(l.rate) }
-                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : undefined, qty: Number(l.qty), rate: Number(l.rate) },
+                  ? { is_service: true, description: l.description.trim() || 'Service', purchase_acc_id: l.purchase_acc_id ?? undefined, qty: l.qty, rate: l.rate }
+                  : { item_id: l.item_id ?? undefined, description: l.description.trim() || undefined, warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : undefined, qty: l.qty, rate: l.rate },
               ),
           }
       const response = await api.post<BillRequest>('v1/bills', body)
@@ -468,9 +582,10 @@ export function BillEditor() {
   if (poId && order.loading) return <p style={{ color: 'var(--muted)' }}>Loading the purchase order…</p>
   if (poId && !po) return <Notice tone="warning">That purchase order does not exist.</Notice>
 
+  // In fixed point, line by line as the server computes them (F452).
   const total = po
-    ? po.lines.reduce((sum, line) => sum + Number(quantities[line.line_id] ?? 0) * Number(rates[line.line_id] ?? line.agreed_rate), 0)
-    : direct.reduce((sum, l) => sum + Number(l.qty || 0) * Number(l.rate || 0), 0)
+    ? decimal.sum(po.lines.map((line) => decimal.lineAmount(quantities[line.line_id] ?? '0', rates[line.line_id] ?? line.agreed_rate, discounts[line.line_id] ?? line.discount_pc ?? '0')))
+    : decimal.sum(direct.map((l) => decimal.lineAmount(l.qty || '0', l.rate || '0')))
   const currency = po?.currency_code ?? 'INR'
   const setLine = (key: string, patch: Partial<DirectLine>) => setDirect((current) => current.map((l) => (l.key === key ? { ...l, ...patch } : l)))
   const missingLedger = !po && direct.some((l) => l.kind === 'service' && Number(l.rate || 0) > 0 && l.purchase_acc_id === null)
@@ -535,7 +650,24 @@ export function BillEditor() {
                   <Input value={rates[line.line_id] ?? ''} inputMode="decimal" onChange={(e) => setRates({ ...rates, [line.line_id]: e.target.value })} style={{ width: '7rem', textAlign: 'right' }} />
                 ),
               },
-              { key: 'agreed', header: 'Agreed', numeric: true, render: (line) => money(line.agreed_rate, currency) },
+              {
+                key: 'discount',
+                header: 'Discount %',
+                numeric: true,
+                render: (line) => (
+                  <Input aria-label={`Discount of line ${line.line_no}`} value={discounts[line.line_id] ?? ''} inputMode="decimal" onChange={(e) => setDiscounts({ ...discounts, [line.line_id]: e.target.value })} style={{ width: '5rem', textAlign: 'right' }} />
+                ),
+              },
+              {
+                key: 'agreed',
+                header: 'Agreed (net)',
+                numeric: true,
+                render: (line) => (
+                  <span title={Number(line.discount_pc) > 0 ? `${money(line.agreed_rate, currency)} less ${line.discount_pc}%` : undefined}>
+                    {money(Number(line.ordered_qty) > 0 ? Number(line.line_amount) / Number(line.ordered_qty) : Number(line.agreed_rate), currency)}
+                  </span>
+                ),
+              },
             ]}
           />
           <p style={{ color: 'var(--muted)', fontSize: '0.78rem', marginTop: '0.75rem', marginBottom: 0 }}>

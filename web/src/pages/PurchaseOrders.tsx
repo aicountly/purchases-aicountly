@@ -12,6 +12,7 @@ import { OrderCommunicationsPanel, ReceiptReturnPanel, ReceiveGoodsPanel, ShortC
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
+import * as decimal from '../utils/decimal'
 
 const STATUSES = ['', 'DRAFT', 'APPROVAL_PENDING', 'APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CLOSED', 'CANCELLED']
 
@@ -515,8 +516,10 @@ export function PurchaseOrderEditor() {
     setLines((c) => c.map((line) => (line.key === key ? { ...line, ...patch } : line)))
   }
 
-  const subtotal = lines.reduce((sum, l) => sum + Number(l.ordered_qty || 0) * Number(l.agreed_rate || 0), 0)
-  const tax = lines.reduce((sum, l) => sum + (Number(l.ordered_qty || 0) * Number(l.agreed_rate || 0) * Number(l.estimated_tax_pc || 0)) / 100, 0)
+  // Fixed point, line by line as the server computes them (PurchaseOrderService::normaliseLines; F452).
+  const lineAmounts = lines.map((l) => decimal.lineAmount(l.ordered_qty || '0', l.agreed_rate || '0'))
+  const subtotal = Number(decimal.sum(lineAmounts))
+  const tax = Number(decimal.sum(lines.map((l, i) => decimal.percentOf(lineAmounts[i], l.estimated_tax_pc || '0'))))
 
   async function save() {
     if (!supplier) {
@@ -621,7 +624,7 @@ export function PurchaseOrderEditor() {
                 <Field label="Tax %" hint="Estimate only"><Input value={line.estimated_tax_pc} inputMode="decimal" onChange={(e) => patchLine(line.key, { estimated_tax_pc: e.target.value })} /></Field>
                 <div style={{ textAlign: 'right', paddingBottom: '0.35rem' }}>
                   <div style={{ fontSize: '0.78rem', color: 'var(--muted)' }}>Line</div>
-                  <div className="num" style={{ fontWeight: 600 }}>{money(Number(line.ordered_qty || 0) * Number(line.agreed_rate || 0))}</div>
+                  <div className="num" style={{ fontWeight: 600 }}>{money(decimal.lineAmount(line.ordered_qty || '0', line.agreed_rate || '0'))}</div>
                 </div>
               </div>
             </div>

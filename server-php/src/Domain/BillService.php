@@ -163,9 +163,7 @@ final class BillService
         $match = (new ThreeWayMatchService($this->ctx, $this->auth))->run($bill);
 
         Db::update('purchase_bill_requests', [
-            'status'     => $match['verdict'] === ThreeWayMatchService::BLOCKED || $match['verdict'] === ThreeWayMatchService::REVIEW_REQUIRED
-                ? 'EXCEPTION'
-                : 'MATCHED',
+            'status'     => ThreeWayMatchService::billStatusFor((int) $match['match_id']),
             'updated_at' => self::now(),
         ], ['request_id' => $requestId]);
 
@@ -244,8 +242,16 @@ final class BillService
             if ($bill['status'] === 'POSTED') {
                 Http::conflict('That bill has already been posted to Smart Books.');
             }
-            if ($bill['status'] === 'CANCELLED') {
+            if ($bill['status'] === 'CANCELLED' || $bill['cancelled_at'] !== null) {
+                // cancelled_at is checked on its own too: a cancelled bill is never posted, whatever
+                // its status column was later made to say (F228).
                 Http::conflict('That bill was cancelled.');
+            }
+            if ($bill['status'] === 'REJECTED') {
+                Http::error(409, 'match_exception_rejected', 'A match exception on this bill was rejected, so it cannot be posted as it stands. Revise the bill (a new revision is matched afresh) or cancel it.', ['request_id' => $requestId, 'revise' => true]);
+            }
+            if (in_array($bill['status'], ['DRAFT', 'MATCHING'], true)) {
+                Http::conflict('This bill has not been matched yet. Re-run the match, then post it.', ['request_id' => $requestId]);
             }
             if ($bill['po_id'] !== null) {
                 $po = PoProgress::lock((int) $bill['po_id'], $this->ctx->cmpId);
@@ -398,15 +404,16 @@ final class BillService
                 'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
                 ['id' => $requestId, 'cmp' => $this->ctx->cmpId],
             );
-            if ($locked['status'] !== 'BLOCKED') {
-                Http::conflict('Only a bill Smart Books refused can be revised; retry anything else as it stands.');
+            if (!in_array($locked['status'], ['BLOCKED', 'REJECTED'], true)) {
+                Http::conflict('Only a bill Smart Books refused, or one whose match exception was rejected, can be revised; retry anything else as it stands.');
             }
             $from = (int) $locked['revision'];
             // The refused revision is finished with: it leaves the strip of open work, and
             // can never be sent again under its old key.
             $command = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_BILL, 'bill_request', $requestId, $from);
-            if ($command !== null) {
-                IntegrationCommand::withdraw((int) $command['command_id'], 'Superseded by revision ' . ($from + 1) . '.', 'superseded');
+            if ($command !== null && $command['status'] !== IntegrationCommand::CANCELLED
+                && !IntegrationCommand::withdraw((int) $command['command_id'], 'Superseded by revision ' . ($from + 1) . '.', 'superseded')) {
+                Http::conflict('Smart Books may already hold this revision of the bill. Retry it to learn the outcome before revising.', ['request_id' => $requestId]);
             }
             Db::update('purchase_bill_requests', [
                 'revision'              => $from + 1,
@@ -427,7 +434,7 @@ final class BillService
 
         Audit::record($this->ctx, $this->auth, 'bill.revised', 'bill_request', $requestId, ['revision' => $revision - 1], ['revision' => $revision], self::text($input['note'] ?? null) ?? '');
 
-        return $this->rematch($requestId);
+        return $this->matchAgain($requestId);
     }
 
     /**
@@ -508,7 +515,25 @@ final class BillService
         );
         $blockOnFailure = $settings === null || (bool) $settings['block_bill_on_match_failure'];
 
-        if ($latestMatch === null || !$blockOnFailure) {
+        if ($latestMatch === null) {
+            return;
+        }
+        // A REJECTED exception always stops the post, whatever block_bill_on_match_failure says:
+        // somebody looked at this variance and said no. Rejected used to count as "decided", so
+        // the bill posted at the very variance just rejected (A26).
+        $rejected = (int) Db::scalar(
+            "SELECT COUNT(*) FROM purchase_match_exceptions WHERE match_id = :id AND status = 'REJECTED'",
+            ['id' => (int) $latestMatch['match_id']],
+        );
+        if ($rejected > 0) {
+            Http::error(
+                409,
+                'match_exception_rejected',
+                'A match exception on this bill was rejected, so it cannot be posted as it stands. Revise the bill (a new revision is matched afresh) or cancel it.',
+                ['match_id' => (int) $latestMatch['match_id'], 'rejected_exceptions' => $rejected, 'revise' => true],
+            );
+        }
+        if (!$blockOnFailure) {
             return;
         }
         $openExceptions = (int) Db::scalar(
@@ -717,10 +742,28 @@ final class BillService
         ], static fn ($v) => $v !== null);
     }
 
-    /** Accept or reject a match exception, with a reason. */
+    /**
+     * Accept or reject a match exception, with a reason.
+     *
+     * Only an exception of the bill's LATEST match — the one its current revision was matched
+     * with — and only while the bill is waiting on its match. Accepting is a decision to pay
+     * more than was agreed: nobody accepts a variance on a bill they entered themselves (the
+     * company's segregation-of-duties policy, as for orders and requisitions; F265). Rejecting
+     * stops the bill: it can be revised or cancelled, never posted as it stands (A26).
+     */
     public function resolveException(int $exceptionId, string $action, array $input): array
     {
         Permissions::assert($this->ctx, $this->auth, 'match.resolve');
+        if (!in_array($action, ['accept', 'reject'], true)) {
+            Http::validationFailed('An exception is accepted or rejected.', ['field' => 'action']);
+        }
+
+        $note = self::text($input['note'] ?? null);
+        if ($note === null) {
+            // Accepting a variance costs the company money. Who accepted it and
+            // why is the whole audit value of this control.
+            Http::validationFailed('Say why this variance is being accepted or rejected.', ['field' => 'note']);
+        }
 
         $exception = Db::first(
             'SELECT e.*, m.bill_request_id FROM purchase_match_exceptions e
@@ -731,52 +774,101 @@ final class BillService
         if ($exception === null) {
             Http::notFound('That match exception does not exist.');
         }
-        if ($exception['status'] !== 'OPEN') {
-            Http::conflict('That exception has already been decided.');
+        $requestId = (int) $exception['bill_request_id'];
+        $bill = $this->find($requestId);
+        if ($bill === []) {
+            Http::notFound('That match exception does not exist.');
+        }
+        if ($action === 'accept') {
+            SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) $bill['requested_by'], 'bill', 'bill_request', $requestId, $note);
         }
 
-        $note = self::text($input['note'] ?? null);
-        if ($note === null) {
-            // Accepting a variance costs the company money. Who accepted it and
-            // why is the whole audit value of this control.
-            Http::validationFailed('Say why this variance is being accepted or rejected.', ['field' => 'note']);
-        }
+        $status = Db::transaction(function () use ($exceptionId, $action, $note, $requestId): string {
+            $locked = Db::first(
+                'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
+                ['id' => $requestId, 'cmp' => $this->ctx->cmpId],
+            );
+            if (!in_array($locked['status'], ['MATCHED', 'EXCEPTION'], true)) {
+                Http::conflict('This bill is ' . strtolower((string) $locked['status']) . '; its match exceptions can no longer be decided.', ['status' => $locked['status']]);
+            }
+            $latest = (int) Db::scalar(
+                'SELECT match_id FROM purchase_match_results WHERE bill_request_id = :id ORDER BY match_id DESC LIMIT 1',
+                ['id' => $requestId],
+            );
+            $current = Db::first(
+                'SELECT * FROM purchase_match_exceptions WHERE exception_id = :id AND cmp_id = :cmp FOR UPDATE',
+                ['id' => $exceptionId, 'cmp' => $this->ctx->cmpId],
+            );
+            if ((int) $current['match_id'] !== $latest) {
+                Http::conflict('That exception belongs to an earlier match of this bill. Decide the exceptions of its latest match.', ['latest_match_id' => $latest]);
+            }
+            if ($current['status'] !== 'OPEN') {
+                Http::conflict('That exception has already been decided.');
+            }
 
-        Db::update('purchase_match_exceptions', [
-            'status'        => $action === 'accept' ? 'ACCEPTED' : 'REJECTED',
-            'decided_by'    => $this->auth->uuid,
-            'decided_at'    => self::now(),
-            'decision_note' => $note,
-        ], ['exception_id' => $exceptionId, 'cmp_id' => $this->ctx->cmpId]);
+            Db::update('purchase_match_exceptions', [
+                'status'        => $action === 'accept' ? 'ACCEPTED' : 'REJECTED',
+                'decided_by'    => $this->auth->uuid,
+                'decided_at'    => self::now(),
+                'decision_note' => $note,
+            ], ['exception_id' => $exceptionId, 'cmp_id' => $this->ctx->cmpId]);
+
+            $status = ThreeWayMatchService::billStatusFor($latest);
+            Db::update('purchase_bill_requests', [
+                'status'     => $status,
+                'last_error' => $status === 'REJECTED' ? 'A match exception was rejected: ' . mb_substr($note, 0, 400) : null,
+                'updated_at' => self::now(),
+            ], ['request_id' => $requestId, 'cmp_id' => $this->ctx->cmpId]);
+
+            return $status;
+        });
 
         Audit::record($this->ctx, $this->auth, 'match.' . $action, 'match_exception', $exceptionId, ['status' => 'OPEN'], [
-            'status' => $action === 'accept' ? 'ACCEPTED' : 'REJECTED',
+            'status' => $action === 'accept' ? 'ACCEPTED' : 'REJECTED', 'bill_status' => $status,
         ], $note);
 
-        return $this->find((int) $exception['bill_request_id']);
+        return $this->find($requestId);
     }
 
-    /** Re-run the match, for instance after a late receipt was recorded. */
+    /**
+     * Re-run the match, for instance after a late receipt was recorded.
+     *
+     * It changes the bill's state, so it needs bill.enter, not match.view (F497). Only a bill
+     * still waiting on its match: never one being posted, posted, refused by Books, cancelled or
+     * rejected — re-matching a cancelled bill used to bring it back to MATCHED and postable
+     * (F228). Decisions taken on this revision carry over to identical findings.
+     */
     public function rematch(int $requestId): array
     {
-        Permissions::assert($this->ctx, $this->auth, 'match.view');
+        Permissions::assert($this->ctx, $this->auth, 'bill.enter');
 
         $bill = $this->find($requestId);
         if ($bill === []) {
             Http::notFound('That bill does not exist.');
         }
-        if ($bill['status'] === 'POSTED') {
-            Http::conflict('That bill has been posted; matching it again would change nothing.');
+        if (!in_array($bill['status'], ['MATCHING', 'MATCHED', 'EXCEPTION'], true) || $bill['cancelled_at'] !== null) {
+            Http::conflict(match ((string) $bill['status']) {
+                'POSTED'    => 'That bill has been posted; matching it again would change nothing.',
+                'CANCELLED' => 'That bill was cancelled; it cannot be matched again.',
+                'REJECTED'  => 'A match exception on this bill was rejected. Revise the bill to match it afresh, or cancel it.',
+                default     => 'This bill is ' . strtolower((string) $bill['status']) . ' and cannot be matched again as it stands.',
+            }, ['status' => $bill['status']]);
         }
 
+        return $this->matchAgain($requestId);
+    }
+
+    /** Match the bill as it now stands and set its status from the stored result. */
+    private function matchAgain(int $requestId): array
+    {
+        $bill = $this->find($requestId);
         $match = (new ThreeWayMatchService($this->ctx, $this->auth))->run($bill);
 
-        Db::update('purchase_bill_requests', [
-            'status'     => in_array($match['verdict'], [ThreeWayMatchService::BLOCKED, ThreeWayMatchService::REVIEW_REQUIRED], true)
-                ? 'EXCEPTION'
-                : 'MATCHED',
-            'updated_at' => self::now(),
-        ], ['request_id' => $requestId]);
+        Db::run(
+            "UPDATE purchase_bill_requests SET status = :status, updated_at = NOW()
+              WHERE request_id = :id AND cmp_id = :cmp AND status IN ('MATCHING', 'MATCHED', 'EXCEPTION') AND cancelled_at IS NULL",
+            ['status' => ThreeWayMatchService::billStatusFor((int) $match['match_id']), 'id' => $requestId, 'cmp' => $this->ctx->cmpId],
+        );
 
         $result = $this->find($requestId);
         $result['match'] = $match;
@@ -898,7 +990,7 @@ final class BillService
                 $where[] = "b.status = 'POSTED'";
                 break;
             case 'failed':
-                $where[] = "b.status IN ('FAILED', 'EXCEPTION')";
+                $where[] = "b.status IN ('FAILED', 'EXCEPTION', 'REJECTED', 'BLOCKED')";
                 break;
             case 'duplicates':
                 // `o.request_id < b.request_id` — the LATER bill of a pair, not
@@ -1050,8 +1142,9 @@ final class BillService
             'entered_by'          => $row['requested_by'],
             'entered_at'          => $row['created_at'],
             'route'               => '/bills/' . (int) $row['request_id'],
-            'can_edit'            => !$posted && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
-            'can_rematch'         => !$posted && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
+            'can_edit'            => !$posted && $status !== 'CANCELLED' && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
+            'can_rematch'         => in_array($status, ['MATCHING', 'MATCHED', 'EXCEPTION'], true) && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
+            'can_revise'          => in_array($status, ['BLOCKED', 'REJECTED'], true) && Permissions::allows($this->ctx, $this->auth, 'bill.enter'),
             'can_resolve'         => $openExceptions > 0 && Permissions::allows($this->ctx, $this->auth, 'match.resolve'),
             'can_post'            => $status === 'MATCHED' && Permissions::allows($this->ctx, $this->auth, 'bill.post'),
         ];
@@ -1092,7 +1185,7 @@ final class BillService
                     COUNT(*) FILTER (WHERE b.status IN ('DRAFT', 'MATCHING')) AS awaiting_review,
                     COUNT(*) FILTER (WHERE b.status = 'MATCHED') AS ready_to_post,
                     COUNT(*) FILTER (WHERE b.status = 'POSTED') AS posted,
-                    COUNT(*) FILTER (WHERE b.status IN ('FAILED', 'EXCEPTION')) AS failed,
+                    COUNT(*) FILTER (WHERE b.status IN ('FAILED', 'EXCEPTION', 'REJECTED', 'BLOCKED')) AS failed,
                     COUNT(*) FILTER (WHERE EXISTS (
                         SELECT 1 FROM purchase_match_results m
                           JOIN purchase_match_exceptions e ON e.match_id = m.match_id

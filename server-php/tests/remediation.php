@@ -758,7 +758,7 @@ check('a physical return\'s debit note waits for Inventory to confirm the dispat
     $return = returnOf($ctx, $owner, $po, 10);
     $id = (int) $return['return_id'];
     same(250.0, (float) $return['lines'][0]['rate'], 'priced from the order when no rate is given');
-    $returns->approveReturn($id, []);
+    $returns->approveReturn($id, ['note' => 'The owner approves a return they raised.']);
 
     refused(fn () => $returns->requestDebitNote($id), 'Send the goods back first', 'debit note before the dispatch');
     stubFail('inventory-documents/post', 503);
@@ -819,7 +819,7 @@ check('a financial return needs its own authority, a reason and a ledger, and mo
     $returns = new Domain\ReturnClaimService($ctx, $owner);
     $return = $returns->createReturn($input);
     refused(fn () => $returns->dispatchReturn((int) $return['return_id']), 'Nothing goes back', 'a financial return has nothing to dispatch');
-    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->approveReturn((int) $return['return_id'], ['note' => 'The owner approves a return they raised.']);
     $debited = $returns->requestDebitNote((int) $return['return_id']);
     same('DEBITED', $debited['status'], 'debited');
     $note = array_values(array_filter(booksVouchers(), static fn ($v) => (int) $v['vch_type_id'] === 3))[0];
@@ -833,7 +833,7 @@ check('a dispatched return can be recalled: Inventory reverses the challan and t
     $po = billedOrder($ctx, $owner);
     $returns = new Domain\ReturnClaimService($ctx, $owner);
     $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
-    $returns->approveReturn($id, []);
+    $returns->approveReturn($id, ['note' => 'The owner approves a return they raised.']);
     $dispatched = $returns->dispatchReturn($id);
     same('10.0000', (string) Db::scalar('SELECT returned_qty FROM purchase_order_lines WHERE po_id = :id', ['id' => (int) $po['po_id']]), 'counted as gone');
 
@@ -853,7 +853,7 @@ check('goods sent back for good close the order; goods to be replaced keep it wa
     $po = billedOrder($ctx, $owner);
     same('CLOSED', $po['status'], 'received and billed in full');
     $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
-    $returns->approveReturn($id, []);
+    $returns->approveReturn($id, ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn($id);
     same('RECEIVED', $orders->find((int) $po['po_id'])['status'], 'an open return keeps the order from closing');
     $returns->requestDebitNote($id);
@@ -864,7 +864,7 @@ check('goods sent back for good close the order; goods to be replaced keep it wa
     reset();
     $po = billedOrder($ctx, $owner);
     $id = (int) returnOf($ctx, $owner, $po, 10, ['expect_replacement' => true])['return_id'];
-    $returns->approveReturn($id, []);
+    $returns->approveReturn($id, ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn($id);
     $returns->requestDebitNote($id);
     $waiting = $orders->find((int) $po['po_id']);
@@ -878,7 +878,7 @@ function approvedClaim(Context $ctx, Auth $auth, float $amount, ?int $poId = nul
     $claims = new Domain\ReturnClaimService($ctx, $auth);
     $claim = $claims->createClaim(['supplier_account_id' => 601, 'claim_kind' => 'shortage', 'claimed_amount' => $amount, 'po_id' => $poId]);
     $claims->updateClaim((int) $claim['claim_id'], 'submit', []);
-    $claims->updateClaim((int) $claim['claim_id'], 'approve', []);
+    $claims->updateClaim((int) $claim['claim_id'], 'approve', ['note' => 'The owner approves a claim they raised.']);
 
     return (int) $claim['claim_id'];
 }
@@ -891,19 +891,19 @@ check('a claim settles only when its debit note is in Books, partly along the wa
 
     $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 3000, 'adjustment_acc_id' => 7310]);
     stubFail('/vouchers/drafts', 503);
-    refused(fn () => $resolutions->approve((int) $r['resolution_id']), 'press Retry', 'Books down');
+    refused(fn () => $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']), 'press Retry', 'Books down');
     stubRecover();
     same('FAILED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution says it failed');
     same('APPROVED', $claims->findClaim($claimId)['status'], 'and the claim is not settled by hope');
 
-    $resolutions->approve((int) $r['resolution_id']);
+    $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
     $claim = $claims->findClaim($claimId);
     same('PARTIALLY_SETTLED', $claim['status'], '3000 of 5000');
     same('3000.0000', (string) $claim['settled_amount'], 'counted');
     same(1, count(booksVouchers()), 'one debit note for the retried resolution');
 
     $n = $resolutions->propose($claimId, ['kind' => 'non_financial', 'amount' => 2000, 'note' => 'Supplier will credit the balance against the October order.']);
-    $resolutions->approve((int) $n['resolution_id']);
+    $resolutions->approve((int) $n['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
     same('SETTLED', $claims->findClaim($claimId)['status'], 'settled when the resolutions cover the approved amount');
 });
 
@@ -917,7 +917,7 @@ check('a refund completes only against a Books receipt that shows the money came
     $claimId = approvedClaim($ctx, $owner, 1000);
     $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
     $r = $resolutions->propose($claimId, ['kind' => 'refund', 'amount' => 1000]);
-    $resolutions->approve((int) $r['resolution_id']);
+    $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
     same('IN_PROGRESS', $resolutions->find((int) $r['resolution_id'])['status'], 'waits for the money');
 
     refused(fn () => $resolutions->link((int) $r['resolution_id'], ['books_voucher_id' => 5001]), 'not a receipt', 'a debit note is not money received');
@@ -932,7 +932,7 @@ check('a replacement completes on a recorded GRN of the claim\'s order, once', f
     $claimId = approvedClaim($ctx, $owner, 2500, (int) $po['po_id']);
     $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
     $r = $resolutions->propose($claimId, ['kind' => 'replacement', 'amount' => 2500]);
-    $resolutions->approve((int) $r['resolution_id']);
+    $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
 
     stubFail('inventory-documents/post', 503);
     refused(fn () => receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10), 'press Retry', 'a GRN Inventory has not recorded');
@@ -950,12 +950,12 @@ check('a claim settled by sending goods back completes when that return\'s debit
     $claimId = approvedClaim($ctx, $owner, 2500, (int) $po['po_id']);
     $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
     $r = $resolutions->propose($claimId, ['kind' => 'physical_return', 'amount' => 2500, 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'return_qty' => 10]]]);
-    $resolutions->approve((int) $r['resolution_id']);
+    $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
     $returnId = (int) $resolutions->find((int) $r['resolution_id'])['reference']['return_id'];
     same('APPROVED', (new Domain\ReturnClaimService($ctx, $owner))->findClaim($claimId)['status'], 'nothing settled while the goods are still here');
 
     $returns = new Domain\ReturnClaimService($ctx, $owner);
-    $returns->approveReturn($returnId, []);
+    $returns->approveReturn($returnId, ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn($returnId);
     same('APPROVED', $returns->findClaim($claimId)['status'], 'nor while they are on their way back');
     $returns->requestDebitNote($returnId);
@@ -1495,14 +1495,14 @@ check('every key Books receives fits its 64 characters: return and claim debit n
     $po = billedOrder($ctx, $owner);
     $returns = new Domain\ReturnClaimService($ctx, $owner);
     $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
-    $returns->approveReturn($id, []);
+    $returns->approveReturn($id, ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn($id);
     same('DEBITED', $returns->requestDebitNote($id)['status'], 'a purchase return\'s debit note posts');
 
     $claimId = approvedClaim($ctx, $owner, 1200);
     $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
     $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 1200, 'adjustment_acc_id' => 7310]);
-    same('COMPLETED', $resolutions->approve((int) $r['resolution_id'])['status'], 'a claim\'s debit note posts');
+    same('COMPLETED', $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.'])['status'], 'a claim\'s debit note posts');
 
     // A company and a bill with enough digits that the bill's own key passes 64 with its step.
     $bigCompany = Context::of(4321987, 6, 0);
@@ -1525,7 +1525,7 @@ check('a debit note Books refused for its key length is found, confirmed absent 
     $po = billedOrder($ctx, $owner);
     $returns = new Domain\ReturnClaimService($ctx, $owner);
     $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
-    $returns->approveReturn($id, []);
+    $returns->approveReturn($id, ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn($id);
 
     booksRefusesTheKey();
@@ -1588,7 +1588,7 @@ check('the recovery leaves alone a debit note Books already holds under the same
     $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
     $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 900, 'adjustment_acc_id' => 7310]);
     booksRefusesTheKey();
-    refused(fn () => $resolutions->approve((int) $r['resolution_id']), 'at most 64', 'Books refuses the claim\'s debit note');
+    refused(fn () => $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']), 'at most 64', 'Books refuses the claim\'s debit note');
     stubRecover();
     same('BLOCKED', $resolutions->find((int) $r['resolution_id'])['status'], 'the resolution is blocked');
 
@@ -2002,7 +2002,7 @@ check('a return\'s debit note reverses the GST the bill charged — its category
     $returns = new Domain\ReturnClaimService($ctx, $owner);
     $return = returnOf($ctx, $owner, $po, 10);
     same([240.0, 12], [(float) $return['lines'][0]['rate'], (int) $return['lines'][0]['tax_cat_id']], 'the return is valued and taxed as it was billed, not as it was ordered');
-    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->approveReturn((int) $return['return_id'], ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn((int) $return['return_id']);
     $returns->requestDebitNote((int) $return['return_id']);
     $note = lastDraftOf(3);
@@ -2015,14 +2015,14 @@ check('a financial return and a claim settled by a debit note carry the tax cate
     $po = billedOrder($ctx, $owner);
     $returns = new Domain\ReturnClaimService($ctx, $owner);
     $return = $returns->createReturn(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'return_kind' => 'financial', 'adjustment_acc_id' => 7310, 'adjustment_reason' => 'Rate agreed down.', 'lines' => [['description' => 'Rate difference', 'return_qty' => 1, 'rate' => 1500, 'tax_cat_id' => 18]]]);
-    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->approveReturn((int) $return['return_id'], ['note' => 'The owner approves a return they raised.']);
     $returns->requestDebitNote((int) $return['return_id']);
     same(18, (int) (lastDraftOf(3)['service_lines'][0]['tax_cat_id'] ?? 0), 'a rate difference reverses its GST too');
 
     $claimId = approvedClaim($ctx, $owner, 900);
     $resolutions = new Domain\ClaimResolutionService($ctx, $owner);
     $r = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 900, 'adjustment_acc_id' => 7310, 'tax_cat_id' => 18]);
-    $resolutions->approve((int) $r['resolution_id']);
+    $resolutions->approve((int) $r['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
     $note = lastDraftOf(3);
     same([18, '27'], [(int) ($note['service_lines'][0]['tax_cat_id'] ?? 0), $note['party']['pos_state_code'] ?? null], 'and so does a claim\'s debit note, from where the supplier supplies');
 });
@@ -2038,7 +2038,7 @@ check('a debit note Books refused is sent again — as a new request, once what 
 
     $returns = new Domain\ReturnClaimService($ctx, $owner);
     $id = (int) returnOf($ctx, $owner, $po, 10)['return_id'];
-    $returns->approveReturn($id, []);
+    $returns->approveReturn($id, ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn($id);
 
     ledgers([601 => ['gstin' => '', 'state_code' => '']]); // the ledger lost its GSTIN

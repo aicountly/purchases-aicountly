@@ -134,6 +134,20 @@ final class ClaimResolutionService
     {
         Permissions::assert($this->ctx, $this->auth, 'claim.settle');
 
+        // A debit note with nothing going back is a financial adjustment: it needs the same
+        // authority as a financial return (return.financial_adjustment), and nobody approves a
+        // resolution they proposed themselves (F265).
+        $proposed = Db::first('SELECT * FROM purchase_claim_resolutions WHERE resolution_id = :id AND cmp_id = :cmp', ['id' => $resolutionId, 'cmp' => $this->ctx->cmpId]);
+        if ($proposed === null) {
+            Http::notFound('That resolution does not exist.');
+        }
+        if ($proposed['kind'] === 'financial_adjustment') {
+            Permissions::assert($this->ctx, $this->auth, 'return.financial_adjustment');
+        }
+        if ($proposed['status'] === 'PROPOSED') {
+            SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) ($proposed['proposed_by'] ?? ''), 'claim resolution', 'claim', (int) $proposed['claim_id'], self::text($input['note'] ?? null));
+        }
+
         $resolution = Db::transaction(function () use ($resolutionId) {
             $r = $this->lock($resolutionId);
             if (!in_array($r['status'], ['PROPOSED', 'FAILED', 'UNCERTAIN', 'APPROVED'], true)) {

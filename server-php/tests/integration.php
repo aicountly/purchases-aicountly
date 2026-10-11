@@ -981,7 +981,7 @@ check('a purchase return leaves stock once: dispatched on challan, issued by the
         'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'item_id' => 201, 'warehouse_id' => 3, 'return_qty' => 10, 'rate' => 250]],
     ]);
     $returnId = (int) $return['return_id'];
-    $returns->approveReturn($returnId, []);
+    $returns->approveReturn($returnId, ['note' => 'The owner approves a return they raised.']);
     $returns->dispatchReturn($returnId);
 
     $posts = inventoryPosts();
@@ -1063,7 +1063,7 @@ check('a return runs approve, dispatch and debit note, keeping only references',
         ]],
     ]);
 
-    $returns->approveReturn((int) $return['return_id'], []);
+    $returns->approveReturn((int) $return['return_id'], ['note' => 'The owner approves a return they raised.']);
     $dispatched = $returns->dispatchReturn((int) $return['return_id']);
     assertSame('DISPATCHED', $dispatched['status'], 'status after dispatch');
     assertTrue($dispatched['inventory_document_uuid'] !== null, 'Inventory reference kept');
@@ -1086,7 +1086,7 @@ check('a claim moves through its lifecycle and cannot over-settle', function () 
     $claimId = (int) $claim['claim_id'];
 
     $service->updateClaim($claimId, 'submit', []);
-    $service->updateClaim($claimId, 'approve', ['approved_amount' => 4500]);
+    $service->updateClaim($claimId, 'approve', ['approved_amount' => 4500, 'note' => 'The owner approves a claim they raised.']);
 
     // Settled by what happens, never by hand.
     assertThrows(static fn () => $service->updateClaim($claimId, 'settle', ['settled_amount' => 4500]), 'propose a resolution', 'marking it settled by hand');
@@ -1096,7 +1096,7 @@ check('a claim moves through its lifecycle and cannot over-settle', function () 
     $resolution = $resolutions->propose($claimId, ['kind' => 'financial_adjustment', 'amount' => 4500, 'adjustment_acc_id' => 7302]);
     assertTrue(str_contains((string) $resolution['proposed_effect']['summary'], 'debit note'), 'the effect is spelt out before approval');
     assertSame('APPROVED', $service->findClaim($claimId)['status'], 'nothing is settled by a proposal');
-    $resolutions->approve((int) $resolution['resolution_id']);
+    $resolutions->approve((int) $resolution['resolution_id'], ['note' => 'The owner approves a resolution they proposed.']);
 
     $settled = $service->findClaim($claimId);
     assertSame('SETTLED', $settled['status'], 'settled once Books posted the debit note');

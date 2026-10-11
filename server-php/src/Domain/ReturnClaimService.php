@@ -160,6 +160,8 @@ final class ReturnClaimService
         if ($return['return_kind'] === 'financial') {
             $this->assertFinancialAuthority(self::id($return['adjustment_acc_id']), self::text($return['adjustment_reason']));
         }
+        // Nobody approves a return they raised (the company's segregation-of-duties policy; F265).
+        SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) ($return['created_by'] ?? ''), 'purchase return', 'purchase_return', $returnId, self::text($input['note'] ?? null));
 
         Db::transaction(function () use ($returnId, $return) {
             if ($return['po_id'] !== null) {
@@ -681,6 +683,11 @@ final class ReturnClaimService
         Permissions::assert($this->ctx, $this->auth, $permission);
 
         $reason = self::text($input['note'] ?? $input['reason'] ?? null) ?? '';
+        if ($action === 'approve') {
+            // Approving a claim decides how much the supplier owes back: not by the person who
+            // raised it (the company's segregation-of-duties policy; F265).
+            SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) ($claim['created_by'] ?? ''), 'claim', 'claim', $claimId, $reason === '' ? null : $reason);
+        }
         Db::transaction(function () use ($claimId, $action, $from, $to, $input, $reason) {
             $locked = Db::first('SELECT * FROM purchase_claims WHERE claim_id = :id AND cmp_id = :cmp FOR UPDATE', ['id' => $claimId, 'cmp' => $this->ctx->cmpId]);
             if (!in_array($locked['status'], $from, true)) {
