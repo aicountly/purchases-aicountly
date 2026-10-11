@@ -1221,7 +1221,9 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
             if ((int) ($held['vch_type_id'] ?? 0) === 11 && empty($held['cancelled'])
                 && [(int) ($held['party']['acc_id'] ?? 0), $norm((string) ($held['bill']['bill_ref'] ?? '')), $period($held['bill']['bill_date'] ?? null)] === $want) {
                 http_response_code(409);
-                echo json_encode(['status' => 409, 'error' => 409, 'messages' => ['error' => sprintf('Supplier invoice %s from this supplier is already booked in voucher %s dated %s. The same invoice cannot be booked twice, whether it is entered here, in Aicountly Purchase or in Aicountly Billing.', $voucherPayload['bill']['bill_ref'], $held['vch_number'], $held['vch_date'])]]);
+                // Books' SupplierInvoiceDuplicateException::body(): error.code supplier_invoice_duplicate.
+                $dupMessage = sprintf('Supplier invoice %s from this supplier is already booked in voucher %s dated %s. The same invoice cannot be booked twice, whether it is entered here, in Aicountly Purchase or in Aicountly Billing.', $voucherPayload['bill']['bill_ref'], $held['vch_number'], $held['vch_date']);
+                echo json_encode(['status' => 409, 'error' => ['code' => 'supplier_invoice_duplicate', 'message' => $dupMessage, 'details' => ['vch_txn_id' => (int) ($held['vch_txn_id'] ?? 0), 'vch_number' => $held['vch_number'], 'reason_field' => 'supplier_invoice_duplicate_reason']], 'messages' => ['error' => $dupMessage]]);
                 exit;
             }
         }

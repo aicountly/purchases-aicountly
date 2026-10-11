@@ -338,8 +338,15 @@ final class IntegrationCommand
             return 'completed';
         }
         $status = (int) $response['status'];
-        $code = (string) ($response['body']['error']['code'] ?? $response['body']['code'] ?? '');
-        if ($status === 0 || $code === 'request_in_progress' || $status === 408 || $status === 504) {
+        $code = self::errorCode($response['body'] ?? null);
+        if ($status === 0 || in_array($code, self::IN_FLIGHT_CODES, true) || $status === 408 || $status === 504) {
+            return 'uncertain';
+        }
+        if ($status === 409 && $code === '') {
+            // F333: a 409 that names no business code (an older Books' "already being posted", a
+            // proxy) is not a decision — the post may complete. BLOCKED would let the bill be
+            // withdrawn and raised again beside a voucher Books then finishes; uncertain retries the
+            // same keys until Books says what happened.
             return 'uncertain';
         }
         if ($status === 401 || $status === 403 || $status === 429 || $status >= 500) {
@@ -349,6 +356,31 @@ final class IntegrationCommand
         }
 
         return 'blocked';
+    }
+
+    /** Codes meaning "another request holds this right now — ask again on the same key". */
+    public const IN_FLIGHT_CODES = ['request_in_progress', 'draft_post_in_progress'];
+
+    /**
+     * The machine code of a refusal: `error.code` ({error:{code,message}}), CodeIgniter's fail()
+     * `error` when it is a code rather than the bare status, or a top-level `code`.
+     *
+     * @param array<string, mixed>|null $body
+     */
+    public static function errorCode(?array $body): string
+    {
+        if ($body === null) {
+            return '';
+        }
+        $error = $body['error'] ?? null;
+        if (is_array($error) && is_string($error['code'] ?? null) && trim($error['code']) !== '') {
+            return trim($error['code']);
+        }
+        if (is_string($error) && trim($error) !== '' && !ctype_digit(trim($error))) {
+            return trim($error);
+        }
+
+        return is_string($body['code'] ?? null) ? trim($body['code']) : '';
     }
 
     /** @return array<string, mixed>|null */
