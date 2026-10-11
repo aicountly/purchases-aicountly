@@ -1258,6 +1258,95 @@ check('F374/F510: every public Books and Inventory client method has a caller (d
     truthy(!method_exists(Clients\BooksClient::class, 'saveReceiptSettlement'), 'and the replace-all settlement writer');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nF458 / F483 — Inventory's replenishment keys; bounded workbooks; workers are not web pages\n";
+
+check('F458: the replenishment read maps Inventory\'s own keys — lead time, reorder point, safety stock, unit and AVAILABLE (not on hand)', function () use ($ctx, $owner) {
+    $read = (new Dashboards\InventoryReader($ctx, $owner->sesKey()))->replenishment(null, 10);
+    same(true, $read['ok'], 'Inventory answered');
+    $row = $read['rows'][0];
+    same(6, $row['lead_days'], 'lead_time_days');
+    same('Bags', $row['uom'], 'unit_symbol');
+    same('500.0000', Dashboards\Decimal::fixed((string) $row['reorder_level'], 4), 'reorder_point_qty');
+    same('200.0000', Dashboards\Decimal::fixed((string) $row['safety_stock'], 4), 'safety_stock_qty');
+    same('320.0000', Dashboards\Decimal::fixed((string) $row['available_qty'], 4), 'available (on hand is 400)');
+});
+
+check('F483: a workbook that unpacks to hundreds of MB is refused at once, before it is read', function () {
+    $file = sys_get_temp_dir() . '/e8pu-bomb.xlsx';
+    @unlink($file);
+    $zip = new \ZipArchive();
+    $zip->open($file, \ZipArchive::CREATE);
+    $zip->addFromString('[Content_Types].xml', '<Types/>');
+    $zip->addFromString('xl/workbook.xml', '<workbook><sheets><sheet name="S" r:id="rId1"/></sheets></workbook>');
+    $zip->addFromString('xl/worksheets/sheet1.xml', '<worksheet><sheetData>' . str_repeat(' ', 80 * 1048576) . '</sheetData></worksheet>');
+    $zip->close();
+    truthy(filesize($file) < 2 * 1048576, 'a small upload (' . filesize($file) . ' bytes)');
+    $started = microtime(true);
+    $result = Import\DocumentReader::read($file, 'bomb.xlsx');
+    $took = microtime(true) - $started;
+    @unlink($file);
+    truthy($result['table']->isEmpty(), 'nothing read');
+    truthy(str_contains(implode(' ', $result['table']->notes), 'unpacks to far more'), 'and it says why: ' . implode(' ', $result['table']->notes));
+    truthy($took < 2.0, sprintf('refused in %.2f s', $took));
+});
+
+check('F483: every bin script answers 404 under a web server and does nothing', function () {
+    $port = 33590;
+    $docroot = realpath(__DIR__ . '/..');
+    $proc = proc_open(['php', '-S', '127.0.0.1:' . $port, '-t', $docroot], [1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+    usleep(400000);
+    try {
+        foreach (['bin/migrate.php', 'bin/receipt-repair.php', 'bin/books-key-recovery.php', 'bin/db-check.php'] as $script) {
+            $ctx = stream_context_create(['http' => ['ignore_errors' => true, 'timeout' => 5]]);
+            $body = @file_get_contents('http://127.0.0.1:' . $port . '/' . $script, false, $ctx);
+            $status = isset($http_response_header[0]) && preg_match('/\s(\d{3})\s/', $http_response_header[0], $m) === 1 ? (int) $m[1] : 0;
+            same(404, $status, $script . ' over HTTP');
+            same('', (string) $body, $script . ' prints nothing');
+        }
+    } finally {
+        proc_terminate($proc);
+        proc_close($proc);
+    }
+});
+
+// ---------------------------------------------------------------------------
+echo "\nF489 — never call back the product whose request is being served\n";
+
+check('F489: a request from Books, Inventory, Manage or Contacts is never answered by calling that product back; Pay, Sales, Pulse, Connect and Insights are recognised; a name nobody uses is ignored', function () use ($ctx, $owner) {
+    $calls = [
+        'books'     => fn () => (new Clients\BooksClient())->withSession($owner->sesKey())->account($ctx, 601),
+        'inventory' => fn () => (new Clients\InventoryClient())->withSession($owner->sesKey())->warehouses($ctx),
+        'manage'    => fn () => (new Clients\ManageClient())->withSession($owner->sesKey())->companyInfo(88),
+    ];
+    try {
+        foreach ($calls as $product => $call) {
+            $_SERVER['HTTP_X_SAAS_ORIGIN'] = $product;
+            CrossServiceCallContext::reset();
+            $before = count(stubRequests());
+            $r = $call();
+            same(false, $r['ok'], $product . ': refused');
+            same($product . '_reentrant_call_refused', $r['error'], $product . ': as a re-entrant call');
+            same($before, count(stubRequests()), $product . ': nothing left this process');
+        }
+        foreach (['pay', 'sales', 'pulse', 'connect', 'insights'] as $product) {
+            $_SERVER['HTTP_X_SAAS_ORIGIN'] = $product;
+            CrossServiceCallContext::reset();
+            same($product, CrossServiceCallContext::inbound(), $product . ' is a product this API recognises');
+        }
+        $_SERVER['HTTP_X_SAAS_ORIGIN'] = 'evil-app';
+        CrossServiceCallContext::reset();
+        same(null, CrossServiceCallContext::inbound(), 'an unknown name grants and suppresses nothing');
+        $_SERVER['HTTP_X_SAAS_ORIGIN'] = 'books';
+        CrossServiceCallContext::reset();
+        $r = (new Clients\InventoryClient())->withSession($owner->sesKey())->warehouses($ctx);
+        same(true, $r['ok'], 'a call to another product is not suppressed');
+    } finally {
+        unset($_SERVER['HTTP_X_SAAS_ORIGIN']);
+        CrossServiceCallContext::reset();
+    }
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

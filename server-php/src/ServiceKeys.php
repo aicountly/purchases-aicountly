@@ -123,6 +123,12 @@ final class ServiceKeys
         return null;
     }
 
+    /** The products a key is configured for (names only, never keys) — CrossServiceCallContext honours them. @return list<string> */
+    public static function configuredApps(): array
+    {
+        return array_keys(self::configured());
+    }
+
     /** @return array<string, string> */
     private static function configured(): array
     {

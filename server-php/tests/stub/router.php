@@ -1096,14 +1096,13 @@ if (str_contains($path, '/v1/item-groups') && $method === 'GET') {
     exit;
 }
 if (str_contains($path, '/v1/reports/replenishment')) {
+    // ReportsController::replenishment answers the list envelope: data is the rows, the totals ride in meta.
     echo json_encode(['data' => [
-        'as_of' => gmdate('Y-m-d'),
-        'rows'  => [
-            ['item_id' => 7001, 'item_name' => 'OPC Cement 50kg', 'uom' => 'Bags', 'available_qty' => 320.0, 'reorder_level' => 500.0, 'safety_stock' => 200.0, 'suggested_qty' => 1000.0, 'lead_days' => 6],
-            ['item_id' => 7002, 'item_name' => 'TMT Steel 12mm',  'uom' => 'MT',   'available_qty' => 1.2,   'reorder_level' => 5.0,   'safety_stock' => 2.0,   'suggested_qty' => 5.0,    'lead_days' => 4],
-            ['item_id' => 7003, 'item_name' => 'Wire 2.5 sqmm',   'uom' => 'Coils', 'available_qty' => 8.0,  'reorder_level' => 25.0,  'safety_stock' => 10.0,  'suggested_qty' => null,   'lead_days' => null],
-        ],
-    ]]);
+        // Inventory's own row keys (InventoryReportService::replenishment), F458/F223.
+        ['item_id' => 7001, 'item_name' => 'OPC Cement 50kg', 'unit_symbol' => 'Bags', 'on_hand' => 400.0, 'available' => 320.0, 'reorder_point_qty' => 500.0, 'safety_stock_qty' => 200.0, 'suggested_qty' => 1000.0, 'lead_time_days' => 6, 'default_warehouse_id' => 1],
+        ['item_id' => 7002, 'item_name' => 'TMT Steel 12mm',  'unit_symbol' => 'MT',   'on_hand' => 3.2,   'available' => 1.2,   'reorder_point_qty' => 5.0,   'safety_stock_qty' => 2.0,   'suggested_qty' => 5.0,    'lead_time_days' => 4, 'default_warehouse_id' => 1],
+        ['item_id' => 7003, 'item_name' => 'Wire 2.5 sqmm',   'unit_symbol' => 'Coils', 'on_hand' => 8.0,  'available' => 8.0,   'reorder_point_qty' => 25.0,  'safety_stock_qty' => 10.0,  'suggested_qty' => null,   'lead_time_days' => null, 'default_warehouse_id' => null],
+    ], 'meta' => ['total' => 3, 'limit' => 100, 'offset' => 0]]);
     exit;
 }
 if (str_contains($path, '/v1/warehouses')) {

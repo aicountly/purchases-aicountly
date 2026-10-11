@@ -144,16 +144,21 @@ final class InventoryReader
             if ($itemId <= 0) {
                 continue;
             }
+            // Inventory's own keys (InventoryReportService::replenishment, F458): unit_symbol,
+            // available (on hand less reserved, committed and held — never on_hand), reorder_point_qty,
+            // safety_stock_qty, lead_time_days. The names this read used to look for do not exist
+            // there, so lead time, reorder level, safety stock and unit were always empty and
+            // on-hand stood in for available.
             $out[] = [
                 'item_id'         => $itemId,
-                'item_name'       => self::text($row['item_name'] ?? $row['name'] ?? null),
-                'uom'             => self::text($row['uom'] ?? $row['unit_name'] ?? null),
-                'warehouse_id'    => isset($row['warehouse_id']) ? (int) $row['warehouse_id'] : null,
-                'available_qty'   => self::decimal($row['available_qty'] ?? $row['on_hand'] ?? $row['balance_qty'] ?? null),
-                'reorder_level'   => self::decimal($row['reorder_level'] ?? $row['min_level'] ?? null),
-                'safety_stock'    => self::decimal($row['safety_stock'] ?? null),
-                'suggested_qty'   => self::decimal($row['suggested_qty'] ?? $row['reorder_qty'] ?? null),
-                'lead_days'       => isset($row['lead_days']) ? (int) $row['lead_days'] : null,
+                'item_name'       => self::text($row['item_name'] ?? null),
+                'uom'             => self::text($row['unit_symbol'] ?? null),
+                'warehouse_id'    => isset($row['warehouse_id']) ? (int) $row['warehouse_id'] : (isset($row['default_warehouse_id']) ? (int) $row['default_warehouse_id'] : null),
+                'available_qty'   => self::decimal($row['available'] ?? null),
+                'reorder_level'   => self::decimal($row['reorder_point_qty'] ?? null),
+                'safety_stock'    => self::decimal($row['safety_stock_qty'] ?? null),
+                'suggested_qty'   => self::decimal($row['suggested_qty'] ?? null),
+                'lead_days'       => isset($row['lead_time_days']) ? (int) $row['lead_time_days'] : null,
                 'as_of'           => self::text($row['as_of'] ?? null),
             ];
         }
