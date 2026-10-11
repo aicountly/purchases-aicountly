@@ -1953,6 +1953,11 @@ final class BillService
                 'rate'            => $rate,
                 'discount_pc'     => $discountPc,
                 'amount'          => round($gross - ($gross * $discountPc / 100), 4),
+                // A charge the order itself agreed (its freight or other charges), declared as such
+                // on a service line (F163): the match compares it with the order's charge instead
+                // of treating it as a line nobody ordered.
+                'charge_kind'     => ($isService || $itemId === null) && $poLineId === null && in_array($line['charge_kind'] ?? null, ['freight', 'other_charges'], true)
+                    ? (string) $line['charge_kind'] : null,
             ];
         }
 

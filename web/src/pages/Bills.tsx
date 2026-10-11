@@ -532,6 +532,11 @@ export function BillEditor() {
   // so defaulting to the gross rate with no discount would show a variance nobody agreed.
   const [discounts, setDiscounts] = useState<Record<number, string>>({})
   const [narration, setNarration] = useState('')
+  // The order's own charges billed on this invoice (F163): matched against what the order agreed.
+  const [charges, setCharges] = useState<Record<'freight' | 'other_charges', { amount: string; ledger: { id: number; name: string } | null }>>({
+    freight: { amount: '', ledger: null },
+    other_charges: { amount: '', ledger: null },
+  })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [supplier, setSupplier] = useState<CatalogSupplier | null>(null)
@@ -592,14 +597,26 @@ export function BillEditor() {
             supplier_invoice_no: invoiceNo.trim(),
             ...dates,
             narration: narration || undefined,
-            lines: po.lines
-              .filter((line) => Number(quantities[line.line_id] ?? 0) > 0)
-              .map((line) => ({
-                po_line_id: line.line_id,
-                qty: quantities[line.line_id] ?? '0',
-                rate: rates[line.line_id] ?? line.agreed_rate,
-                discount_pc: discounts[line.line_id] ?? line.discount_pc ?? '0',
-              })),
+            lines: [
+              ...po.lines
+                .filter((line) => Number(quantities[line.line_id] ?? 0) > 0)
+                .map((line): Record<string, unknown> => ({
+                  po_line_id: line.line_id,
+                  qty: quantities[line.line_id] ?? '0',
+                  rate: rates[line.line_id] ?? line.agreed_rate,
+                  discount_pc: discounts[line.line_id] ?? line.discount_pc ?? '0',
+                })),
+              ...(['freight', 'other_charges'] as const)
+                .filter((kind) => Number(charges[kind].amount || 0) > 0)
+                .map((kind): Record<string, unknown> => ({
+                  is_service: true,
+                  charge_kind: kind,
+                  description: kind === 'freight' ? 'Freight' : 'Other charges',
+                  purchase_acc_id: charges[kind].ledger?.id,
+                  qty: '1',
+                  rate: charges[kind].amount,
+                })),
+            ],
           }
         : {
             supplier_account_id: supplier?.acc_id,
@@ -824,9 +841,29 @@ export function BillEditor() {
           </div>
         </Notice>
       )}
+      {po && (Number(po.freight_amount || 0) > 0 || Number(po.other_charges || 0) > 0) && (
+        <Card title="Charges the order agreed">
+          <p style={{ margin: '0 0 0.6rem', color: 'var(--muted)', fontSize: '0.85rem' }}>
+            Billed freight or other charges are matched against the order&apos;s own figure, and booked to the ledger you choose. They are not added to the goods&apos; stock cost: Smart Books does not capitalise a charge on a bill that settles goods receipts.
+          </p>
+          {(['freight', 'other_charges'] as const)
+            .filter((kind) => Number(kind === 'freight' ? po.freight_amount : po.other_charges) > 0)
+            .map((kind) => (
+              <div key={kind} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.55rem', marginBottom: '0.5rem' }}>
+                <Field label={`${kind === 'freight' ? 'Freight' : 'Other charges'} billed (order: ${kind === 'freight' ? po.freight_amount : po.other_charges})`}>
+                  <Input type="number" min="0" step="any" value={charges[kind].amount} onChange={(e) => setCharges((c) => ({ ...c, [kind]: { ...c[kind], amount: e.target.value } }))} />
+                </Field>
+                <LedgerPicker
+                  onPick={(ledger) => setCharges((c) => ({ ...c, [kind]: { ...c[kind], ledger: { id: ledger.acc_id, name: ledger.acc_name } } }))}
+                  selectedLabel={charges[kind].ledger?.name ?? null}
+                />
+              </div>
+            ))}
+        </Card>
+      )}
       <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
         <Button onClick={() => navigate(-1)}>Cancel</Button>
-        <Button tone="primary" disabled={saving || invoiceNo.trim() === '' || (!po && (supplier === null || missingLedger)) || (openReceipts !== null && (!confirmDifferent || confirmReason.trim().length < 10))} onClick={save}>
+        <Button tone="primary" disabled={saving || invoiceNo.trim() === '' || (['freight', 'other_charges'] as const).some((k) => Number(charges[k].amount || 0) > 0 && charges[k].ledger === null) || (!po && (supplier === null || missingLedger)) || (openReceipts !== null && (!confirmDifferent || confirmReason.trim().length < 10))} onClick={save}>
           {saving ? 'Matching…' : 'Save and match'}
         </Button>
       </div>

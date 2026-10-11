@@ -1408,6 +1408,30 @@ check('F017: a dispatched return says its goods are still counted on hand until 
     same('from_challan', $sent['stock_effect'] ?? null, 'the debit note settles the dispatch challan, moving the goods once');
 });
 
+check('F163 (match): freight the order agreed, billed on a line declared as freight, is matched against the order\'s figure — within it no exception, beyond it the excess is one', function () use ($ctx, $owner) {
+    reset();
+    $orders = new PurchaseOrderService($ctx, $owner);
+    $po = $orders->create(poInput(['freight_amount' => 120, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 5, 'agreed_rate' => 50, 'warehouse_id' => 3]]]));
+    $orders->submit((int) $po['po_id']);
+    $orders->issue((int) $po['po_id']);
+    $po = $orders->find((int) $po['po_id']);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 5);
+    $bills = new BillService($ctx, $owner);
+    $freight = static fn (float $amount) => ['is_service' => true, 'charge_kind' => 'freight', 'description' => 'Freight', 'purchase_acc_id' => 7301, 'qty' => 1, 'rate' => $amount];
+    $ok = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'FR-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 5, 'rate' => 50], $freight(120)]]);
+    same([], latestExceptions((int) $ok['request_id']), 'the agreed freight raises no exception');
+    $bills->cancel((int) $ok['request_id'], ['reason' => 'Re-entering with the higher freight.']);
+    $over = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'FR-2', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 5, 'rate' => 50], $freight(200)]]);
+    $exceptions = latestExceptions((int) $over['request_id']);
+    same(1, count($exceptions), 'freight above the order\'s is one exception: ' . json_encode($exceptions));
+    same(80.0, (float) $exceptions[0]['variance_value'], 'naming the excess');
+    // An undeclared extra line is still an unordered line.
+    $bills->cancel((int) $over['request_id'], ['reason' => 'Re-entering without the declaration.']);
+    $plain = $bills->enter(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'supplier_invoice_no' => 'FR-3', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['po_line_id' => $lineId, 'qty' => 5, 'rate' => 50], ['is_service' => true, 'description' => 'Handling', 'purchase_acc_id' => 7301, 'qty' => 1, 'rate' => 50]]]);
+    truthy(str_contains(json_encode(latestExceptions((int) $plain['request_id'])), 'not on the purchase order'), 'an undeclared line is still not on the order');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

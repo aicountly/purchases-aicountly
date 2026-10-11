@@ -299,10 +299,43 @@ final class ThreeWayMatchService
         // A supplier adding something nobody ordered is the classic procurement
         // fraud, so it is never quietly absorbed into the total.
         $knownPoLineIds = array_map(static fn (array $row) => (int) $row['line_id'], $poLines);
+        // Charges the order agreed — its freight and other charges — billed on lines declared as
+        // such (F163) are compared with the order's own figure, all such lines of a kind together:
+        // within it, a declared charge is not an unordered line; beyond it, the excess is.
+        $order = Db::first('SELECT freight_amount, other_charges FROM purchase_orders WHERE po_id = :po AND cmp_id = :cmp', ['po' => $poId, 'cmp' => $this->ctx->cmpId]) ?? [];
+        $agreed = ['freight' => (float) ($order['freight_amount'] ?? 0), 'other_charges' => (float) ($order['other_charges'] ?? 0)];
+        $charged = ['freight' => 0.0, 'other_charges' => 0.0];
+        foreach ($billLines as $line) {
+            $kind = $line['charge_kind'] ?? null;
+            if ((int) ($line['po_line_id'] ?? 0) <= 0 && isset($charged[$kind])) {
+                $charged[$kind] += (float) ($line['amount'] ?? 0);
+            }
+        }
+        foreach ($charged as $kind => $amount) {
+            if ($amount <= 0.00005) {
+                continue;
+            }
+            $excess = round($amount - $agreed[$kind], 4);
+            if ($excess > max(0.01, $agreed[$kind] * (float) ($policy['rate_tolerance_pc'] ?? 0) / 100)) {
+                $exceptions[] = [
+                    'exception_kind' => 'value',
+                    'detail'         => sprintf('The bill charges %s of %s; the order agreed %s.', $kind === 'freight' ? 'freight' : 'other charges', self::money($amount), self::money($agreed[$kind])),
+                    'order_value'    => $agreed[$kind],
+                    'bill_value'     => $amount,
+                    'variance_value' => $excess,
+                ];
+                $worst = self::worse($worst, self::REVIEW_REQUIRED);
+            } else {
+                $variances[] = ['kind' => 'charge', 'charge_kind' => $kind, 'billed' => $amount, 'agreed' => $agreed[$kind], 'note' => 'A charge the order agreed, billed within it.'];
+            }
+        }
         foreach ($billLines as $line) {
             $poLineId = (int) ($line['po_line_id'] ?? 0);
             if (in_array($poLineId, $knownPoLineIds, true)) {
                 continue;
+            }
+            if ($poLineId <= 0 && isset($charged[$line['charge_kind'] ?? ''])) {
+                continue; // a declared charge: compared with the order's above
             }
             $exceptions[] = [
                 'exception_kind' => 'value',
@@ -461,6 +494,11 @@ final class ThreeWayMatchService
      *
      * @return array{0: array<int, float>, 1: bool} received-by-line, and whether Inventory answered
      */
+    private static function money(float $value): string
+    {
+        return number_format($value, 2, '.', ',');
+    }
+
     private function receivedQuantities(int $poId): array
     {
         $ledger = (new ReceiptLedger($this->ctx, $this->auth))->forOrder($poId);
