@@ -56,12 +56,32 @@ final class ThreeWayMatchService
         if ($poId === null) {
             // A bill with no purchase order behind it cannot be three-way
             // matched. Saying so is honest; inventing a pass is not.
+            $detail = 'This bill is not against a purchase order, so it cannot be matched automatically.';
+            $confirmation = $bill['open_grn_confirmation'] ?? null;
+            $confirmation = is_string($confirmation) ? Db::jsonColumn($confirmation) : $confirmation;
+            if (is_array($confirmation) && !empty($confirmation['confirmed'])) {
+                // The reviewer is told what the person entering it decided (A09): the goods of
+                // open receipts of this supplier, and why these are said to be different.
+                $names = array_values(array_unique(array_map(
+                    static fn ($r) => is_array($r) ? (string) ($r['receipt_no'] ?? $r['document_no'] ?? ('#' . ($r['inventory_document_id'] ?? '?'))) : '',
+                    (array) ($confirmation['receipts'] ?? []),
+                )));
+                $detail .= sprintf(
+                    ' It receives goods although receipt%s %s of this supplier %s open and unbilled; %s confirmed these are different goods: "%s".',
+                    count($names) === 1 ? '' : 's',
+                    implode(', ', $names),
+                    count($names) === 1 ? 'is' : 'are',
+                    (string) ($confirmation['confirmed_by'] ?? 'the person entering it'),
+                    (string) ($confirmation['reason'] ?? ''),
+                );
+            }
+
             return [
                 'verdict'    => self::REVIEW_REQUIRED,
                 'variances'  => [],
                 'exceptions' => [[
                     'exception_kind' => 'missing_receipt',
-                    'detail'         => 'This bill is not against a purchase order, so it cannot be matched automatically.',
+                    'detail'         => $detail,
                 ]],
                 'receipts_reachable' => true,
             ];

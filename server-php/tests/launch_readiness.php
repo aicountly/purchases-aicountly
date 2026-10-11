@@ -599,6 +599,92 @@ check('F301: a receipt left POSTING by a dead attempt is offered Reconcile and R
     same('7.0000', (string) $after['lines'][0]['received_qty'], 'Reconcile finds the GRN and counts it once');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nA09 / F010 — a direct bill over goods already received\n";
+
+function directBill(Context $ctx, Auth $auth, string $invoice, float $qty, array $extra = []): array
+{
+    return (new BillService($ctx, $auth))->enter($extra + [
+        'supplier_account_id' => 601, 'supplier_invoice_no' => $invoice, 'supplier_invoice_date' => '2026-09-19',
+        'lines' => [['item_id' => 201, 'unit_id' => 1, 'warehouse_id' => 3, 'qty' => $qty, 'rate' => 250]],
+    ]);
+}
+
+function physicalGrns(): void
+{
+    Db::run('INSERT INTO purchase_settings (cmp_id, receive_stock_at_grn) VALUES (88, TRUE) ON CONFLICT (cmp_id) DO UPDATE SET receive_stock_at_grn = TRUE');
+}
+
+check('A09: a direct bill for goods an unbilled receipt of the supplier already brought in is refused, naming the receipt and its order', function () use ($ctx, $owner) {
+    reset();
+    physicalGrns();
+    $po = orderOf($ctx, $owner);
+    receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10);
+    $r = refused(fn () => directBill($ctx, $owner, 'DIRECT-1', 10), 'open_goods_receipts', 'a direct bill over the GRN');
+    same(409, $r['status'], '409');
+    truthy(str_contains($r['message'], (string) $po['po_no']), 'it says which order to bill instead: ' . $r['message']);
+    same(0, (int) Db::scalar("SELECT COUNT(*) FROM purchase_bill_requests WHERE supplier_invoice_no = 'DIRECT-1'"), 'nothing was entered');
+    // The bill against the order settles the GRN and receives nothing again.
+    $b = bill($ctx, $owner, (int) $po['po_id'], [['po_line_id' => (int) $po['lines'][0]['line_id'], 'qty' => 10, 'rate' => 250]], 'DIRECT-1');
+    $posted = (new BillService($ctx, $owner))->post((int) $b['request_id']);
+    same('from_challan', $posted['stock_effect'], 'settles the receipt');
+    same(1, vouchersPosted(), 'one voucher');
+});
+
+check('A09: confirmed different goods are entered with the confirmation, shown to the reviewer, and carried to Books and Inventory', function () use ($ctx, $owner) {
+    reset();
+    physicalGrns();
+    $po = orderOf($ctx, $owner);
+    receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10);
+    refused(fn () => directBill($ctx, $owner, 'COUNTER-1', 4, ['confirm_no_open_grn' => true, 'confirm_no_open_grn_reason' => 'short']), 'Say in a sentence', 'a reason that says nothing');
+    $b = directBill($ctx, $owner, 'COUNTER-1', 4, ['confirm_no_open_grn' => true, 'confirm_no_open_grn_reason' => 'Bought at the trade counter, not the PO delivery']);
+    $kept = Db::jsonColumn(Db::scalar('SELECT open_grn_confirmation FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $b['request_id']]));
+    same(true, $kept['confirmed'], 'kept on the bill');
+    same('user-owner', $kept['confirmed_by'], 'by whom');
+    same((string) $po['po_no'], $kept['receipts'][0]['po_no'], 'against which receipts');
+    $exception = latestExceptions((int) $b['request_id'])[0];
+    truthy(str_contains((string) $exception['detail'], 'trade counter'), 'the reviewer sees the decision: ' . $exception['detail']);
+    $approver = member('user-approver', ['match.resolve']);
+    (new BillService($ctx, $approver))->resolveException((int) $exception['exception_id'], 'accept', ['note' => 'Checked the counter receipt.']);
+    same('POSTED', (new BillService($ctx, $owner))->post((int) $b['request_id'])['status'], 'posts');
+    $sent = IntegrationCommand::latest(88, BillService::COMMAND_BILL, 'bill_request', (int) $b['request_id'])['request_payload'];
+    same(true, $sent['confirm_no_open_grn'] ?? null, 'Books is told');
+    same('Bought at the trade counter, not the PO delivery', $sent['confirm_no_open_grn_reason'] ?? null, 'with the reason');
+});
+
+check('A09: a direct bill entered before the check is refused by Books/Inventory at post (BLOCKED), and revised with the confirmation it posts', function () use ($ctx, $owner) {
+    reset();
+    physicalGrns();
+    $po = orderOf($ctx, $owner);
+    $b = directBill($ctx, $owner, 'LEGACY-9', 6);  // no receipt yet: entered cleanly
+    receive($ctx, $owner, (int) $po['po_id'], (int) $po['lines'][0]['line_id'], 10);
+    $exception = latestExceptions((int) $b['request_id'])[0];
+    (new BillService($ctx, member('user-approver', ['match.resolve'])))->resolveException((int) $exception['exception_id'], 'accept', ['note' => 'ok']);
+    $r = refused(fn () => (new BillService($ctx, $owner))->post((int) $b['request_id']), 'already put these items on hand', 'Books relays Inventory\'s refusal');
+    same('books_refused', $r['code'], 'a refusal, not an outage');
+    same('BLOCKED', Db::scalar('SELECT status FROM purchase_bill_requests WHERE request_id = :id', ['id' => (int) $b['request_id']]), 'BLOCKED');
+    refused(fn () => (new BillService($ctx, $owner))->revise((int) $b['request_id'], []), 'open_goods_receipts', 'revised as it stands');
+    $revised = (new BillService($ctx, $owner))->revise((int) $b['request_id'], ['confirm_no_open_grn' => true, 'confirm_no_open_grn_reason' => 'A separate delivery of spare valves']);
+    $exception = latestExceptions((int) $b['request_id'])[0];
+    (new BillService($ctx, member('user-approver2', ['match.resolve'])))->resolveException((int) $exception['exception_id'], 'accept', ['note' => 'ok']);
+    same('POSTED', (new BillService($ctx, $owner))->post((int) $b['request_id'])['status'], 'the confirmed revision posts');
+    unset($revised);
+});
+
+check('F010: a genuine direct purchase (no open receipt) still posts on_invoice; services are never checked; an unreadable Inventory is 503', function () use ($ctx, $owner) {
+    reset();
+    $b = directBill($ctx, $owner, 'GENUINE-1', 3);
+    $exception = latestExceptions((int) $b['request_id'])[0];
+    (new BillService($ctx, member('user-approver', ['match.resolve'])))->resolveException((int) $exception['exception_id'], 'accept', ['note' => 'Direct purchase, no PO.']);
+    $posted = (new BillService($ctx, $owner))->post((int) $b['request_id']);
+    same('on_invoice', $posted['stock_effect'], 'received by the bill');
+    stubControl(['path' => 'pending-quantities', 'status' => 503, 'html' => true]);
+    same(503, refused(fn () => directBill($ctx, $owner, 'BLIND-1', 1), 'not entered', 'Inventory unreadable')['status'], '503');
+    $service = (new BillService($ctx, $owner))->enter(['supplier_account_id' => 601, 'supplier_invoice_no' => 'SVC-1', 'supplier_invoice_date' => '2026-09-19', 'lines' => [['description' => 'Freight', 'is_service' => true, 'purchase_acc_id' => 7302, 'qty' => 1, 'rate' => 500]]]);
+    stubRecover();
+    same('service', $service['bill_kind'], 'a service bill does not ask Inventory');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

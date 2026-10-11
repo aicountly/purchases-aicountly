@@ -112,6 +112,8 @@ export function BillDetail() {
   const [reviseNote, setReviseNote] = useState('')
   const [reviseGstin, setReviseGstin] = useState('')
   const [reviseLines, setReviseLines] = useState<ReviseLine[]>([])
+  const [reviseConfirm, setReviseConfirm] = useState(false)
+  const [reviseConfirmReason, setReviseConfirmReason] = useState('')
   const [cancelReason, setCancelReason] = useState('')
 
   const { data, loading, reload } = useApi(
@@ -266,6 +268,17 @@ export function BillDetail() {
                 <Input value={reviseGstin} maxLength={15} onChange={(e) => setReviseGstin(e.target.value.toUpperCase())} />
               </Field>
             </div>
+            {bill.bill_kind === 'direct' && (
+              <div style={{ display: 'grid', gap: '0.4rem' }}>
+                <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.88rem' }}>
+                  <input type="checkbox" checked={reviseConfirm} onChange={(e) => setReviseConfirm(e.target.checked)} />
+                  These goods are not the ones on an open goods receipt of this supplier
+                </label>
+                {reviseConfirm && (
+                  <Field label="Why (recorded with the bill)"><Input value={reviseConfirmReason} onChange={(e) => setReviseConfirmReason(e.target.value)} /></Field>
+                )}
+              </div>
+            )}
             <Field label="What changed"><Input value={reviseNote} onChange={(e) => setReviseNote(e.target.value)} /></Field>
             <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
               <Button onClick={() => setPanel('none')}>Back</Button>
@@ -279,6 +292,7 @@ export function BillDetail() {
                     supplier_gstin: reviseGstin.trim() || undefined,
                     note: reviseNote || undefined,
                     lines: reviseLines.length > 0 ? reviseLines.map(revisedLine) : undefined,
+                    ...(reviseConfirm ? { confirm_no_open_grn: true, confirm_no_open_grn_reason: reviseConfirmReason.trim() } : {}),
                   })
                   setPanel('none')
                 }}
@@ -452,6 +466,18 @@ function LegCard({ title, owner, detail }: { title: string; owner: string; detai
   )
 }
 
+/** An unbilled goods receipt of the supplier holding the same items, as the server named it (A09). */
+interface OpenReceipt {
+  inventory_document_id: number
+  document_no?: string
+  document_date?: string
+  item_id: number
+  open_qty: number
+  receipt_no?: string
+  po_id?: number
+  po_no?: string
+}
+
 interface DirectLine {
   key: string
   kind: 'service' | 'item'
@@ -498,6 +524,11 @@ export function BillEditor() {
   const [error, setError] = useState<string | null>(null)
   const [supplier, setSupplier] = useState<CatalogSupplier | null>(null)
   const [direct, setDirect] = useState<DirectLine[]>(() => [blankLine('service')])
+  // Goods an unbilled receipt of this supplier already brought in (A09): the bill would receive
+  // them again. Bill against that order instead — or confirm, with a reason, they are different.
+  const [openReceipts, setOpenReceipts] = useState<OpenReceipt[] | null>(null)
+  const [confirmDifferent, setConfirmDifferent] = useState(false)
+  const [confirmReason, setConfirmReason] = useState('')
   // A bill without an order receives its goods itself, so each item line says where they go.
   const warehouses = useWarehouses(!poId)
 
@@ -562,6 +593,7 @@ export function BillEditor() {
             supplier_invoice_no: invoiceNo.trim(),
             ...dates,
             narration: narration || undefined,
+            ...(openReceipts && confirmDifferent ? { confirm_no_open_grn: true, confirm_no_open_grn_reason: confirmReason.trim() } : {}),
             lines: direct
               .filter((l) => Number(l.qty || 0) > 0 && Number(l.rate || 0) > 0)
               .map((l) =>
@@ -573,6 +605,11 @@ export function BillEditor() {
       const response = await api.post<BillRequest>('v1/bills', body)
       navigate(`/bills/${response.data.request_id}`)
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'open_goods_receipts' && Array.isArray(err.details.receipts)) {
+        setOpenReceipts(err.details.receipts as OpenReceipt[])
+        setError(null)
+        return
+      }
       setError(err instanceof ApiError ? err.message : String(err))
     } finally {
       setSaving(false)
@@ -728,9 +765,37 @@ export function BillEditor() {
       </Card>
 
       {missingLedger && <Notice tone="warning">Choose the ledger each service line is booked to.</Notice>}
+      {openReceipts && (
+        <Notice tone="warning" title="These goods may already be in stock">
+          <div data-testid="open-receipts" style={{ display: 'grid', gap: '0.5rem' }}>
+            <span>
+              An unbilled goods receipt of this supplier already brought in the same items. A bill with no order receives its goods
+              itself, so saving it as it stands would put them into stock a second time.
+            </span>
+            <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
+              {openReceipts.map((r) => (
+                <li key={`${r.inventory_document_id}-${r.item_id}`}>
+                  {r.receipt_no ?? r.document_no ?? `Inventory document #${r.inventory_document_id}`}
+                  {r.document_date ? ` (${date(r.document_date)})` : ''}: {qty(r.open_qty)} of item #{r.item_id} not billed
+                  {r.po_id ? <> — <Link to={`/bills/new?po_id=${r.po_id}`}>bill it against {r.po_no ?? 'its order'}</Link></> : null}
+                </li>
+              ))}
+            </ul>
+            <label style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+              <input type="checkbox" checked={confirmDifferent} onChange={(e) => setConfirmDifferent(e.target.checked)} />
+              These are different goods from the ones on those receipts
+            </label>
+            {confirmDifferent && (
+              <Field label="Why (recorded with the bill and shown to whoever reviews it)">
+                <Input value={confirmReason} onChange={(e) => setConfirmReason(e.target.value)} />
+              </Field>
+            )}
+          </div>
+        </Notice>
+      )}
       <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
         <Button onClick={() => navigate(-1)}>Cancel</Button>
-        <Button tone="primary" disabled={saving || invoiceNo.trim() === '' || (!po && (supplier === null || missingLedger))} onClick={save}>
+        <Button tone="primary" disabled={saving || invoiceNo.trim() === '' || (!po && (supplier === null || missingLedger)) || (openReceipts !== null && (!confirmDifferent || confirmReason.trim().length < 10))} onClick={save}>
           {saving ? 'Matching…' : 'Save and match'}
         </Button>
       </div>

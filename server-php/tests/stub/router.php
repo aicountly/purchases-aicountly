@@ -732,6 +732,48 @@ function stubSourceKey(array $b): ?string {
     return ($b['source_app'] ?? '') . '|' . $b['source_document_type'] . '|' . (int) $b['source_document_id'];
 }
 
+/**
+ * Inventory's open goods receipts of a supplier, as its pending register (GET v1/pending-quantities,
+ * PendingRegisterQuery) answers them: one row per receipt line still pending a bill, with the
+ * receipt's number and the open quantity. Both kinds of inward challan open such a line.
+ */
+function stubOpenReceipts(array $documents, int $partyRef, ?string $onlyEffect = null): array {
+    $rows = [];
+    foreach ($documents['by_id'] as $doc) {
+        if (($doc['document_type'] ?? '') !== 'INWARD_CHALLAN' || ($doc['status'] ?? '') !== 'POSTED' || (int) ($doc['party_ref'] ?? 0) !== $partyRef) {
+            continue;
+        }
+        if ($onlyEffect !== null && (string) ($doc['stock_effect'] ?? 'challan_only') !== $onlyEffect) {
+            continue;
+        }
+        $settled = stubSettledQty((int) $doc['document_id']);
+        foreach ((array) ($doc['lines'] ?? []) as $line) {
+            $qty = (float) ($line['qty'] ?? 0);
+            $take = min($qty, $settled);
+            $settled -= $take;
+            $open = round($qty - $take, 4);
+            if ($open > 0.00005) {
+                $rows[] = [
+                    'pending_id' => (int) $doc['document_id'] * 10 + count($rows), 'document_id' => (int) $doc['document_id'],
+                    'document_no' => $doc['document_no'] ?? null, 'document_date' => $doc['document_date'] ?? null, 'document_type' => 'INWARD_CHALLAN',
+                    'pending_kind' => 'challan', 'direction' => 'in', 'item_id' => (int) ($line['item_id'] ?? 0), 'party_ref' => $partyRef,
+                    'qty_original' => $qty, 'qty_open' => $open, 'status' => 'open',
+                ];
+            }
+        }
+    }
+    return $rows;
+}
+
+if (str_contains($path, '/v1/pending-quantities') && $method === 'GET') {
+    $rows = stubOpenReceipts($documents, (int) ($_GET['party_ref'] ?? 0));
+    if (!empty($_GET['item_id'])) {
+        $rows = array_values(array_filter($rows, static fn ($r) => $r['item_id'] === (int) $_GET['item_id']));
+    }
+    echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows), 'limit' => (int) ($_GET['limit'] ?? 100), 'offset' => 0]]);
+    exit;
+}
+
 if (str_contains($path, '/v1/inventory-documents/by-source')) {
     $sourceKey = ($_GET['source_app'] ?? '') . '|' . ($_GET['source_document_type'] ?? '') . '|' . (int) ($_GET['source_document_id'] ?? 0);
     // Real findBySource: the newest live document, a single row.
@@ -933,6 +975,8 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
         'document_type'        => $type,
         'stock_effect'         => $body['stock_effect'] ?? null,
         'status'               => 'POSTED',
+        'party_ref'            => isset($body['party_ref']) && $body['party_ref'] !== '' ? (int) $body['party_ref'] : null,
+        'document_date'        => $body['document_date'] ?? null,
         'source_app'           => $body['source_app'] ?? null,
         'source_document_type' => $body['source_document_type'] ?? null,
         'source_document_id'   => isset($body['source_document_id']) ? (int) $body['source_document_id'] : null,
@@ -1220,6 +1264,19 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
                 echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Material centre is required on item line ' . $lineNum]]);
                 exit;
             }
+        }
+    }
+    // Inventory's open-receipt guard (E8-PUR A09), as Books relays it: a purchase that receives its
+    // goods on the invoice beside a PHYSICAL goods receipt of the same supplier still pending a
+    // bill is refused 409 open_inward_challan (OpenInwardChallanException), unless confirmed.
+    if ($type === 11 && $effect === 'on_invoice' && empty($voucherPayload['confirm_no_open_grn']) && !empty($voucherPayload['inventory_lines'])) {
+        $items = array_map(static fn ($l) => (int) ($l['item_id'] ?? 0), $voucherPayload['inventory_lines']);
+        $open = array_values(array_filter(stubOpenReceipts($documents, (int) ($voucherPayload['party']['acc_id'] ?? 0), 'physical'), static fn ($r) => in_array($r['item_id'], $items, true)));
+        if ($open !== []) {
+            $msg = 'Goods receipt ' . implode(', ', array_unique(array_column($open, 'document_no'))) . ' of this supplier already put these items on hand and is not billed yet.';
+            http_response_code(409);
+            echo json_encode(['status' => 409, 'error' => ['code' => 'open_inward_challan', 'message' => $msg, 'details' => ['receipts' => array_map(static fn ($r) => ['document_id' => $r['document_id'], 'document_no' => $r['document_no'], 'item_id' => $r['item_id'], 'open_qty' => $r['qty_open']], $open), 'confirm_field' => 'confirm_no_open_grn', 'reason_field' => 'confirm_no_open_grn_reason']], 'messages' => ['error' => $msg], 'message' => $msg]);
+            exit;
         }
     }
     if ($effect === 'from_physical_challan' && empty($voucherPayload['challan_settlements'])) {

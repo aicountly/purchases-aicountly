@@ -102,11 +102,15 @@ final class BillService
             Http::validationFailed('A bill needs at least one line.', ['field' => 'lines']);
         }
         $kind = $poId !== null ? 'po' : (array_filter($lines, static fn (array $l) => !$l['is_service'] && $l['item_id'] !== null) === [] ? 'service' : 'direct');
+        // Goods bought with no order are received by the bill itself. Over goods a receipt of this
+        // supplier already brought in, that receives them twice (A09): asked of Inventory now, and
+        // only a stated confirmation that these are different goods lets the bill go ahead.
+        $openGrnConfirmation = $kind === 'direct' ? $this->openReceiptCheck($supplierId, $lines, $input) : null;
         // The GSTIN printed on the invoice, when the supplier bills from a registration other
         // than the one on their Books ledger: its state is where the goods are supplied from.
         $supplierGstin = PlaceOfSupply::normaliseGstin($input['supplier_gstin'] ?? null, 'supplier_gstin');
 
-        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input, $supplierGstin): int {
+        $requestId = Db::transaction(function () use ($supplierId, $invoiceNo, $invoiceDate, $dueDate, $postingDate, $poId, $lines, $kind, $input, $supplierGstin, $openGrnConfirmation): int {
             if ($poId !== null) {
                 $po = PoProgress::lock($poId, $this->ctx->cmpId);
                 if ($po === null) {
@@ -149,6 +153,7 @@ final class BillService
                     'status'                => 'MATCHING',
                     'requested_lines'       => $lines,
                     'receipt_references'    => is_array($input['receipt_references'] ?? null) ? $input['receipt_references'] : [],
+                    'open_grn_confirmation' => $openGrnConfirmation,
                     'requested_by'          => $this->auth->uuid,
                 ], 'request_id');
             } catch (\PDOException $e) {
@@ -398,8 +403,13 @@ final class BillService
         $supplierGstin = array_key_exists('supplier_gstin', $input)
             ? PlaceOfSupply::normaliseGstin($input['supplier_gstin'], 'supplier_gstin')
             : ($bill['supplier_gstin'] ?? null);
+        // A direct bill Inventory refused because a receipt of the supplier holds the same goods
+        // (open_inward_challan) is revised with the confirmation, or with other lines.
+        $openGrnConfirmation = $bill['po_id'] === null && array_filter($lines, static fn (array $l) => empty($l['is_service']) && !empty($l['item_id'])) !== []
+            ? $this->openReceiptCheck((int) $bill['supplier_account_id'], $lines, $input, $bill['open_grn_confirmation'] === null ? null : Db::jsonColumn($bill['open_grn_confirmation']))
+            : null;
 
-        $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate, $postingDate, $supplierGstin): int {
+        $revision = Db::transaction(function () use ($requestId, $lines, $invoiceDate, $dueDate, $postingDate, $supplierGstin, $openGrnConfirmation): int {
             $locked = Db::first(
                 'SELECT * FROM purchase_bill_requests WHERE request_id = :id AND cmp_id = :cmp FOR UPDATE',
                 ['id' => $requestId, 'cmp' => $this->ctx->cmpId],
@@ -422,6 +432,7 @@ final class BillService
                 'supplier_gstin'        => $supplierGstin,
                 'posting_date'          => $postingDate === $invoiceDate ? null : $postingDate,
                 'due_date'              => $dueDate,
+                'open_grn_confirmation' => $openGrnConfirmation,
                 'stock_effect'          => null,
                 'stock_settlements'     => null,
                 'status'                => 'MATCHING',
@@ -534,6 +545,95 @@ final class BillService
         }
 
         return ['state' => 'absent', 'voucher_id' => null, 'voucher_no' => null, 'why' => ''];
+    }
+
+    /**
+     * Inventory's open goods receipts of this supplier for the items a direct bill names — the
+     * goods that bill would receive a second time (A09, F010). None: null. Some, unconfirmed: 409
+     * open_goods_receipts naming them, with the order each belongs to when it is one of ours, so
+     * the bill can be entered against that order instead. Confirmed (confirm_no_open_grn with a
+     * reason of at least 10 characters): the confirmation to keep on the bill. Inventory cannot be
+     * asked: 503 — a goods bill is not entered blind.
+     *
+     * @param list<array<string, mixed>> $lines normalised bill lines
+     * @param array<string, mixed>       $input
+     * @param array<string, mixed>|null  $earlier a confirmation already on the bill
+     * @return array<string, mixed>|null
+     */
+    private function openReceiptCheck(int $supplierId, array $lines, array $input, ?array $earlier = null): ?array
+    {
+        $items = [];
+        foreach ($lines as $line) {
+            if (empty($line['is_service']) && !empty($line['item_id'])) {
+                $items[(int) $line['item_id']] = true;
+            }
+        }
+        if ($items === []) {
+            return null;
+        }
+        $response = (new InventoryClient())->withService($this->auth->uuid)->pendingQuantities($this->ctx, [
+            'kind' => 'challan', 'direction' => 'in', 'party_ref' => $supplierId, 'status' => 'open,partial',
+            'include' => 'none', 'limit' => 500,
+        ]);
+        $rows = $response['ok'] && is_array($response['body'] ?? null) ? ($response['body']['data'] ?? null) : null;
+        if (!is_array($rows)) {
+            Http::error(503, 'inventory_unavailable', 'Inventory could not be asked whether goods of this supplier are already in on an unbilled receipt, so this bill was not entered. Nothing has changed; try again.', ['retryable' => true, 'detail' => (string) ($response['error'] ?? ('HTTP ' . (int) $response['status']))]);
+        }
+
+        $open = [];
+        foreach ($rows as $row) {
+            if (!is_array($row) || !isset($items[(int) ($row['item_id'] ?? 0)]) || (float) ($row['qty_open'] ?? 0) <= 0.00005) {
+                continue;
+            }
+            $documentId = (int) ($row['document_id'] ?? 0);
+            $ours = Db::first(
+                'SELECT r.request_id, r.receipt_no, p.po_id, p.po_no FROM purchase_receipt_requests r
+                   JOIN purchase_orders p ON p.po_id = r.po_id
+                  WHERE r.cmp_id = :cmp AND r.inventory_document_id = :doc',
+                ['cmp' => $this->ctx->cmpId, 'doc' => $documentId],
+            );
+            $open[] = array_filter([
+                'inventory_document_id' => $documentId,
+                'document_no'           => $row['document_no'] ?? null,
+                'document_date'         => $row['document_date'] ?? null,
+                'item_id'               => (int) $row['item_id'],
+                'open_qty'              => round((float) $row['qty_open'], 4),
+                'receipt_no'            => $ours['receipt_no'] ?? null,
+                'po_id'                 => isset($ours['po_id']) ? (int) $ours['po_id'] : null,
+                'po_no'                 => $ours['po_no'] ?? null,
+            ], static fn ($v) => $v !== null);
+        }
+        if ($open === []) {
+            return null;
+        }
+
+        $reason = self::text($input['confirm_no_open_grn_reason'] ?? null);
+        if (empty($input['confirm_no_open_grn']) || $reason === null) {
+            if ($earlier !== null && !empty($earlier['confirmed'])) {
+                return $earlier;
+            }
+            $names = array_values(array_unique(array_map(static fn (array $o) => (string) ($o['receipt_no'] ?? $o['document_no'] ?? ('#' . $o['inventory_document_id'])), $open)));
+            $orders = array_values(array_unique(array_filter(array_map(static fn (array $o) => $o['po_no'] ?? null, $open))));
+            Http::error(409, 'open_goods_receipts', sprintf(
+                'Goods receipt%s %s of this supplier already brought in %s and %s not billed. A bill with no order would receive them again.%s If these are different goods, enter the bill again confirming that, with the reason.',
+                count($names) === 1 ? '' : 's',
+                implode(', ', $names),
+                count($open) === 1 ? 'this item' : 'these items',
+                count($names) === 1 ? 'is' : 'are',
+                $orders !== [] ? ' Enter the bill against ' . implode(', ', $orders) . ' instead.' : ' Bill against the receipt in Smart Books instead.',
+            ), ['receipts' => $open, 'needs' => 'confirm_no_open_grn and confirm_no_open_grn_reason']);
+        }
+        if (mb_strlen($reason) < 10) {
+            Http::validationFailed('Say in a sentence why these goods are not the ones on the open receipts.', ['field' => 'confirm_no_open_grn_reason']);
+        }
+
+        return [
+            'confirmed'    => true,
+            'reason'       => mb_substr($reason, 0, 500),
+            'confirmed_by' => $this->auth->uuid,
+            'confirmed_at' => gmdate('c'),
+            'receipts'     => $open,
+        ];
     }
 
     /** @param array<string, mixed> $po locked order row */
@@ -1382,6 +1482,14 @@ final class BillService
         ];
         if (($supply['supply_nature'] ?? null) !== null) {
             $payload['supply_nature'] = $supply['supply_nature'];
+        }
+        $confirmation = $bill['open_grn_confirmation'] ?? null;
+        $confirmation = is_string($confirmation) ? Db::jsonColumn($confirmation) : $confirmation;
+        if ($inventoryLines !== [] && $plan['stock_effect'] === 'on_invoice' && is_array($confirmation) && !empty($confirmation['confirmed'])) {
+            // Said by the person who entered the bill, against the receipts Inventory named (A09);
+            // Books carries it to Inventory, where it stays on the stock document.
+            $payload['confirm_no_open_grn'] = true;
+            $payload['confirm_no_open_grn_reason'] = (string) ($confirmation['reason'] ?? '');
         }
 
         if ($inventoryLines !== [] && $plan['stock_effect'] !== null) {
