@@ -1347,6 +1347,41 @@ check('F489: a request from Books, Inventory, Manage or Contacts is never answer
     }
 });
 
+// ---------------------------------------------------------------------------
+echo "\nF226 — RFQs say they send nothing, and ask only creditors\n";
+
+check('F226: an RFQ records who was asked (named as Books names them), refuses a non-creditor or another tenant\'s RFQ, mints no unusable token, and says it sends nothing', function () use ($ctx, $owner) {
+    reset();
+    $sourcing = new Domain\SourcingService($ctx, $owner);
+    $input = ['title' => 'Q4 steel', 'delivery_warehouse_id' => 3, 'lines' => [['item_id' => 201, 'required_qty' => 100]]];
+    same(422, refused(fn () => $sourcing->createRfq($input + ['supplier_account_ids' => [601, 88]]), '', 'a customer asked')['status'], 'a customer\'s ledger is not a supplier to ask');
+    same(0, (int) Db::scalar('SELECT COUNT(*) FROM purchase_rfqs'), 'nothing stored');
+    $rfq = $sourcing->createRfq($input + ['supplier_account_ids' => [601]]);
+    $rfqId = (int) $rfq['rfq_id'];
+    same('Deccan Steel Traders', $rfq['invitations'][0]['supplier_name'], 'the invitation names the supplier');
+    same(false, $rfq['delivery']['sent_by_purchases'], 'and the answer says nothing is sent');
+    same(422, refused(fn () => $sourcing->inviteSupplier($rfqId, 999999), '', 'a ledger that does not exist')['status'], 'a ledger Books does not have is refused');
+    $sourcing->inviteSupplier($rfqId, 602);
+    same(null, Db::scalar('SELECT portal_token_hash FROM purchase_rfq_invitations WHERE rfq_id = :r AND supplier_account_id = 602', ['r' => $rfqId]), 'no token is minted for a portal that does not exist');
+    $other = new Domain\SourcingService(ctx(89), person('user-owner', 1, 89));
+    same(404, refused(fn () => $other->inviteSupplier($rfqId, 601), '', 'another tenant\'s RFQ')['status'], 'another company cannot add to this RFQ');
+    same(2, (int) Db::scalar('SELECT COUNT(*) FROM purchase_rfq_invitations WHERE rfq_id = :r', ['r' => $rfqId]), 'two asked');
+});
+
+check('F275: bills, returns, claims and supplier profiles carry the supplier\'s name; Books\' top suppliers are read by their label', function () use ($ctx, $owner) {
+    reset();
+    billedOrder($ctx, $owner, 10);
+    [$status, $payload] = endpoint(fn () => Controllers\BillsController::index(), $owner);
+    same(200, $status, 'bills list');
+    same('Deccan Steel Traders', $payload['data'][0]['supplier_name'] ?? null, 'a bill names its supplier (from the order\'s Books snapshot)');
+    Db::insert('purchase_supplier_profiles', ['cmp_id' => 88, 'supplier_account_id' => 602], 'supplier_account_id');
+    [$status, $payload] = endpoint(fn () => Controllers\SuppliersController::index(), $owner);
+    same(200, $status, 'supplier profiles');
+    same('Konkan Steel Works', $payload['data'][0]['supplier_name'] ?? null, 'a supplier with no order is named by Books');
+    $summary = (new Dashboards\BooksReader($ctx, $owner->sesKey()))->purchaseSummary(Dashboards\Period::forDates('2026-09-01', '2026-09-30'));
+    same('Northern Distributors', $summary['top_suppliers'][0]['supplier_name'] ?? null, 'Books\' top suppliers by their label');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

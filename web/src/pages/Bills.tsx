@@ -77,7 +77,7 @@ export function BillsList() {
               ),
             },
             { key: 'date', header: 'Dated', render: (row) => date(row.supplier_invoice_date) },
-            { key: 'supplier', header: 'Supplier', render: (row) => `Account ${row.supplier_account_id}` },
+            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? `Ledger #${row.supplier_account_id}` },
             { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
             { key: 'voucher', header: 'Books voucher', render: (row) => row.books_voucher_no ?? '—' },
           ]}
@@ -165,7 +165,7 @@ export function BillDetail() {
             <StatusBadge status={bill.status} />
           </h1>
           <p style={{ margin: '0.3rem 0 0', color: 'var(--muted)' }}>
-            {bill.bill_kind === 'service' ? 'Service bill' : bill.bill_kind === 'direct' ? 'Direct purchase' : 'Against an order'} · Account {bill.supplier_account_id}
+            {bill.bill_kind === 'service' ? 'Service bill' : bill.bill_kind === 'direct' ? 'Direct purchase' : 'Against an order'} · {bill.supplier_name ?? `Ledger #${bill.supplier_account_id}`}
             {bill.is_reverse_charge ? ' · reverse charge' : ''}
             {bill.supplier_invoice_date && ` · dated ${date(bill.supplier_invoice_date)}`}
             {bill.posting_date && ` · booked ${date(bill.posting_date)}`}
@@ -646,7 +646,7 @@ export function BillEditor() {
       <h1 style={{ margin: 0, fontSize: '1.3rem' }}>Enter supplier bill</h1>
       {po ? (
         <p style={{ margin: 0, color: 'var(--muted)' }}>
-          Against <Link to={`/purchase-orders/${po.po_id}`}>{po.po_no}</Link> · {po.supplier_name_snapshot ?? `Account ${po.supplier_account_id}`}
+          Against <Link to={`/purchase-orders/${po.po_id}`}>{po.po_no}</Link> · {po.supplier_name_snapshot ?? `Ledger #${po.supplier_account_id}`}
         </p>
       ) : (
         <Notice tone="info">

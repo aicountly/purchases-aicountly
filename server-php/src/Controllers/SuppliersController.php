@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Controllers;
 
+use Aicountly\Api\Domain\SupplierNames;
 use Aicountly\Api\Audit;
 use Aicountly\Api\Clients\InventoryClient;
 use Aicountly\Api\Db;
@@ -25,10 +26,10 @@ final class SuppliersController extends Controller
         [$auth, $ctx] = self::enter();
         Permissions::assert($ctx, $auth, 'supplier.view');
 
-        Http::data(Db::all(
+        Http::data(SupplierNames::attach($ctx, $auth, Db::all(
             'SELECT * FROM purchase_supplier_profiles WHERE cmp_id = :cmp ORDER BY is_preferred DESC, supplier_account_id',
             ['cmp' => $ctx->cmpId],
-        ));
+        )));
     }
 
     public static function upsert(): void

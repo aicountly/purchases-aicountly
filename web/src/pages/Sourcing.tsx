@@ -125,18 +125,23 @@ export function RfqDetail() {
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           <DiscussInConnect entityType="rfq" entityId={Number(id)} />
           {rfq.status === 'DRAFT' && can('rfq.create') && (
-            <Button tone="primary" disabled={busy} onClick={() => act('issue')}>Issue to suppliers</Button>
+            <Button tone="primary" disabled={busy} onClick={() => act('issue')}>Mark as sent</Button>
           )}
           {can('rfq.create') && rfq.status !== 'AWARDED' && (
-            <Button disabled={busy} onClick={() => setInviting(!inviting)}>Invite a supplier</Button>
+            <Button disabled={busy} onClick={() => setInviting(!inviting)}>Add a supplier asked</Button>
           )}
         </div>
       </header>
 
+      {/* Nothing is sent from here (F226): said plainly, so nobody waits for quotes that were never asked for. */}
+      <Notice tone="info" title="Purchases does not send RFQs">
+        {rfq.delivery?.note ?? 'Purchases records who was asked; it sends nothing to suppliers. Send the RFQ yourself and record each quote here.'}
+      </Notice>
+
       {error && <Notice tone="danger" title="That did not work">{error}</Notice>}
 
       {inviting && (
-        <Card title="Invite a supplier">
+        <Card title="Add a supplier you asked">
           <SupplierPicker
             onPick={(supplier: CatalogSupplier) => {
               void act('invite', { supplier_account_id: supplier.acc_id })
@@ -164,9 +169,9 @@ export function RfqDetail() {
           <DataTable
             rows={rfq.invitations}
             rowKey={(row) => row.invitation_id}
-            empty="Nobody invited yet."
+            empty="No supplier recorded as asked yet."
             columns={[
-              { key: 'supplier', header: 'Supplier', render: (row) => `Account ${row.supplier_account_id}` },
+              { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? `Ledger #${row.supplier_account_id}` },
               { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
               { key: 'responded', header: 'Responded', render: (row) => date(row.responded_at) },
             ]}
@@ -200,7 +205,7 @@ export function RfqDetail() {
                     return (
                       <tr key={column.quote_id} style={{ background: isLowest ? 'var(--success-bg)' : undefined }}>
                         <td style={cellStyle}>
-                          Account {column.supplier_account_id}
+                          {column.supplier_name ?? `Ledger #${column.supplier_account_id}`}
                           {column.revision_no > 0 && (
                             <span style={{ color: 'var(--muted)', fontSize: '0.78rem' }}> rev {column.revision_no}</span>
                           )}

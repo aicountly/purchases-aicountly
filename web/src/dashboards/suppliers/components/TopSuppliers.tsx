@@ -98,7 +98,7 @@ export function TopSuppliers({
                       <td className="is-wide">
                         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <strong style={{ fontWeight: 650, color: 'var(--purchase-ink)' }}>
-                            {row.supplier_name ?? `Account ${row.supplier_account_id}`}
+                            {row.supplier_name ?? `Ledger #${row.supplier_account_id}`}
                           </strong>
                           {row.is_preferred && (
                             <ShieldCheck size={12} aria-label="Preferred supplier" style={{ color: 'var(--purchase-brand-strong)', flexShrink: 0 }} />

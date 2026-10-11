@@ -71,6 +71,8 @@ export interface RfqLine {
 export interface RfqInvitation {
   invitation_id: number
   supplier_account_id: number
+  /** Smart Books' name for the supplier when they were asked (F275). */
+  supplier_name: string | null
   status: string
   invited_at: string
   responded_at: string | null
@@ -120,11 +122,14 @@ export interface Rfq {
   invitations: RfqInvitation[]
   quotes: Quote[]
   awards: BidAward[]
+  /** Purchases sends nothing to suppliers; this says so (F226). */
+  delivery?: { sent_by_purchases: boolean; note: string }
 }
 
 export interface ComparisonColumn {
   quote_id: number
   supplier_account_id: number
+  supplier_name: string | null
   revision_no: number
   currency_code: string
   payment_terms: string | null
@@ -390,6 +395,8 @@ export interface MatchResult {
 export interface BillRequest extends BillRequestSummary {
   po_id: number | null
   supplier_account_id: number
+  /** Smart Books' name for the supplier, resolved by the API (F275); null when Books could not say. */
+  supplier_name?: string | null
   requested_lines: unknown
   receipt_references: unknown
   bill_kind: 'po' | 'direct' | 'service'
@@ -421,6 +428,8 @@ export interface PurchaseReturn {
   return_date: string
   po_id: number | null
   supplier_account_id: number
+  /** Smart Books' name for the supplier, resolved by the API (F275); null when Books could not say. */
+  supplier_name?: string | null
   status: string
   return_kind: 'physical' | 'financial'
   expect_replacement: boolean
@@ -453,6 +462,8 @@ export interface Claim {
   claim_no: string
   claim_date: string
   supplier_account_id: number
+  /** Smart Books' name for the supplier, resolved by the API (F275); null when Books could not say. */
+  supplier_name?: string | null
   po_id: number | null
   claim_kind: string
   status: string
@@ -470,6 +481,8 @@ export interface Claim {
 export interface SupplierProfile {
   profile_id: number
   supplier_account_id: number
+  /** Smart Books' name for the supplier, resolved by the API (F275); null when Books could not say. */
+  supplier_name?: string | null
   qualification_status: string
   is_preferred: boolean
   approved_categories: unknown

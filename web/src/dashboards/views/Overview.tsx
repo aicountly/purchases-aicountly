@@ -165,7 +165,7 @@ export function OverviewDashboard({ data }: { data: DashboardResponse }) {
                 totalLabel={concentration.base_formatted}
                 data={concentration.suppliers.map((row) => ({
                   id: String(row.supplier_account_id ?? row.supplier_name),
-                  label: row.supplier_name ?? `Account ${row.supplier_account_id}`,
+                  label: row.supplier_name ?? `Ledger #${row.supplier_account_id}`,
                   formatted: row.formatted_amount,
                   sharePc: row.share_pc,
                   onOpen: row.supplier_account_id
@@ -180,7 +180,7 @@ export function OverviewDashboard({ data }: { data: DashboardResponse }) {
                 unitLabel="Amount"
                 data={concentration.suppliers.map((row) => ({
                   id: String(row.supplier_account_id ?? row.supplier_name),
-                  label: row.supplier_name ?? `Account ${row.supplier_account_id}`,
+                  label: row.supplier_name ?? `Ledger #${row.supplier_account_id}`,
                   value: row.amount,
                   formatted: row.formatted_amount,
                   onOpen: row.supplier_account_id

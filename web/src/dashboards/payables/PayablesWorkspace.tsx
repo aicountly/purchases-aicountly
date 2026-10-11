@@ -506,7 +506,7 @@ function ConfirmAction({
                 <span>
                   {row.invoice_no ?? `#${row.request_id}`}
                   <span className="aic-sub" style={{ display: 'block' }}>
-                    {row.supplier_name ?? `Account ${row.supplier_account_id}`}
+                    {row.supplier_name ?? `Ledger #${row.supplier_account_id}`}
                   </span>
                 </span>
                 <b style={{ fontVariantNumeric: 'tabular-nums' }}>{formatMoney(row.subtotal, row.currency)}</b>

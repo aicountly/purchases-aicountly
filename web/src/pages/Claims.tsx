@@ -110,7 +110,7 @@ export default function Claims() {
           columns={[
             { key: 'no', header: 'Number', render: (row) => row.claim_no },
             { key: 'date', header: 'Raised', render: (row) => date(row.claim_date) },
-            { key: 'supplier', header: 'Supplier', render: (row) => `Account ${row.supplier_account_id}` },
+            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? `Ledger #${row.supplier_account_id}` },
             { key: 'kind', header: 'Kind', render: (row) => row.claim_kind.replace(/_/g, ' ') },
             { key: 'claimed', header: 'Claimed', numeric: true, render: (row) => money(row.claimed_amount) },
             { key: 'settled', header: 'Settled', numeric: true, render: (row) => (Number(row.settled_amount) > 0 ? money(row.settled_amount) : '—') },

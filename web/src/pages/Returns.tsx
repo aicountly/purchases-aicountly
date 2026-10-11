@@ -39,7 +39,7 @@ export function ReturnsList() {
           columns={[
             { key: 'no', header: 'Number', render: (row) => <Link to={`/returns/${row.return_id}`} onClick={(e) => e.stopPropagation()}>{row.return_no}</Link> },
             { key: 'date', header: 'Raised', render: (row) => date(row.return_date) },
-            { key: 'supplier', header: 'Supplier', render: (row) => `Account ${row.supplier_account_id}` },
+            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? `Ledger #${row.supplier_account_id}` },
             { key: 'reason', header: 'Reason', render: (row) => row.reason_note ?? row.reason_code ?? '—' },
             { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
           ]}

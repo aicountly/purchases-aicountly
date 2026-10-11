@@ -255,7 +255,7 @@ export function TopSupplierPayablesCard({
               <Avatar name={row.supplier_name} id={row.supplier_account_id} />
               <span className="aic-supplier-row__info">
                 <span className="aic-supplier-row__head">
-                  <strong>{row.supplier_name ?? `Account ${row.supplier_account_id}`}</strong>
+                  <strong>{row.supplier_name ?? `Ledger #${row.supplier_account_id}`}</strong>
                   <b>{formatMoney(row.amount, panel.currency)}</b>
                 </span>
                 <span className="aic-track" aria-hidden>

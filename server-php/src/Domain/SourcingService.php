@@ -37,7 +37,18 @@ final class SourcingService
             Http::validationFailed('An RFQ needs at least one line.', ['field' => 'lines']);
         }
 
-        return Db::transaction(function () use ($input, $lines) {
+        // Every supplier asked is a creditor of this company in Smart Books, confirmed before the
+        // transaction opens (F226) — never a cross-product call inside it.
+        $names = [];
+        $masters = new MasterCheck($this->ctx, $this->auth);
+        foreach ((array) ($input['supplier_account_ids'] ?? []) as $supplierId) {
+            $id = self::id($supplierId);
+            if ($id !== null) {
+                $names[$id] = $masters->supplierName($id);
+            }
+        }
+
+        return Db::transaction(function () use ($input, $lines, $names) {
             $lineRefs = [];
             foreach ($lines as $line) {
                 if ($line['requisition_line_id'] !== null) {
@@ -80,11 +91,8 @@ final class SourcingService
                 ], 'line_id');
             }
 
-            foreach ((array) ($input['supplier_account_ids'] ?? []) as $supplierId) {
-                $id = self::id($supplierId);
-                if ($id !== null) {
-                    $this->inviteSupplier($rfqId, $id);
-                }
+            foreach ($names as $id => $name) {
+                $this->recordInvitation($rfqId, $id, $name);
             }
 
             // Sourcing has started, so the requisitions behind it are no longer
@@ -102,7 +110,26 @@ final class SourcingService
         });
     }
 
+    /**
+     * Record that a supplier was asked for a quote. NOTHING IS SENT (F226): there is no supplier
+     * portal or delivery from here, and the screen says so — the buyer sends the RFQ and records
+     * the quotes. The supplier must be a creditor of this company in Smart Books (422 otherwise),
+     * and the RFQ one of this company's (404 otherwise).
+     */
     public function inviteSupplier(int $rfqId, int $supplierAccountId): void
+    {
+        $rfq = Db::first('SELECT rfq_id, status FROM purchase_rfqs WHERE rfq_id = :id AND cmp_id = :cmp', ['id' => $rfqId, 'cmp' => $this->ctx->cmpId]);
+        if ($rfq === null) {
+            Http::notFound('That RFQ does not exist.');
+        }
+        if (in_array((string) $rfq['status'], ['AWARDED', 'CLOSED', 'CANCELLED'], true)) {
+            Http::conflict('This RFQ is ' . strtolower((string) $rfq['status']) . '; nobody else can be asked on it.');
+        }
+        $name = (new MasterCheck($this->ctx, $this->auth))->supplierName($supplierAccountId);
+        $this->recordInvitation($rfqId, $supplierAccountId, $name);
+    }
+
+    private function recordInvitation(int $rfqId, int $supplierAccountId, ?string $name): void
     {
         $existing = Db::first(
             'SELECT invitation_id FROM purchase_rfq_invitations WHERE rfq_id = :rfq AND supplier_account_id = :supplier',
@@ -112,18 +139,12 @@ final class SourcingService
             return;
         }
 
-        // A portal token is long, random and single-purpose, and only its hash
-        // is stored. A guessable link here would expose every competitor's
-        // quoted price to whoever tried the next number.
-        $token = bin2hex(random_bytes(32));
-
         Db::insert('purchase_rfq_invitations', [
-            'rfq_id'              => $rfqId,
-            'cmp_id'              => $this->ctx->cmpId,
-            'supplier_account_id' => $supplierAccountId,
-            'status'              => 'INVITED',
-            'portal_token_hash'   => hash('sha256', $token),
-            'token_expires_at'    => gmdate('Y-m-d H:i:s', time() + 30 * 86400),
+            'rfq_id'                 => $rfqId,
+            'cmp_id'                 => $this->ctx->cmpId,
+            'supplier_account_id'    => $supplierAccountId,
+            'supplier_name_snapshot' => $name,
+            'status'                 => 'INVITED',
         ], 'invitation_id');
     }
 
@@ -178,8 +199,12 @@ final class SourcingService
         if ($lines === []) {
             Http::validationFailed('A quotation needs at least one line.', ['field' => 'lines']);
         }
+        // A quote is from a creditor of this company in Smart Books (F226); one not yet recorded as
+        // asked is recorded now, named as Books names it.
+        $supplierName = (new MasterCheck($this->ctx, $this->auth))->supplierName($supplierId);
 
-        return Db::transaction(function () use ($rfqId, $supplierId, $input, $lines) {
+        return Db::transaction(function () use ($rfqId, $supplierId, $input, $lines, $supplierName) {
+            $this->recordInvitation($rfqId, $supplierId, $supplierName);
             $previous = (int) (Db::scalar(
                 'SELECT COALESCE(MAX(revision_no), -1) FROM purchase_quotes WHERE rfq_id = :rfq AND supplier_account_id = :supplier',
                 ['rfq' => $rfqId, 'supplier' => $supplierId],
@@ -257,10 +282,11 @@ final class SourcingService
         // Only the latest revision from each supplier: comparing an old offer
         // against a new one is how a negotiated price gets overlooked.
         $quotes = Db::all(
-            'SELECT DISTINCT ON (supplier_account_id) *
-             FROM purchase_quotes
-             WHERE rfq_id = :rfq AND cmp_id = :cmp AND status <> :withdrawn
-             ORDER BY supplier_account_id, revision_no DESC',
+            'SELECT DISTINCT ON (q.supplier_account_id) q.*,
+                    (SELECT i.supplier_name_snapshot FROM purchase_rfq_invitations i WHERE i.rfq_id = q.rfq_id AND i.supplier_account_id = q.supplier_account_id LIMIT 1) AS supplier_name
+             FROM purchase_quotes q
+             WHERE q.rfq_id = :rfq AND q.cmp_id = :cmp AND q.status <> :withdrawn
+             ORDER BY q.supplier_account_id, q.revision_no DESC',
             ['rfq' => $rfqId, 'cmp' => $this->ctx->cmpId, 'withdrawn' => 'WITHDRAWN'],
         );
 
@@ -273,6 +299,7 @@ final class SourcingService
             $columns[] = [
                 'quote_id'            => (int) $quote['quote_id'],
                 'supplier_account_id' => (int) $quote['supplier_account_id'],
+                'supplier_name'       => $quote['supplier_name'] ?? null,
                 'revision_no'         => (int) $quote['revision_no'],
                 'currency_code'       => $quote['currency_code'],
                 'payment_terms'       => $quote['payment_terms'],
@@ -547,7 +574,7 @@ final class SourcingService
         // The portal token hash is never returned: it is a credential, and a
         // credential in an API response is a credential in a browser cache.
         $row['invitations'] = Db::all(
-            'SELECT invitation_id, supplier_account_id, status, invited_at, responded_at, token_expires_at
+            'SELECT invitation_id, supplier_account_id, supplier_name_snapshot AS supplier_name, status, invited_at, responded_at
              FROM purchase_rfq_invitations WHERE rfq_id = :id ORDER BY invitation_id',
             ['id' => $rfqId],
         );
@@ -556,6 +583,8 @@ final class SourcingService
             ['id' => $rfqId],
         );
         $row['awards'] = Db::all('SELECT * FROM purchase_bid_awards WHERE rfq_id = :id ORDER BY award_id', ['id' => $rfqId]);
+        // Said on every answer, so no screen can imply otherwise (F226).
+        $row['delivery'] = ['sent_by_purchases' => false, 'note' => 'Purchases records who was asked; it sends nothing to suppliers. Send the RFQ yourself (email, WhatsApp, a printed copy) and record each quote here.'];
 
         return $row;
     }

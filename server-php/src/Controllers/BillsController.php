@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Controllers;
 
+use Aicountly\Api\Domain\SupplierNames;
 use Aicountly\Api\Domain\BillService;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
@@ -23,7 +24,7 @@ final class BillsController extends Controller
             'q'                   => $params['q'],
         ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
 
-        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset']);
+        Http::list(SupplierNames::attach($ctx, $auth, $result['rows']), $result['total'], $params['limit'], $params['offset']);
     }
 
     /**
@@ -54,7 +55,7 @@ final class BillsController extends Controller
             'q'                   => $params['q'],
         ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
 
-        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset'], [
+        Http::list(SupplierNames::attach($ctx, $auth, $result['rows']), $result['total'], $params['limit'], $params['offset'], [
             'tab'    => $result['tab'],
             'counts' => $result['counts'],
         ]);
@@ -70,7 +71,7 @@ final class BillsController extends Controller
             Http::notFound('That bill does not exist.');
         }
 
-        Http::data($bill);
+        Http::data(SupplierNames::attach($ctx, $auth, [$bill])[0]);
     }
 
     public static function create(): void

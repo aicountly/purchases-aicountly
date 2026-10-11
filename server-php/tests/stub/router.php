@@ -1290,9 +1290,10 @@ if (str_contains($path, '/dashboard/purchase')) {
             ['date' => '2026-09-02', 'amount' => 428000.5],
             ['date' => '2026-09-03', 'amount' => 265000.0],
         ]],
+        // Books TradeRegister::topParties: {acc_id, label, amount} (F275/F223).
         'top_suppliers' => [
-            ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'amount' => 1166400.0],
-            ['acc_id' => 502, 'acc_name' => 'Metro Electricals',     'amount' => 874800.0],
+            ['acc_id' => 501, 'label' => 'Northern Distributors', 'amount' => 1166400.0],
+            ['acc_id' => 502, 'label' => 'Metro Electricals',    'amount' => 874800.0],
         ],
         'payables_ageing' => [
             'not_due' => 1200000.0, 'b_0_30' => 320000.0, 'b_31_60' => 100000.0,

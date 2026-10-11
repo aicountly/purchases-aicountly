@@ -355,7 +355,7 @@ final class BooksReader
             $raw = $row['amount'] ?? $row['total'] ?? 0;
             $out[] = [
                 'supplier_account_id' => isset($row['acc_id']) ? (int) $row['acc_id'] : null,
-                'supplier_name'       => self::stringOrNull($row['acc_name'] ?? $row['party_name'] ?? $row['name'] ?? null),
+                'supplier_name'       => self::stringOrNull($row['label'] ?? $row['acc_name'] ?? $row['party_name'] ?? null), // Books' TradeRegister::topParties answers 'label' (F275)
                 'amount'              => Decimal::of(is_float($raw) || is_int($raw) ? self::numberToString($raw) : $raw),
             ];
         }

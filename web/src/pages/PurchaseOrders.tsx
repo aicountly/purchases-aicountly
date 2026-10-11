@@ -84,7 +84,7 @@ export function PurchaseOrderList() {
           columns={[
             { key: 'no', header: 'Number', render: (row) => <Link to={`/purchase-orders/${row.po_id}`} onClick={(e) => e.stopPropagation()}>{row.po_no}</Link> },
             { key: 'date', header: 'Raised', render: (row) => date(row.po_date) },
-            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name_snapshot ?? `Account ${row.supplier_account_id}` },
+            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name_snapshot ?? `Ledger #${row.supplier_account_id}` },
             {
               key: 'promised',
               header: 'Promised',
@@ -210,7 +210,7 @@ export function PurchaseOrderDetail() {
             <StatusBadge status={po.status} />
           </h1>
           <p style={{ margin: '0.3rem 0 0', color: 'var(--muted)' }}>
-            {po.supplier_name_snapshot ?? `Account ${po.supplier_account_id}`} · {date(po.po_date)}
+            {po.supplier_name_snapshot ?? `Ledger #${po.supplier_account_id}`} · {date(po.po_date)}
             {po.promised_date && ` · promised ${date(po.promised_date)}`}
           </p>
           <p style={{ margin: '0.35rem 0 0', display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.8rem', color: 'var(--muted)' }}>

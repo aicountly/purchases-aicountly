@@ -86,7 +86,8 @@ export default function Suppliers() {
           onRowClick={(row) => setOpenId(row.supplier_account_id === openId ? null : row.supplier_account_id)}
           empty="No procurement profiles yet."
           columns={[
-            { key: 'account', header: 'Books account', render: (row) => `#${row.supplier_account_id}` },
+            { key: 'name', header: 'Supplier', render: (row) => row.supplier_name ?? 'Name unavailable from Smart Books' },
+            { key: 'account', header: 'Books ledger', render: (row) => `#${row.supplier_account_id}` },
             { key: 'status', header: 'Qualification', render: (row) => <StatusBadge status={STATUS_BADGE[row.qualification_status] ?? 'DRAFT'} /> },
             { key: 'preferred', header: 'Preferred', render: (row) => (row.is_preferred ? 'Yes' : '—') },
             { key: 'lead', header: 'Lead days', numeric: true, render: (row) => row.operational_lead_days ?? '—' },
