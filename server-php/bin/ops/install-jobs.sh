@@ -19,6 +19,8 @@
 #   #! legacy-pattern: <ERE>            hand-installed single lines (outside any aicountly block) this block
 #                                       replaces, e.g. "spark inventory:outbox-dispatch"; removed on --apply
 #                                       and shown in the diff first
+#   #! php-ext: <extension>             the PHP extension the jobs need (default pdo_pgsql; pgsql for a
+#                                       CodeIgniter app on its Postgre driver)
 #   <job-name> | <cron schedule> | <command, run from the api dir; {php} is the PHP CLI>
 #
 # WHAT IT WRITES: one block between marker lines that name the API folder, so production and sandbox
@@ -55,20 +57,26 @@ app="$(sed -n 's/^#![[:space:]]*app:[[:space:]]*\([a-z0-9_-]*\).*/\1/p' "$jobs_f
 [ -n "$app" ] || { echo "$jobs_file has no '#! app: <name>' line" >&2; exit 2; }
 legacy="$(sed -n 's/^#![[:space:]]*legacy-marker:[[:space:]]*//p' "$jobs_file" | head -n 1)"
 legacy_pattern="$(sed -n 's/^#![[:space:]]*legacy-pattern:[[:space:]]*//p' "$jobs_file" | paste -sd'|' -)"
+# The PHP extension the jobs need: pdo_pgsql unless jobs.txt names another ('#! php-ext: pgsql' for a
+# CodeIgniter app on its Postgre driver, whose host PHP need not carry pdo_pgsql).
+php_ext="$(sed -n 's/^#![[:space:]]*php-ext:[[:space:]]*\([a-z0-9_]*\).*/\1/p' "$jobs_file" | head -n 1)"
+php_ext="${php_ext:-pdo_pgsql}"
 
 begin="# >>> aicountly-${app} jobs: ${api_dir} >>>"
 end="# <<< aicountly-${app} jobs: ${api_dir} <<<"
 
 if [ "$remove" -eq 0 ]; then
+  # A bare name (--php=php, as a post-deploy hook resolves it) becomes the full path cron needs.
+  case "$php_bin" in */* | '') ;; *) php_bin="$(command -v "$php_bin" 2>/dev/null || true)" ;; esac
   if [ -z "$php_bin" ]; then
     for c in /opt/cpanel/ea-php84/root/usr/bin/php /opt/cpanel/ea-php83/root/usr/bin/php \
              /opt/cpanel/ea-php82/root/usr/bin/php /opt/cpanel/ea-php81/root/usr/bin/php \
              /usr/local/bin/php /usr/bin/php "$(command -v php 2>/dev/null || true)"; do
       # php -m captured first: `php -m | grep -q` under pipefail can fail on SIGPIPE (see release.sh).
-      if [ -n "$c" ] && [ -x "$c" ] && mods="$("$c" -m 2>/dev/null)" && printf '%s\n' "$mods" | grep -qi '^pdo_pgsql$'; then php_bin="$c"; break; fi
+      if [ -n "$c" ] && [ -x "$c" ] && mods="$("$c" -m 2>/dev/null)" && printf '%s\n' "$mods" | grep -qix "$php_ext"; then php_bin="$c"; break; fi
     done
   fi
-  [ -n "$php_bin" ] && [ -x "$php_bin" ] || { echo "No PHP CLI with pdo_pgsql was found. Name one with --php=PATH." >&2; exit 2; }
+  [ -n "$php_bin" ] && [ -x "$php_bin" ] || { echo "No PHP CLI with ${php_ext} was found. Name one with --php=PATH." >&2; exit 2; }
 fi
 
 hash="$(printf '%s' "$api_dir" | cksum | cut -d' ' -f1)"
