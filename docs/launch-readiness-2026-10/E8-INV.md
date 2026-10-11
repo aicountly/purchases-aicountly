@@ -8,7 +8,7 @@ rest of the package is in Inventory-aicountly and books-react-app (same file nam
 Owner decision applied (brief §5): the intended receipt workflow is the default **for new
 companies**; historical receipts keep their recorded stock effect.
 
-- `server-php/database/migrations/020_e8in_grn_receives_stock_default.sql`: `purchase_settings.receive_stock_at_grn`
+- `server-php/database/migrations/023_e8in_grn_receives_stock_default.sql`: `purchase_settings.receive_stock_at_grn`
   defaults to TRUE for new rows; adds `receive_stock_at_grn_changed_at` / `_changed_by`. Existing rows
   are not changed.
 - `ReceiptService::stockEffectFor()`: a company with no settings row and no receipt is new and takes
