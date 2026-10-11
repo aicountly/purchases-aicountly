@@ -43,6 +43,8 @@ export interface ProfileForm {
   numbering: ProfileNumbering
   approvals: ProfileApprovals
   active: boolean
+  /** Read-only: who last switched the receipt stock mode, and when (E8-INV A11). Never sent. */
+  stockModeChange?: { by: string | null; at: string | null }
 }
 
 export const DESCRIPTION_LIMIT = 500
@@ -76,7 +78,8 @@ export const DEFAULT_PROFILE: ProfileForm = {
     blockBillOnMatchException: true,
     sodPolicy: 'owner_with_reason',
     overReceiptTolerance: '0',
-    receiveStockAtGrn: false,
+    // New companies put received goods into stock at the goods receipt (migration 020, E8-INV A11).
+    receiveStockAtGrn: true,
   },
   active: true,
 }
@@ -141,6 +144,7 @@ export function fromSettings(row: Partial<PurchaseSettings> | null | undefined):
       receiveStockAtGrn: Boolean(row.receive_stock_at_grn),
     },
     active: row.is_active === undefined ? true : Boolean(row.is_active),
+    stockModeChange: { by: row.receive_stock_at_grn_changed_by ?? null, at: row.receive_stock_at_grn_changed_at ?? null },
   }
 }
 

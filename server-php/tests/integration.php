@@ -774,12 +774,14 @@ check('a duplicate supplier invoice number is refused', function () use ($ctx, $
 
 check('the PO -> GRN -> bill journey receives the goods once, and the bill settles the GRN', function () use ($ctx, $auth) {
     resetDatabase();
+    // A company that chose challan_only (the pre-020 default, kept by existing companies).
+    receiveStockAtGrn($ctx, false);
     $po = receivedOrder($ctx, $auth);
 
     $grn = inventoryPosts();
     assertSame(1, count($grn), 'one document for the goods receipt');
     assertSame('INWARD_CHALLAN', $grn[0]['document_type'], 'the GRN is an inward challan');
-    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'by default the receipt notes the goods and the bill receives them (receive_stock_at_grn is off)');
+    assertSame('challan_only', $grn[0]['stock_effect'] ?? null, 'with receive_stock_at_grn off the receipt notes the goods and the bill receives them');
     assertSame('purchases.receipt', $grn[0]['source_document_type'] ?? null, 'filed under the receipt, not the order');
     assertSame((int) $po['receipts'][0]['request_id'], (int) $grn[0]['source_document_id'], 'the receipt is the source');
     assertSame((int) $po['po_id'], (int) ($grn[0]['metadata']['purchase_order_id'] ?? 0), 'the order travels beside it as a reference');
@@ -853,6 +855,60 @@ function receiveStockAtGrn(Context $ctx, bool $on): void
     Db::update('purchase_settings', ['receive_stock_at_grn' => $on], ['cmp_id' => $ctx->cmpId]);
 }
 
+check('E8-INV A11: a new company puts goods into stock at the goods receipt; an existing one keeps its mode', function () use ($ctx, $auth) {
+    resetDatabase();
+    Db::run('DELETE FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
+    assertSame('physical', ReceiptService::stockEffectFor($ctx->cmpId), 'no settings row and no receipt: a new company, the new default');
+    Db::run('INSERT INTO purchase_settings (cmp_id) VALUES (:cmp)', ['cmp' => $ctx->cmpId]);
+    assertSame('physical', ReceiptService::stockEffectFor($ctx->cmpId), 'the column default is on (migration 020)');
+
+    // A company that already recorded receipts under the old default and has no settings row.
+    resetDatabase();
+    receiveStockAtGrn($ctx, false);
+    receivedOrder($ctx, $auth);
+    Db::run('DELETE FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
+    assertSame('challan_only', ReceiptService::stockEffectFor($ctx->cmpId), 'its receipts were notes; nothing flips it silently');
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => '0'];
+    Auth::adopt($auth);
+    try {
+        try {
+            \Aicountly\Api\Controllers\SettingsController::show();
+        } catch (ResponseSent $sent) {
+            assertSame(false, (bool) ($sent->payload['data']['receive_stock_at_grn'] ?? true), 'opening Settings writes the mode it already works under');
+        }
+        assertSame('challan_only', ReceiptService::stockEffectFor($ctx->cmpId), 'still the mode it works under');
+    } finally {
+        Auth::adopt(null);
+    }
+});
+
+check('E8-INV A11: switching the receipt stock mode records who and when, and the order says it', function () use ($ctx, $auth) {
+    resetDatabase();
+    receiveStockAtGrn($ctx, false);
+    $_GET = ['cmp_id' => (string) $ctx->cmpId, 'fy_id' => (string) $ctx->fyId, 'bo_id' => '0'];
+    $_SERVER['REQUEST_METHOD'] = 'PUT';
+    Auth::adopt($auth);
+    try {
+        $bodyProp = new \ReflectionProperty(Http::class, 'body');
+        $bodyProp->setValue(null, ['receive_stock_at_grn' => true, 'reason' => 'GRNI ready']);
+        try {
+            \Aicountly\Api\Controllers\SettingsController::update();
+        } catch (ResponseSent $sent) {
+            $row = $sent->payload['data'] ?? [];
+            assertSame(true, (bool) $row['receive_stock_at_grn'], 'switched on');
+            assertTrue(($row['receive_stock_at_grn_changed_by'] ?? '') !== '', 'who changed it');
+            assertTrue(($row['receive_stock_at_grn_changed_at'] ?? null) !== null, 'and when');
+        }
+    } finally {
+        (new \ReflectionProperty(Http::class, 'body'))->setValue(null, null);
+        Auth::adopt(null);
+    }
+    $po = receivedOrder($ctx, $auth);
+    $order = (new PurchaseOrderService($ctx, $auth))->find((int) $po['po_id']);
+    assertSame('physical', $order['grn_stock_effect'], 'the order answers the mode');
+    assertTrue(($order['grn_stock_effect_changed']['by'] ?? '') !== '', 'the receive panel can say who switched it');
+});
+
 check('with receive_stock_at_grn on, the goods receipt puts the goods into stock and its bill settles it', function () use ($ctx, $auth) {
     resetDatabase();
     receiveStockAtGrn($ctx, true);
@@ -880,6 +936,7 @@ check('with receive_stock_at_grn on, the goods receipt puts the goods into stock
 
 check('one bill cannot settle a receipt that put goods into stock with one that only noted them', function () use ($ctx, $auth) {
     resetDatabase();
+    receiveStockAtGrn($ctx, false);
     $orders = new PurchaseOrderService($ctx, $auth);
     $po = $orders->create(poInput());
     $orders->submit((int) $po['po_id']);

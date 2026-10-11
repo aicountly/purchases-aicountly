@@ -564,6 +564,9 @@ final class PurchaseOrderService
         $progress = PoProgress::figures($poId, $this->ctx->cmpId);
         // What a new receipt on this order will do to stock — the company's choice today.
         $row['grn_stock_effect'] = ReceiptService::stockEffectFor($this->ctx->cmpId);
+        // And who last changed that choice, so the receive panel can say it (E8-INV A11).
+        $mode = Db::first('SELECT receive_stock_at_grn_changed_by AS by, receive_stock_at_grn_changed_at AS at FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $this->ctx->cmpId]);
+        $row['grn_stock_effect_changed'] = ['by' => $mode['by'] ?? null, 'at' => $mode['at'] ?? null];
         $row['progress'] = [
             'receipt_status' => $progress['receipt_status'],
             'billing_status' => $progress['billing_status'],
