@@ -1394,6 +1394,20 @@ check('F310: the session names the person as this company knows them, never by t
     same('Ravi (Stores)', $payload['data']['display_name'], 'the access screen\'s label names them');
 });
 
+check('F017: a dispatched return says its goods are still counted on hand until the debit note posts; the debit note settles the dispatch once', function () use ($ctx, $owner) {
+    reset();
+    $po = billedOrder($ctx, $owner, 10);
+    $returns = new Domain\ReturnClaimService($ctx, $owner);
+    $return = $returns->createReturn(['supplier_account_id' => 601, 'po_id' => (int) $po['po_id'], 'reason_code' => 'quality', 'lines' => [['po_line_id' => (int) $po['lines'][0]['line_id'], 'return_qty' => 2]]]);
+    $id = (int) $return['return_id'];
+    $returns->approveReturn($id, ['note' => 'Owner approves.']);
+    same(true, $returns->dispatchReturn($id)['goods_still_counted_on_hand'], 'dispatched: still counted on hand, and the screen says so');
+    $debited = $returns->requestDebitNote($id);
+    same(false, $debited['goods_still_counted_on_hand'], 'debited: gone');
+    $sent = IntegrationCommand::latest(88, Domain\ReturnClaimService::COMMAND_DEBIT_NOTE, 'purchase_return', $id)['request_payload'];
+    same('from_challan', $sent['stock_effect'] ?? null, 'the debit note settles the dispatch challan, moving the goods once');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

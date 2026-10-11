@@ -573,6 +573,9 @@ final class ReturnClaimService
         }
         $row['lines'] = $this->storedLines($returnId);
         $row['commands'] = IntegrationCommand::forEntity($this->ctx, 'purchase_return', $returnId);
+        // Said, not implied (F017): a dispatched return's goods have left, but Inventory counts them
+        // on hand until the debit note settles the dispatch challan.
+        $row['goods_still_counted_on_hand'] = ($row['return_kind'] ?? null) === 'physical' && ($row['status'] ?? null) === 'DISPATCHED';
 
         return $row;
     }
