@@ -304,6 +304,26 @@ export interface PurchaseOrder {
   communications: PoCommunication[]
   /** What a new receipt on this order does to stock: the company's receive_stock_at_grn today. */
   grn_stock_effect?: 'physical' | 'challan_only'
+  /** Applied amendments counted (F167). */
+  version_no?: number
+  /** The amendment waiting for approval, if one is. */
+  amendment_pending_id?: number | null
+  amendments?: PoAmendment[]
+}
+
+export interface PoAmendment {
+  amendment_id: number
+  from_version: number
+  to_version: number
+  status: 'PENDING_APPROVAL' | 'APPLIED' | 'REJECTED' | 'WITHDRAWN'
+  reason: string
+  value_before: string
+  value_after: string
+  requested_by: string
+  decided_by: string | null
+  decided_at: string | null
+  decision_note: string | null
+  created_at: string
 }
 
 export interface PoProgress {

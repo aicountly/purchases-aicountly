@@ -99,7 +99,7 @@ export default function Settings() {
       <Card title="Approvals and controls">
         <div style={{ display: 'grid', gap: '0.85rem' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(13rem, 1fr))', gap: '0.85rem' }}>
-            <Field label="Requisition needs approval above" hint="0 means always approve">
+            <Field label="Requisition needs approval above" hint="0: approved on submit, whatever the value — no second person checks it">
               <Input
                 disabled={!editable}
                 inputMode="decimal"
@@ -107,7 +107,7 @@ export default function Settings() {
                 onChange={(e) => setForm({ ...form, requisition_approval_above_amount: e.target.value })}
               />
             </Field>
-            <Field label="Purchase order needs approval above">
+            <Field label="Purchase order needs approval above" hint="0: approved on submit, whatever the value — no second person checks it">
               <Input
                 disabled={!editable}
                 inputMode="decimal"
@@ -123,7 +123,7 @@ export default function Settings() {
               checked={Boolean(form.enforce_approved_vendors)}
               onChange={(e) => setForm({ ...form, enforce_approved_vendors: e.target.checked })}
             />
-            Only allow purchase orders to approved suppliers
+            Only allow purchase orders to approved suppliers (checked at create, submit, approval and issue; blacklisted or suspended suppliers are always refused)
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <input

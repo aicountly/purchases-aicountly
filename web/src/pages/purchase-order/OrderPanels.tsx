@@ -341,6 +341,79 @@ export function ShortClosePanel({ po, run, busy, onCancel }: { po: PurchaseOrder
   )
 }
 
+/**
+ * Amend what was agreed with the supplier (F167): quantities, rates, discounts and the promised
+ * date, as a new version of the order. The server decides whether it applies at once or waits for
+ * an approver (above the company's threshold), refuses a quantity below what has already arrived
+ * or been billed, and asks for price.override for a higher rate.
+ */
+export function AmendPanel({ po, run, busy, onCancel }: { po: PurchaseOrder; run: Run; busy: boolean; onCancel: () => void }) {
+  const [reason, setReason] = useState('')
+  const [promised, setPromised] = useState(po.promised_date ?? '')
+  const [lines, setLines] = useState(() =>
+    po.lines.map((l) => ({ line_id: l.line_id, line_no: l.line_no, label: l.description ?? `Item #${l.item_id}`, ordered_qty: String(Number(l.ordered_qty)), agreed_rate: String(Number(l.agreed_rate)), discount_pc: String(Number(l.discount_pc ?? 0)) })),
+  )
+  const changed = lines.filter((l) => {
+    const was = po.lines.find((p) => p.line_id === l.line_id)
+    return was && (Number(was.ordered_qty) !== Number(l.ordered_qty) || Number(was.agreed_rate) !== Number(l.agreed_rate) || Number(was.discount_pc ?? 0) !== Number(l.discount_pc))
+  })
+  const promisedChanged = (po.promised_date ?? '') !== promised
+
+  return (
+    <Card title={`Amend ${po.po_no} (now version ${po.version_no ?? 0})`}>
+      <div style={{ display: 'grid', gap: '0.6rem' }} data-testid="amend-panel">
+        <div className="table-scroll" style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--muted)' }}><th>Line</th><th>Item</th><th>Quantity</th><th>Rate</th><th>Discount %</th></tr>
+            </thead>
+            <tbody>
+              {lines.map((l, index) => (
+                <tr key={l.line_id}>
+                  <td>{l.line_no}</td>
+                  <td>{l.label}</td>
+                  {(['ordered_qty', 'agreed_rate', 'discount_pc'] as const).map((field) => (
+                    <td key={field}>
+                      <Input
+                        aria-label={`${field} of line ${l.line_no}`}
+                        inputMode="decimal"
+                        value={l[field]}
+                        style={{ width: '7rem' }}
+                        onChange={(e) => setLines(lines.map((x, i) => (i === index ? { ...x, [field]: e.target.value } : x)))}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Field label="Promised date"><Input type="date" value={promised} onChange={(e) => setPromised(e.target.value)} /></Field>
+        <Field label="What was agreed, and with whom" hint="Recorded with the amendment. Above the approval threshold it waits for an approver.">
+          <Input value={reason} onChange={(e) => setReason(e.target.value)} />
+        </Field>
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <Button onClick={onCancel}>Back</Button>
+          <Button
+            tone="primary"
+            disabled={busy || reason.trim() === '' || (changed.length === 0 && !promisedChanged)}
+            onClick={async () => {
+              const ok = await run('amend', {
+                reason: reason.trim(),
+                ...(promisedChanged ? { promised_date: promised || null } : {}),
+                lines: changed.map((l) => ({ line_id: l.line_id, ordered_qty: l.ordered_qty, agreed_rate: l.agreed_rate, discount_pc: l.discount_pc })),
+              })
+              if (ok) onCancel()
+            }}
+          >
+            Amend the order
+          </Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 /** A JSON column as the API hands it back: decoded already, or a string. */
 function jsonList<T>(raw: T[] | string | null | undefined): T[] {
   if (Array.isArray(raw)) return raw

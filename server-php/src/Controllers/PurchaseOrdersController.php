@@ -168,6 +168,18 @@ final class PurchaseOrdersController extends Controller
     }
 
     /** Stop waiting for what will not be delivered, with a reason. */
+    public static function amend(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new PurchaseOrderService($ctx, $auth))->amend((int) $id, Http::body()));
+    }
+
+    public static function reopen(string $id): void
+    {
+        [$auth, $ctx] = self::enter();
+        Http::data((new PurchaseOrderService($ctx, $auth))->reopen((int) $id, Http::body()));
+    }
+
     public static function shortClose(string $id): void
     {
         [$auth, $ctx] = self::enter();

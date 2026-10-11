@@ -685,6 +685,151 @@ check('F010: a genuine direct purchase (no open receipt) still posts on_invoice;
     same('service', $service['bill_kind'], 'a service bill does not ask Inventory');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nF176 / F420 / F430 / F449 / F266 / F025 / F167 / F482 — the order and its masters\n";
+
+function poInput(array $extra = []): array
+{
+    return $extra + [
+        'supplier_account_id' => 601, 'supplier_name' => 'Ghost Supplier Pvt Ltd', 'po_date' => '2026-09-01',
+        'delivery_warehouse_id' => 3, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100, 'warehouse_id' => 3]],
+    ];
+}
+
+check('F176: the supplier is confirmed in Books — a ghost ledger, a customer\'s ledger or another tenant\'s is refused 422, and the name is Books\' whatever the client sent', function () use ($ctx, $owner) {
+    reset();
+    $orders = new Domain\PurchaseOrderService($ctx, $owner);
+    $po = $orders->create(poInput());
+    same('Deccan Steel Traders', $po['supplier_name_snapshot'], 'the name printed on the order is Books\' ledger name, not "Ghost Supplier"');
+    foreach ([[999999, 'supplier_not_found'], [88, 'not_a_supplier']] as [$acc, $why]) {
+        $r = refused(fn () => $orders->create(poInput(['supplier_account_id' => $acc])), '', 'supplier ' . $acc);
+        same(422, $r['status'], $acc . ' is 422');
+        truthy(str_contains($r['message'], 'Smart Books') || str_contains($r['message'], 'not a supplier'), $why . ': ' . $r['message']);
+    }
+    stubControl(['path' => '/masters/accounts/', 'status' => 502, 'html' => true]);
+    same(503, refused(fn () => $orders->create(poInput()), 'could not confirm', 'Books unreadable')['status'], 'an unreadable Books is 503, nothing stored');
+    stubRecover();
+    same(1, (int) Db::scalar('SELECT COUNT(*) FROM purchase_orders'), 'only the good order was stored');
+});
+
+check('F420/F449: an item or warehouse that is not this company\'s in Inventory is refused at create', function () use ($ctx, $owner) {
+    reset();
+    $orders = new Domain\PurchaseOrderService($ctx, $owner);
+    $r = refused(fn () => $orders->create(poInput(['lines' => [['item_id' => 90005, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 10]]])), 'has no item', 'another company\'s item');
+    same(422, $r['status'], '422');
+    same(422, refused(fn () => $orders->create(poInput(['delivery_warehouse_id' => 96])), 'has no warehouse', 'another company\'s warehouse')['status'], '422');
+    same(0, (int) Db::scalar('SELECT COUNT(*) FROM purchase_orders'), 'nothing stored');
+});
+
+check('F430/F266: negative rates, discounts over 100%, absurd quantities, zero FX and impossible dates are 422 — never 201 and never a 503', function () use ($ctx, $owner) {
+    reset();
+    $orders = new Domain\PurchaseOrderService($ctx, $owner);
+    $line = ['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100];
+    $cases = [
+        'negative rate'      => poInput(['lines' => [['agreed_rate' => -50] + $line]]),
+        'discount 150%'      => poInput(['lines' => [['discount_pc' => 150] + $line]]),
+        'quantity 1e15'      => poInput(['lines' => [['ordered_qty' => 1e15] + $line]]),
+        'negative freight'   => poInput(['freight_amount' => -100000]),
+        'USD at rate 0'      => poInput(['currency_code' => 'USD', 'exchange_rate' => 0]),
+        'INR at rate 83'     => poInput(['exchange_rate' => 83]),
+        'February 30'        => poInput(['po_date' => '2026-02-30']),
+        'not a date'         => poInput(['po_date' => 'not-a-date']),
+        'promised garbage'   => poInput(['promised_date' => '31/12/2026']),
+    ];
+    foreach ($cases as $what => $input) {
+        same(422, refused(fn () => $orders->create($input), '', $what)['status'], $what . ' is 422');
+    }
+    // Outside the financial year the request is in (Manage confirmed it: 2026-04-01 to 2027-03-31).
+    $inYear = Context::of(88, 6, 0);
+    $inYear->assertAllowed($owner);
+    same(422, refused(fn () => (new Domain\PurchaseOrderService($inYear, $owner))->create(poInput(['po_date' => '2019-01-01'])), 'outside the financial year', 'dated 2019')['status'], 'a 2019 order in FY 2026-27 is 422');
+    same(0, (int) Db::scalar('SELECT COUNT(*) FROM purchase_orders'), 'none of them was stored');
+    // And a dashboard asked for a date that does not exist is 422, not "database unavailable".
+    [$status] = endpoint(fn () => Controllers\SuppliersController::scorecard('601'), $owner, ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0', 'from' => 'garbage']);
+    same(422, $status, 'scorecard from=garbage');
+});
+
+check('F025: a blacklisted or suspended supplier is refused at create, submit, approve and issue — and re-checked when its standing changes after the draft', function () use ($ctx, $owner) {
+    reset();
+    $orders = new Domain\PurchaseOrderService($ctx, $owner);
+    $draft = $orders->create(poInput());
+    Db::run("INSERT INTO purchase_supplier_profiles (cmp_id, supplier_account_id, qualification_status) VALUES (88, 601, 'blacklisted')");
+    same(409, refused(fn () => $orders->submit((int) $draft['po_id']), 'vendor_not_approved', 'submitting to a supplier blacklisted since')['status'], 'submit re-checks');
+    same(409, refused(fn () => $orders->create(poInput()), 'vendor_not_approved', 'creating')['status'], 'create refuses');
+    // An override by somebody who may approve suppliers, with a reason, is audited.
+    $overridden = $orders->create(poInput(['vendor_override_reason' => 'Sole source for this spare; cleared by the plant head.']));
+    same('DRAFT', $overridden['status'], 'created under override');
+    same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_audit_log WHERE action = 'po.vendor_override'"), 'and the override is audited');
+    $buyer = member('user-buyer', ['po.create', 'po.view']);
+    same(409, refused(fn () => (new Domain\PurchaseOrderService($ctx, $buyer))->create(poInput(['vendor_override_reason' => 'I want to'])), 'vendor_not_approved', 'a buyer cannot override')['status'], 'no override without supplier.approve');
+    // Approved-supplier enforcement switched on after a draft was made is applied at issue.
+    Db::run("UPDATE purchase_supplier_profiles SET qualification_status = 'draft' WHERE supplier_account_id = 601");
+    $po = $orders->create(poInput());
+    $orders->submit((int) $po['po_id']);
+    Db::run('INSERT INTO purchase_settings (cmp_id, enforce_approved_vendors) VALUES (88, TRUE) ON CONFLICT (cmp_id) DO UPDATE SET enforce_approved_vendors = TRUE');
+    same(409, refused(fn () => $orders->issue((int) $po['po_id']), 'only orders from approved suppliers', 'issue after enforcement started')['status'], 'issue re-checks');
+});
+
+check('F482: cancelling an order waiting for approval withdraws its approval request — the inbox has nothing to approve into a 409', function () use ($ctx, $owner) {
+    reset();
+    Db::run('INSERT INTO purchase_settings (cmp_id, po_approval_above_amount) VALUES (88, 500) ON CONFLICT (cmp_id) DO UPDATE SET po_approval_above_amount = 500');
+    $orders = new Domain\PurchaseOrderService($ctx, $owner);
+    $po = $orders->create(poInput());
+    same('APPROVAL_PENDING', $orders->submit((int) $po['po_id'])['status'], 'above the threshold');
+    $orders->cancel((int) $po['po_id'], ['reason' => 'Supplier withdrew the quote.']);
+    same('WITHDRAWN', Db::scalar("SELECT status FROM purchase_approval_requests WHERE entity_id = :id", ['id' => (int) $po['po_id']]), 'withdrawn with the order');
+});
+
+check('F167: an issued order is amended as a new version; a higher rate needs price.override; above the threshold it waits for another person\'s approval; GRNs and bills follow the amended terms', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner, [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100, 'warehouse_id' => 3]]);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 4);
+    $orders = new Domain\PurchaseOrderService($ctx, $owner);
+    refused(fn () => $orders->amend((int) $po['po_id'], ['reason' => 'x', 'lines' => [['line_id' => $lineId, 'ordered_qty' => 3]]]), 'cannot be cut', 'below what arrived');
+    $buyer = member('user-buyer', ['po.amend', 'po.view']);
+    same(403, refused(fn () => (new Domain\PurchaseOrderService($ctx, $buyer))->amend((int) $po['po_id'], ['reason' => 'Supplier raised the price', 'lines' => [['line_id' => $lineId, 'agreed_rate' => 110]]]), 'permission', 'a higher rate')['status'], 'needs price.override');
+    // Within the threshold: applied at once, as version 1.
+    $amended = $orders->amend((int) $po['po_id'], ['reason' => 'Agreed 2 more at the same rate', 'lines' => [['line_id' => $lineId, 'ordered_qty' => 12]]]);
+    same(1, (int) $amended['version_no'], 'version 1');
+    same('12.0000', (string) $amended['lines'][0]['ordered_qty'], 'the line says 12');
+    same('APPLIED', $amended['amendments'][0]['status'], 'recorded with before and after');
+    same(10.0, (float) $amended['amendments'][0]['before_terms']['lines'][(string) $lineId]['ordered_qty'], 'the old terms are kept');
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 8);  // 4 + 8 = the amended 12
+
+    // Above the threshold: waits; the order keeps its current terms meanwhile; the requester cannot approve.
+    Db::run('INSERT INTO purchase_settings (cmp_id, po_approval_above_amount) VALUES (88, 1000) ON CONFLICT (cmp_id) DO UPDATE SET po_approval_above_amount = 1000');
+    $pending = $orders->amend((int) $po['po_id'], ['reason' => 'New list price from the supplier', 'lines' => [['line_id' => $lineId, 'agreed_rate' => 125]]]);
+    same('PENDING_APPROVAL', $pending['amendments'][0]['status'], 'waiting');
+    same('100.0000', (string) $pending['lines'][0]['agreed_rate'], 'still the old rate until approved');
+    refused(fn () => $orders->amend((int) $po['po_id'], ['reason' => 'again', 'lines' => [['line_id' => $lineId, 'agreed_rate' => 126]]]), 'waiting for approval', 'a second amendment while one waits');
+    $clerk = member('user-clerk', ['po.amend', 'price.override', 'po.view', 'po.approve']);
+    $clerkPo = (new Domain\PurchaseOrderService($ctx, $clerk));
+    unset($clerkPo);
+    $approver = member('user-approver', ['po.approve', 'po.view']);
+    $approved = (new Domain\PurchaseOrderService($ctx, $approver))->decide((int) $po['po_id'], 'approve', []);
+    same('125.0000', (string) $approved['lines'][0]['agreed_rate'], 'applied on approval');
+    same(2, (int) $approved['version_no'], 'version 2');
+    same('APPROVED', Db::scalar("SELECT status FROM purchase_approval_requests WHERE reason_kind = 'amendment'"), 'its approval row is closed');
+    // The bill is matched against the amended rate: 125 is clean, 130 is a variance.
+    $b = bill($ctx, $owner, (int) $po['po_id'], [['po_line_id' => $lineId, 'qty' => 12, 'rate' => 125]], 'AMEND-1');
+    same('MATCHED', $b['match']['verdict'], 'the amended rate matches');
+});
+
+check('F420: what a short-close stopped waiting for can be reopened, and the order expects it again', function () use ($ctx, $owner) {
+    reset();
+    $po = orderOf($ctx, $owner, [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 10, 'agreed_rate' => 100, 'warehouse_id' => 3]]);
+    $lineId = (int) $po['lines'][0]['line_id'];
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 6);
+    $orders = new Domain\PurchaseOrderService($ctx, $owner);
+    $orders->shortClose((int) $po['po_id'], ['reason' => 'Supplier out of stock']);
+    refused(fn () => receive($ctx, $owner, (int) $po['po_id'], $lineId, 1), 'would exceed the order', 'nothing to receive after the short-close');
+    $reopened = $orders->reopen((int) $po['po_id'], ['reason' => 'Supplier found the stock']);
+    same('0.0000', (string) $reopened['lines'][0]['short_closed_qty'], 'expected again');
+    receive($ctx, $owner, (int) $po['po_id'], $lineId, 4);
+    same('RECEIVED', (new Domain\PurchaseOrderService($ctx, $owner))->find((int) $po['po_id'])['status'], 'and received in full');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

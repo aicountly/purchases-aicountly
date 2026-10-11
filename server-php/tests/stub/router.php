@@ -1034,7 +1034,8 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
  * the group is an id, named by v1/item-groups.
  */
 if (str_contains($path, '/v1/items/bulk-lookup')) {
-    $ids = array_values(array_unique(array_filter(array_map('intval', (array) ($body['item_ids'] ?? [])), static fn ($i) => $i > 0)));
+    // Items 90000 and above are another company's: Inventory's bulk lookup leaves them out.
+    $ids = array_values(array_unique(array_filter(array_map('intval', (array) ($body['item_ids'] ?? [])), static fn ($i) => $i > 0 && $i < 90000)));
     echo json_encode(['data' => array_map(static fn ($id) => [
         'item_id'              => $id,
         'item_uuid'            => 'item-' . $id,
@@ -1072,10 +1073,8 @@ if (str_contains($path, '/v1/reports/replenishment')) {
     exit;
 }
 if (str_contains($path, '/v1/warehouses')) {
-    echo json_encode(['data' => [
-        ['warehouse_id' => 1, 'warehouse_name' => 'Main Store'],
-        ['warehouse_id' => 2, 'warehouse_name' => 'Site Store'],
-    ]]);
+    // Warehouses 1-9 are this company's; 90 and above belong to another tenant.
+    echo json_encode(['data' => array_map(static fn (int $id) => ['warehouse_id' => $id, 'warehouse_name' => $id === 1 ? 'Main Store' : ($id === 2 ? 'Site Store' : 'Bay ' . $id)], range(1, 9))]);
     exit;
 }
 
@@ -1112,7 +1111,31 @@ if (preg_match('#/masters/accounts/(\d+)$#', $path, $am) === 1 && $method === 'G
     $overrides = is_file(sys_get_temp_dir() . '/stub-accounts.json') ? (json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-accounts.json'), true) ?: []) : [];
     $accId = (int) $am[1];
     $row = ['acc_id' => $accId, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30,
-        'gstin' => '27AAPFU0939F1ZV', 'gst_reg_type' => 'regular', 'state_code' => '27', 'country_code' => 'IN', 'is_non_resident' => 0];
+        'gstin' => '27AAPFU0939F1ZV', 'gst_reg_type' => 'regular', 'state_code' => '27', 'country_code' => 'IN', 'is_non_resident' => 0,
+        // AccountsController::show resolves the account's anchor up its group chain.
+        'resolved_anchor_code' => 'SUNDRY_CREDITORS'];
+    // Ledgers 80-89 are customers (Sundry Debtors); 900000 and above exist in no company the
+    // caller may open — Books answers 404 for them, as it does for another tenant's ledger.
+    // The ledger's own name and anchor, as the list above has them; any other id is a supplier.
+    $known = [
+        601 => ['Deccan Steel Traders', 'SUNDRY_CREDITORS'], 602 => ['Konkan Steel Works', 'SUNDRY_CREDITORS'],
+        501 => ['Northern Distributors', 'SUNDRY_CREDITORS'], 502 => ['Eastern Metals', 'SUNDRY_CREDITORS'],
+        7101 => ['Purchase - Raw Materials', 'PURCHASE_ACCOUNTS'], 7201 => ['Freight Inward', 'DIRECT_EXPENSES'],
+        7301 => ['Repairs and Maintenance', 'INDIRECT_EXPENSES'], 7302 => ['Freight and Cartage', 'INDIRECT_EXPENSES'],
+        7401 => ['Domestic Sales', 'SALES_ACCOUNTS'],
+    ];
+    if (isset($known[$accId])) {
+        [$row['acc_name'], $row['resolved_anchor_code']] = $known[$accId];
+    }
+    if ($accId >= 80 && $accId <= 89) {
+        $row['resolved_anchor_code'] = 'SUNDRY_DEBTORS';
+        $row['acc_name'] = 'Walk-in Customer ' . $accId;
+    }
+    if ($accId >= 900000) {
+        http_response_code(404);
+        echo json_encode(['status' => 404, 'error' => 404, 'messages' => ['error' => 'Account not found']]);
+        exit;
+    }
     if (isset($overrides[(string) $accId]) && $overrides[(string) $accId] === null) {
         http_response_code(404);
         echo json_encode(['status' => 404, 'error' => 404, 'messages' => ['error' => 'Account not found']]);

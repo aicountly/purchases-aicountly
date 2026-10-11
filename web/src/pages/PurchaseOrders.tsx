@@ -8,7 +8,7 @@ import { useUrlFilter, useUrlFlag, useUrlId } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip, recoveryPath } from '../components/CommandStrip'
 import type { IntegrationCommand, ReceiptRequest } from '../services/types'
-import { OrderCommunicationsPanel, ReceiptReturnPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
+import { AmendPanel, OrderCommunicationsPanel, ReceiptReturnPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
@@ -130,6 +130,7 @@ export function PurchaseOrderDetail() {
   const [cancelling, setCancelling] = useState(false)
   const [receiving, setReceiving] = useState(false)
   const [shortClosing, setShortClosing] = useState(false)
+  const [amending, setAmending] = useState(false)
   const [undoing, setUndoing] = useState<{ receipt: ReceiptRequest; mode: 'return' | 'reverse' } | null>(null)
 
   const { data, loading, reload } = useApi(
@@ -150,7 +151,22 @@ export function PurchaseOrderDetail() {
     setBusy(true)
     setActionError(null)
     try {
-      await api.post(fullPath, body)
+      try {
+        await api.post(fullPath, body)
+      } catch (err) {
+        // A barred supplier: somebody who may approve suppliers can override it for this order,
+        // saying why (F025). Asked once; the server decides whether this person may.
+        if (err instanceof ApiError && err.code === 'vendor_not_approved' && err.details.override) {
+          const reason = window.prompt(`${err.message}\n\nOverride for this order — why?`)
+          if (reason && reason.trim() !== '') {
+            await api.post(fullPath, { ...body, vendor_override_reason: reason.trim() })
+          } else {
+            throw err
+          }
+        } else {
+          throw err
+        }
+      }
       setNote('')
       return true
     } catch (err) {
@@ -176,6 +192,8 @@ export function PurchaseOrderDetail() {
   if (!po) return <Notice tone="warning">That purchase order does not exist.</Notice>
 
   const pendingApprovals = po.approvals.filter((a) => a.status === 'PENDING')
+  const canAmend = ['DRAFT', 'APPROVED', 'ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED', 'RECEIVED'].includes(po.status) && !po.amendment_pending_id && can('po.amend')
+  const shortClosed = po.lines.some((l) => Number(l.short_closed_qty) > 0)
   const canReceive = ['ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED'].includes(po.status)
   const progress = new Map((po.progress?.lines ?? []).map((l) => [l.line_id, l]))
   const receivable = (po.progress?.lines ?? []).some((l) => l.to_receive_qty > 0)
@@ -219,6 +237,20 @@ export function PurchaseOrderDetail() {
           )}
           {canReceive && receivable && can('po.close') && (
             <Button disabled={busy} onClick={() => setShortClosing(true)}>Short-close</Button>
+          )}
+          {canAmend && (
+            <Button disabled={busy} onClick={() => setAmending(true)}>Amend</Button>
+          )}
+          {shortClosed && !['CANCELLED', 'DRAFT'].includes(po.status) && can('po.close') && (
+            <Button
+              disabled={busy}
+              onClick={() => {
+                const reason = window.prompt('Why is more coming after all? What was short-closed will be expected again.')
+                if (reason && reason.trim() !== '') void act('reopen', { reason: reason.trim() })
+              }}
+            >
+              Reopen
+            </Button>
           )}
           {!['CANCELLED', 'CLOSED'].includes(po.status) && can('po.cancel') && (
             <Button tone="danger" disabled={busy} onClick={() => setCancelling(true)}>Cancel</Button>
@@ -268,6 +300,21 @@ export function PurchaseOrderDetail() {
       )}
 
       {shortClosing && <ShortClosePanel po={po} run={act} busy={busy} onCancel={() => setShortClosing(false)} />}
+
+      {amending && <AmendPanel po={po} run={act} busy={busy} onCancel={() => setAmending(false)} />}
+
+      {(po.amendments ?? []).length > 0 && (
+        <Card title="Amendments">
+          <ul style={{ margin: 0, paddingLeft: '1.1rem', display: 'grid', gap: '0.3rem', fontSize: '0.88rem' }} data-testid="amendments">
+            {(po.amendments ?? []).map((a) => (
+              <li key={a.amendment_id}>
+                <StatusBadge status={a.status} /> Version {a.to_version}: {a.reason} — value {money(a.value_before)} → {money(a.value_after)}
+                {a.decided_by ? ` · decided by ${a.decided_by}${a.decision_note ? `: ${a.decision_note}` : ''}` : ''}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       {undoing && (
         <ReceiptReturnPanel
