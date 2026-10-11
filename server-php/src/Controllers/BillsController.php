@@ -49,8 +49,8 @@ final class BillsController extends Controller
             'status'              => Http::param('status'),
             'supplier_account_id' => Http::intParam('supplier_account_id'),
             'po_id'               => Http::intParam('po_id'),
-            'from'                => Http::param('from'),
-            'to'                  => Http::param('to'),
+            'from'                => Http::dateParam('from'),
+            'to'                  => Http::dateParam('to'),
             'q'                   => $params['q'],
         ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
 

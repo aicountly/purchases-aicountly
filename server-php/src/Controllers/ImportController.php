@@ -96,8 +96,8 @@ final class ImportController extends Controller
             );
         }
 
-        $from = (string) (Http::param('from') ?? '');
-        $to = (string) (Http::param('to') ?? '');
+        $from = (string) (Http::dateParam('from') ?? '');
+        $to = (string) (Http::dateParam('to') ?? '');
         if ($from === '' || $to === '') {
             Http::validationFailed('Give the period the statement covers.', ['field' => 'from']);
         }

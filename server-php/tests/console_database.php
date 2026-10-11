@@ -930,8 +930,8 @@ $setEnv($saved);
     T::group('Database diagnosis: the request-time answer stays generic');
     // -----------------------------------------------------------------------
 
-    // index.php answers every PDOException a route lets through with a retryable 503 database_unavailable and logs the
-    // detail. A failure to obtain the database name is one (it extends PDOException, with no SQLSTATE, like a connection
+    // index.php answers a PDOException that means the database cannot be reached (no SQLSTATE, class 08, 53, 57P) with a
+    // retryable 503 database_unavailable and logs the detail; a refused value (class 22) is 422, anything else 500 (F266). A failure to obtain the database name is one (it extends PDOException, with no SQLSTATE, like a connection
     // that was never made), so it gets that same answer, and the words the caller reads carry nothing from the exception.
     T::ok(new DatabaseConnectionException('x', 'console_unreachable') instanceof PDOException, 'a failure to obtain the database name is a PDOException, so index.php still catches it');
     $index = (string) file_get_contents(dirname(__DIR__) . '/index.php');

@@ -258,10 +258,19 @@ try {
         exit;
     }
 } catch (\PDOException $e) {
-    // A database problem is ours, not the caller's. The detail goes to the log;
-    // the caller gets something they can act on.
+    // Only a database that cannot be reached (or is shedding load) is a retryable 503. A value
+    // PostgreSQL refused — a date that does not exist, a number too large for its column — is the
+    // caller's to fix, and anything else is a fault here; calling those "not reachable" sent
+    // operators hunting outages and clients retrying forever (F266). The detail goes to the log.
     error_log('[purchases] database error on ' . $path . ': ' . $e->getMessage());
-    Http::error(503, 'database_unavailable', 'The Purchases database is not reachable right now. Please retry.');
+    $state = (string) ($e->errorInfo[0] ?? (is_string($e->getCode()) ? $e->getCode() : ''));
+    if ($state === '' || str_starts_with($state, '08') || str_starts_with($state, '57P') || str_starts_with($state, '53') || $state === 'HY000') {
+        Http::error(503, 'database_unavailable', 'The Purchases database is not reachable right now. Please retry.', ['retryable' => true]);
+    }
+    if (str_starts_with($state, '22')) {
+        Http::error(422, 'invalid_value', 'A value in the request is out of range or not valid for its field.', ['retryable' => false]);
+    }
+    Http::error(500, 'server_error', 'Something went wrong handling that request.', ['retryable' => false]);
 } catch (\Throwable $e) {
     error_log('[purchases] unhandled error on ' . $path . ': ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
     Http::error(500, 'server_error', 'Something went wrong handling that request.');

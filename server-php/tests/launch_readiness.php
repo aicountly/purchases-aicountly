@@ -747,6 +747,10 @@ check('F430/F266: negative rates, discounts over 100%, absurd quantities, zero F
     // And a dashboard asked for a date that does not exist is 422, not "database unavailable".
     [$status] = endpoint(fn () => Controllers\SuppliersController::scorecard('601'), $owner, ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0', 'from' => 'garbage']);
     same(422, $status, 'scorecard from=garbage');
+    [$status] = endpoint(fn () => Controllers\DashboardsController::show('overview'), $owner, ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0', 'from' => '2026-02-30']);
+    same(422, $status, 'dashboards/overview from=2026-02-30');
+    [$status] = endpoint(fn () => Controllers\BillsController::payables(), $owner, ['cmp_id' => '88', 'fy_id' => '6', 'bo_id' => '0', 'from' => 'garbage']);
+    same(422, $status, 'bills/payables from=garbage');
 });
 
 check('F025: a blacklisted or suspended supplier is refused at create, submit, approve and issue — and re-checked when its standing changes after the draft', function () use ($ctx, $owner) {

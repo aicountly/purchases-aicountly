@@ -22,8 +22,8 @@ final class PurchaseOrdersController extends Controller
         $result = (new PurchaseOrderService($ctx, $auth))->search([
             'status'              => Http::param('status'),
             'supplier_account_id' => Http::intParam('supplier_account_id'),
-            'from'                => Http::param('from'),
-            'to'                  => Http::param('to'),
+            'from'                => Http::dateParam('from'),
+            'to'                  => Http::dateParam('to'),
             'open_only'           => Http::param('open_only') === '1',
             'overdue'             => Http::param('overdue') === '1',
             'q'                   => $params['q'],
