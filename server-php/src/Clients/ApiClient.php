@@ -6,6 +6,7 @@ namespace Aicountly\Api\Clients;
 
 use Aicountly\Api\CrossServiceCallContext;
 use Aicountly\Api\Env;
+use Aicountly\Api\Environment;
 use Aicountly\Api\IdempotencyKey;
 
 /**
@@ -82,25 +83,29 @@ abstract class ApiClient
     /**
      * Where this product's sibling lives.
      *
-     * Derived from our own hostname so sandbox talks to sandbox without a second
-     * set of environment variables to keep in step — an explicit env override
-     * still wins, for local development and for a one-off cutover.
+     * An explicit *_API_BASE wins; otherwise the origin for the environment this deployment is
+     * CONFIGURED as (AIC_ENVIRONMENT, else APP_ENV — see Environment). Never the request's Host
+     * header (A20): a client chooses that, and it used to choose which Manage answered for company
+     * ownership. Empty when nothing can be chosen; request() then refuses (baseProblem()).
      */
     public function base(): string
     {
-        $configured = Env::get($this->baseEnvKey());
-        if ($configured !== '') {
-            return rtrim($configured, '/');
-        }
+        return Environment::pick(Env::get($this->baseEnvKey()), $this->productionBase(), $this->sandboxBase()) ?? '';
+    }
 
-        $host = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
-        $host = explode(':', preg_replace('/^www\./', '', $host) ?? '')[0];
+    /** The variable that pins this client's base (e.g. BOOKS_API_BASE), for /api/health. */
+    public function baseVariable(): string
+    {
+        return $this->baseEnvKey();
+    }
 
-        if (str_contains($host, '.gh.aicountly.com') || str_starts_with($host, 'gh-') || $host === '' || str_contains($host, 'localhost') || str_starts_with($host, '127.')) {
-            return $this->sandboxBase();
-        }
-
-        return $this->productionBase();
+    /**
+     * Why this client must not call out, as a fixed code, or null when it may: no environment could
+     * be chosen, or a production deployment whose base points at a sandbox/loopback host.
+     */
+    public function baseProblem(): ?string
+    {
+        return Environment::baseProblem($this->base());
     }
 
     /** The API root. A configured base may already include /api, and a local spark origin serves it at the root. */
@@ -124,6 +129,13 @@ abstract class ApiClient
     public function request(string $method, string $path, ?array $body = null, array $headers = [], bool $required = false): array
     {
         $method = strtoupper($method);
+
+        $baseProblem = $this->baseProblem();
+        if ($baseProblem !== null) {
+            $this->log('refused', $path, 0, 0.0, $baseProblem);
+
+            return ['ok' => false, 'status' => 0, 'body' => null, 'error' => $this->service() . '_' . $baseProblem];
+        }
 
         // RE-ENTRY GUARD. If the product we are about to call is the one whose
         // request we are serving, its worker is already blocked on our response.
@@ -198,6 +210,16 @@ abstract class ApiClient
             'body'   => is_array($decoded) ? $decoded : null,
             'error'  => null,
         ];
+        // A 2xx we cannot read is NOT a success (A10). An intermediary — a WAF page, a proxy's
+        // maintenance HTML, a truncated body — can answer 200 for a write the receiver never
+        // applied, or applied without our being able to see its reference. Either way the outcome
+        // is unknown: report it as a 502 the caller retries on the SAME idempotency key (and so
+        // reconciles with the receiver) and never as posted. 204/205 carry no body by definition.
+        if ($result['ok'] && $result['body'] === null && !in_array($status, [204, 205], true)) {
+            $this->log('unreadable', $path, $status, $ms, 'unreadable_2xx');
+
+            return ['ok' => false, 'status' => 502, 'body' => null, 'error' => 'unreadable_response', 'outcome_unknown' => true];
+        }
         if (!$result['ok']) {
             $result['error'] = is_array($decoded) ? self::errorMessage($decoded, $status) : 'HTTP ' . $status;
             $this->log('error', $path, $status, $ms, null);

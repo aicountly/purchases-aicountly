@@ -1,0 +1,15 @@
+# E8-ID — identity, outage semantics, trusted origins, uncertain outcomes (Purchases)
+
+Branch `claude/e8-id`, from origin/main 8ea952f (2026-10-08). Package-wide record: the same file in each repo E8-ID touched.
+
+| Finding | Status | What changed | Evidence |
+|---|---|---|---|
+| A20 / F062 / F284 (Host header picks Manage/Books/Inventory/Contacts/Pulse environment) | implemented | `src/Environment.php` (new): environment from AIC_ENVIRONMENT, else APP_ENV; never HTTP_HOST. `ApiClient::base()` and `PulseAiClient::origin()` use it. Unrecognised value means no base, and `request()` refuses (status 0, so callers answer 503). With APP_ENV=production, a base pointing at `*.gh.aicountly.com`, `gh-*` or loopback is refused. `/api/health` gains an `environment` block (name, source, problems), and `usable` is false when it has problems. `bin/books-key-recovery.php` prints which Books it talks to and refuses an unusable base. `.env.example` now documents APP_ENV as REQUIRED. | EXECUTED `tests/environment.php` (9/9): every client × 8 Host classes × production/sandbox/local/unset/unrecognised; the source scan finds no `HTTP_HOST` reader under src/ |
+| A10 (unparseable 2xx treated as success) | implemented | `ApiClient::request()`: a 2xx whose body is not JSON (except 204/205) becomes `ok=false, status=502, error=unreadable_response, outcome_unknown=true`. `IntegrationCommand::classify()` maps that to `uncertain` (same key, reconcile on retry), never completed or blocked. Writers already required the Books reference before `complete()` (DebitNotePoster, BillService, ReceiptService). | EXECUTED `tests/environment.php`: real HTTP listener answering 200 text/html, 200 empty, 200 `true`, 200 `{}`, 204 |
+| F493 (unreadable Manage answer treated as no access) | implemented | `Context::askManage()` applies one rule, the same one Contacts uses: Manage's own JSON 401/403/404, a readable success:0, or a different company means 403. Anything unreadable (HTML or empty 200, 5xx, timeout) means 503 context_unavailable. A readable 200 with no company also means 503. | EXECUTED `tests/identity_outage.php` (13/13): real index.php under `php -S`, PostgreSQL, fault proxy in front of the suite stub. At origin/main the same test fails 4 cases: html/empty 200 gave 403, Manage's 404 gave 503, timeout held 15 s |
+| outage→401 family (MY-AW-04) | already_fixed_at_head (portal tri-state, MNY-18) + implemented (timeouts) | validatesession now times out at 2 s connect / 6 s total (was 8/15). | EXECUTED identity_outage: portal 401 gives 401; 502/503/HTML/empty/timeout give 503 + Retry-After; recovery after an outage works, so there is no negative caching |
+| F021 (Inventory outage during bill post means BLOCKED) | see books-react-app E8-ID.md | Purchases classifies 5xx as FAILED (retryable); the root cause is on the Books side. | |
+
+Gates: `TEST_DB_NAME=e8id_purchases ... STUB_PORT=33901 bash server-php/tests/run.sh` gives rc=0 (108+148+23+9+13+89 passed).
+
+Operator steps (OPERATIONALLY-PENDING): set `APP_ENV` (or `AIC_ENVIRONMENT`) explicitly in every deployed api/.env, then check `GET /api/health` → `environment.ok=true` after deploy.

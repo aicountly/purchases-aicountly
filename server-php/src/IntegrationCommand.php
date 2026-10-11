@@ -338,6 +338,11 @@ final class IntegrationCommand
             return 'completed';
         }
         $status = (int) $response['status'];
+        // A 2xx whose body could not be read (ApiClient: unreadable_response): the receiver may
+        // have applied it. Same key, reconcile on retry; never posted, never a refusal (A10).
+        if (!empty($response['outcome_unknown'])) {
+            return 'uncertain';
+        }
         $code = (string) ($response['body']['error']['code'] ?? $response['body']['code'] ?? '');
         if ($status === 0 || $code === 'request_in_progress' || $status === 408 || $status === 504) {
             return 'uncertain';

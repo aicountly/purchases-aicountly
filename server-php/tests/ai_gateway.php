@@ -502,13 +502,14 @@ check('the gateway key is never in a returned message, a request body or a log l
     assertTrue(!str_contains($logged, 'pk-test-FAKE'), 'and the key is not in the log');
 });
 
-check('AI Pulse is found from this host, or from PULSE_API_ORIGIN', function () {
-    $origin = static function (?string $host): string {
+check('AI Pulse is found from the configured environment (never the Host header), or from PULSE_API_ORIGIN', function () {
+    $origin = static function (?string $host, string $appEnv = 'production'): string {
         if ($host === null) {
             unset($_SERVER['HTTP_HOST']);
         } else {
             $_SERVER['HTTP_HOST'] = $host;
         }
+        putenv('APP_ENV=' . $appEnv);
 
         return (new PulseAiClient())->origin();
     };
@@ -516,17 +517,21 @@ check('AI Pulse is found from this host, or from PULSE_API_ORIGIN', function () 
     try {
         assertSame(PulseAiClient::PRODUCTION, $origin('purchase.aicountly.com'), 'production');
         assertSame('https://pulse.aicountly.com', PulseAiClient::PRODUCTION, 'which is AI Pulse');
-        assertSame(PulseAiClient::SANDBOX, $origin('purchase.gh.aicountly.com'), 'sandbox');
         assertSame('https://pulse.gh.aicountly.com', PulseAiClient::SANDBOX, 'which is the sandbox AI Pulse');
-        assertSame(PulseAiClient::SANDBOX, $origin('gh-purchase.aicountly.com:443'), 'a gh- host is sandbox');
-        assertSame(PulseAiClient::SANDBOX, $origin('localhost:8791'), 'local development never reaches production');
-        assertSame(PulseAiClient::SANDBOX, $origin(null), 'nor does the CLI');
+        // A20: a production deployment stays on production Pulse whatever Host the request names.
+        assertSame(PulseAiClient::PRODUCTION, $origin('purchase.gh.aicountly.com'), 'a forged sandbox Host does not move production');
+        assertSame(PulseAiClient::PRODUCTION, $origin('gh-purchase.aicountly.com:443'), 'nor does a gh- Host');
+        assertSame(PulseAiClient::PRODUCTION, $origin('localhost:8791'), 'nor localhost');
+        assertSame(PulseAiClient::PRODUCTION, $origin(null), 'and a production CLI reaches production');
+        assertSame(PulseAiClient::SANDBOX, $origin('purchase.aicountly.com', 'sandbox'), 'a sandbox deployment stays on sandbox whatever the Host');
+        assertSame(PulseAiClient::SANDBOX, $origin(null, 'local'), 'local development never reaches production');
 
         putenv('PULSE_API_ORIGIN=https://pulse.example.test/api/');
         assertSame('https://pulse.example.test', $origin('purchase.aicountly.com'), 'a configured origin wins, without its /api');
         assertSame('https://pulse.test', (new PulseAiClient(origin: 'https://pulse.test/'))->origin(), 'and a constructed one wins over that');
     } finally {
         putenv('PULSE_API_ORIGIN');
+        putenv('APP_ENV');
         unset($_SERVER['HTTP_HOST']);
     }
 });

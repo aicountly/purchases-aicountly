@@ -89,6 +89,13 @@ if ($check) {
         exit(1);
     }
     $books = (new BooksClient())->withSession($sesKey);
+    // Say which Books this run talks to, and refuse one this deployment must not reach (F062/F284):
+    // the environment comes from AIC_ENVIRONMENT/APP_ENV, never from a request host the CLI lacks.
+    if ($books->baseProblem() !== null) {
+        fwrite(STDERR, 'Refusing: Books base for this deployment is not usable (' . $books->baseProblem() . '). Set ' . $books->baseVariable() . " or AIC_ENVIRONMENT/APP_ENV in api/.env.\n");
+        exit(1);
+    }
+    $json || fwrite(STDERR, 'Books: ' . $books->base() . ' (environment ' . (\Aicountly\Api\Environment::name() ?? 'unrecognised') . ")\n");
 }
 
 $mode = $apply ? 'apply' : ($check ? 'check' : 'dry_run');

@@ -60,6 +60,10 @@ done
 status=0
 php "$ROOT/tests/integration.php" || status=$?
 php "$ROOT/tests/ai_gateway.php" || status=$?
+# E8-ID: environment from configuration only (never Host), unreadable 2xx = outcome unknown.
+php "$ROOT/tests/environment.php" || status=$?
+# E8-ID: portal/Manage outage semantics over real HTTP through index.php (fault proxy in front of the stub).
+STUB_PULSE_SERVICE_KEY="$PULSE_KEY" E8ID_API_PORT="${E8ID_API_PORT:-$((STUB_PORT+20))}" E8ID_IDENTITY_FAULT_PORT="${E8ID_IDENTITY_FAULT_PORT:-$((STUB_PORT+21))}" php "$ROOT/tests/identity_outage.php" || status=$?
 php "$ROOT/tests/remediation.php" || status=$?
 # Against a REAL Contacts when CONTACTS_CONTRACT_BASE is set (the e2e harness); skips otherwise.
 php "$ROOT/tests/contacts_contract.php" || status=$?
