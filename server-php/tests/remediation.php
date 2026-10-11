@@ -600,11 +600,14 @@ check('what Books recorded is checked, and a voucher that is not this bill is fl
 
 check('each company chooses whether goods go into stock at the goods receipt; the bill settles either kind with from_challan', function () use ($ctx, $owner) {
     reset();
+    // A company configured off (the pre-020 default, which existing companies keep; new companies
+    // default on since E8-INV A11).
+    Db::run('INSERT INTO purchase_settings (cmp_id, receive_stock_at_grn) VALUES (88, FALSE) ON CONFLICT (cmp_id) DO UPDATE SET receive_stock_at_grn = FALSE');
     $po = orderOf($ctx, $owner);
     $line = (int) $po['lines'][0]['line_id'];
     receive($ctx, $owner, (int) $po['po_id'], $line, 40);
     $grns = array_values(array_filter(stubRequests('/v1/inventory-documents/post'), static fn ($r) => ($r['body']['document_type'] ?? '') === 'INWARD_CHALLAN'));
-    same('challan_only', end($grns)['body']['stock_effect'] ?? null, 'off by default: the receipt notes the goods, the bill receives them');
+    same('challan_only', end($grns)['body']['stock_effect'] ?? null, 'off: the receipt notes the goods, the bill receives them');
 
     Db::run('INSERT INTO purchase_settings (cmp_id, receive_stock_at_grn) VALUES (88, TRUE) ON CONFLICT (cmp_id) DO UPDATE SET receive_stock_at_grn = TRUE');
     receive($ctx, $owner, (int) $po['po_id'], $line, 30);
@@ -2130,6 +2133,7 @@ check('goods given back in full before the bill: Inventory reverses the GRN, and
 
 check('part of an unbilled GRN given back: Inventory restates it for the quantity kept, and only that is billed', function () use ($ctx, $owner) {
     reset();
+    Db::run('INSERT INTO purchase_settings (cmp_id, receive_stock_at_grn) VALUES (88, FALSE) ON CONFLICT (cmp_id) DO UPDATE SET receive_stock_at_grn = FALSE');
     ['po' => $po, 'line' => $lineId, 'receipt' => $receipt] = receivedOrder($ctx, $owner, 40);
     $requestId = (int) $receipt['request_id'];
     $old = (int) $receipt['inventory_document_id'];

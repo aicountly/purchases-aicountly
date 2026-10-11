@@ -70,7 +70,8 @@ final class ReceiptService
 
     /**
      * How this company's goods receipts move stock — its own choice
-     * (purchase_settings.receive_stock_at_grn, migration 006, off by default):
+     * (purchase_settings.receive_stock_at_grn, migration 006; ON by default for new companies
+     * since migration 020, E8-INV A11):
      *
      *   off  `challan_only`: the receipt only notes the goods; the bill receives them.
      *   on   `physical`: the goods are on hand at the order rate and Books accrues them
@@ -88,7 +89,18 @@ final class ReceiptService
     /** The same answer for a company, for screens that describe it (the order's receive panel). */
     public static function stockEffectFor(int $cmpId): string
     {
-        $on = Db::scalar('SELECT receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $cmpId]);
+        $row = Db::first('SELECT receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $cmpId]);
+        if ($row === null) {
+            // No settings row yet (E8-INV A11). A company with no receipt at all is a new company and
+            // takes the column default — the goods go into stock at the receipt (migration 020). One
+            // that already recorded receipts under the old default keeps working as it did until an
+            // operator switches it deliberately: its open receipts were notes, and mixing kinds on one
+            // bill is refused.
+            $hasReceipts = (bool) Db::scalar('SELECT EXISTS (SELECT 1 FROM purchase_receipt_requests WHERE cmp_id = :cmp)', ['cmp' => $cmpId]);
+
+            return $hasReceipts ? 'challan_only' : 'physical';
+        }
+        $on = $row['receive_stock_at_grn'];
 
         return $on === true || $on === 't' || $on === 1 || $on === '1' ? 'physical' : 'challan_only';
     }

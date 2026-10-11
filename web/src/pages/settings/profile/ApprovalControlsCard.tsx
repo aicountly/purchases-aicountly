@@ -155,6 +155,11 @@ export function ApprovalControlsCard({
             Goods are on hand when they arrive, held in Goods Received Not Invoiced until the supplier&apos;s bill;
             the bill settles the receipt at the billed cost. Off: goods go on hand when the bill is posted.
           </small>
+          <small data-testid="grn-mode-changed">
+            {form.stockModeChange?.by || form.stockModeChange?.at
+              ? `Last changed${form.stockModeChange.by ? ` by ${form.stockModeChange.by}` : ''}${form.stockModeChange.at ? ` on ${new Date(form.stockModeChange.at).toLocaleString()}` : ''}.`
+              : 'Not changed since the company was set up.'}
+          </small>
         </span>
       </label>
     </PpCard>
