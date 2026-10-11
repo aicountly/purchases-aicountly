@@ -1100,6 +1100,79 @@ check('F388: the receipt date is checked against the financial year and today, a
     same(['fy_end' => '2027-03-31', 'fy_start' => '2026-04-01'], $range, 'Inventory checks the date against the year');
 });
 
+// ---------------------------------------------------------------------------
+echo "\nF221 — the repair tool sees raced bill double posts and the missing invoice index; apply is scoped\n";
+
+check('F221: a bill posted twice to Books is reported with both attempts; a missing invoice index is reported; --apply refuses without a company and snapshots first', function () use ($ctx, $owner) {
+    reset();
+    $tool = static function (string $args): array {
+        exec('php ' . escapeshellarg(__DIR__ . '/../bin/receipt-repair.php') . ' ' . $args . ' 2>&1', $out, $code);
+
+        return [$code, implode("\n", $out)];
+    };
+    $po = billedOrder($ctx, $owner, 10);
+    $billId = (int) Db::scalar('SELECT request_id FROM purchase_bill_requests WHERE po_id = :po', ['po' => (int) $po['po_id']]);
+    // The 007 race as it left the data: a second COMPLETED post of the same bill, at revision 1.
+    $first = IntegrationCommand::latest(88, Domain\BillService::COMMAND_BILL, 'bill_request', $billId);
+    Db::insert('purchase_integration_commands', [
+        'cmp_id' => 88, 'fy_id' => 6, 'bo_id' => 0, 'target_service' => 'books', 'command_type' => Domain\BillService::COMMAND_BILL,
+        'entity_type' => 'bill_request', 'entity_id' => $billId, 'revision' => 1, 'idempotency_key' => 'raced-' . $billId,
+        'status' => 'COMPLETED', 'attempts' => 1, 'request_payload' => $first['request_payload'], 'external_reference' => ['vch_txn_id' => 999123],
+    ], 'command_id');
+    Db::run('DROP INDEX IF EXISTS uq_purchase_bills_supplier_invoice');
+
+    [$code, $out] = $tool('--json --cmp=88');
+    $report = json_decode($out, true);
+    same(3, $code, 'findings exit non-zero');
+    same(1, count($report['bill_double_posts'] ?? []), 'the raced double post is reported: ' . $out);
+    same(2, count($report['bill_double_posts'][0]['attempts']), 'with both attempts');
+    same(999123, (int) ($report['bill_double_posts'][0]['attempts'][1]['books_reference']['vch_txn_id'] ?? 0), 'and the Books reference of each, to look up in Books');
+    same('uq_purchase_bills_supplier_invoice', $report['missing_indexes'][0]['index'] ?? null, 'the missing index is reported');
+
+    $planFile = sys_get_temp_dir() . '/e8pu-repair-plan.json';
+    $tool('--plan=' . escapeshellarg($planFile));
+    [$code, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --cmp=88 --actor=ops-ravi --reason=' . escapeshellarg('Reviewed.'));
+    same(1, $code, 'a plan made for every company cannot be applied: ' . $out);
+    [$code] = $tool('--cmp=88 --plan=' . escapeshellarg($planFile));
+    [$code, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=' . escapeshellarg('Reviewed.'));
+    same(1, $code, 'apply without --cmp is refused: ' . $out);
+    [$code, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --cmp=89 --actor=ops-ravi --reason=' . escapeshellarg('Reviewed.'));
+    same(1, $code, 'apply for another company is refused');
+    [$code, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --cmp=88 --actor=ops-ravi --reason=' . escapeshellarg('Reviewed.'));
+    same(0, $code, 'applied for its company: ' . $out);
+    truthy(str_contains($out, 'Snapshot written to') && glob($planFile . '.snapshot-*.json') !== [], 'a snapshot was written before applying');
+    truthy(Db::scalar("SELECT 1 FROM pg_indexes WHERE indexname = 'uq_purchase_bills_supplier_invoice'") !== null, 'the index is back (no duplicates)');
+    foreach (glob($planFile . '*') ?: [] as $f) {
+        @unlink($f);
+    }
+});
+
+// ---------------------------------------------------------------------------
+echo "\nF028 — Ask answers on the dashboards' base and the person's branch\n";
+
+check('F028: Ask\'s concentration share is of all uncancelled ordered value (not the top ten), and a branch-scoped answer leaves other branches out', function () use ($ctx, $owner) {
+    reset();
+    $orders = new PurchaseOrderService($ctx, $owner);
+    // Twelve suppliers: the two smallest fall outside the listed ten but are in the base.
+    foreach (range(0, 11) as $i) {
+        $orders->create(poInput(['supplier_account_id' => 601 + $i, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 1000 - $i * 50, 'warehouse_id' => 3]]]));
+    }
+    $period = Dashboards\Period::forDates('2026-09-01', '2026-09-30');
+    $total = (string) Db::scalar("SELECT SUM(total_amount) FROM purchase_orders WHERE cmp_id = 88 AND status <> 'CANCELLED'");
+    $top = (string) Db::scalar("SELECT MAX(total_amount) FROM purchase_orders WHERE cmp_id = 88");
+    $answer = Ai\AskEngine::answer($ctx, $owner, $period, 'supplier concentration', 'concentration');
+    same(10, count($answer['records']), 'ten suppliers listed');
+    same(Dashboards\Decimal::percentOf(Dashboards\Decimal::of($top), Dashboards\Decimal::of($total), 1), $answer['records'][0]['share_pc'], 'the top share is of the whole base, as the dashboards compute it');
+    // A branch-3 order is not in a branch-1 person's answer.
+    $branch3 = $orders->create(poInput(['supplier_account_id' => 601, 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 99999, 'warehouse_id' => 3]]]));
+    Db::run('UPDATE purchase_orders SET bo_id = 3 WHERE po_id = :id', ['id' => (int) $branch3['po_id']]);
+    $branch1 = Ai\AskEngine::answer(Context::of(88, 6, 1), $owner, $period, 'supplier concentration', 'concentration');
+    same($answer['records'][0]['share_pc'], $branch1['records'][0]['share_pc'], 'branch 1 sees the same shares: the branch-3 order is left out');
+    same('Branch 1', $branch1['scope']['branch_label'], 'and the scope says so');
+    $company = Ai\AskEngine::answer($ctx, $owner, $period, 'supplier concentration', 'concentration');
+    truthy($company['records'][0]['share_pc'] !== $answer['records'][0]['share_pc'], 'the company-level answer includes it');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

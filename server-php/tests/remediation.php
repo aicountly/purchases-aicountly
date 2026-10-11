@@ -1327,14 +1327,14 @@ check('the repair tool reports historical damage, plans for review, and applies 
     same($before, Db::all('SELECT line_id, received_qty FROM purchase_order_lines ORDER BY line_id'), 'reporting changed nothing');
 
     $planFile = sys_get_temp_dir() . '/repair-plan-test.json';
-    $tool('--plan=' . escapeshellarg($planFile));
+    $tool('--cmp=88 --plan=' . escapeshellarg($planFile));
     $plan = json_decode((string) file_get_contents($planFile), true);
     same(['recount_order_line', 'withdraw_command', 'create_invoice_index'], array_column($plan['actions'], 'action'), 'three local actions proposed, none for the legacy order');
 
     [$code, $out] = $tool('--apply=' . escapeshellarg($planFile));
     same(1, $code, 'applying needs a named person and a reason');
 
-    [, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=' . escapeshellarg('Reviewed with the stores lead.'));
+    [, $out] = $tool('--cmp=88 --apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=' . escapeshellarg('Reviewed with the stores lead.'));
     truthy(str_contains($out, '2 applied, 1 skipped'), 'recount and withdraw applied, the index refused while duplicates remain: ' . $out);
     same('40.0000', (string) Db::scalar('SELECT received_qty FROM purchase_order_lines WHERE line_id = :id', ['id' => (int) $drift['lines'][0]['line_id']]), 'the counter matches its receipts');
     same('CANCELLED', Db::scalar('SELECT status FROM purchase_integration_commands WHERE command_id = :id', ['id' => (int) $orphan['command_id']]), 'the orphan is withdrawn');
@@ -1342,15 +1342,17 @@ check('the repair tool reports historical damage, plans for review, and applies 
     same('50.0000', (string) Db::scalar('SELECT received_qty FROM purchase_order_lines WHERE line_id = :id', ['id' => $legacyLine]), 'the legacy order is left for a person');
     same(0, count(stubRequests('/v1/inventory-documents/post')) - 1, 'nothing was posted to Inventory by the tool (the one post is the drift order\'s own GRN)');
 
-    [, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=again');
+    [, $out] = $tool('--cmp=88 --apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=again');
     truthy(str_contains($out, '0 applied, 3 skipped'), 'the same plan applied twice changes nothing: ' . $out);
 
     Db::run("UPDATE purchase_bill_requests SET status = 'CANCELLED' WHERE request_id = (SELECT MAX(request_id) FROM purchase_bill_requests)");
-    $tool('--plan=' . escapeshellarg($planFile));
-    [, $out] = $tool('--apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=' . escapeshellarg('Duplicate cancelled.'));
+    $tool('--cmp=88 --plan=' . escapeshellarg($planFile));
+    [, $out] = $tool('--cmp=88 --apply=' . escapeshellarg($planFile) . ' --actor=ops-ravi --reason=' . escapeshellarg('Duplicate cancelled.'));
     truthy(str_contains($out, 'create_invoice_index') && str_contains($out, 'applied'), 'the index is created once the duplicate is resolved: ' . $out);
     truthy(Db::scalar("SELECT 1 FROM pg_indexes WHERE indexname = 'uq_purchase_bills_supplier_invoice'") !== null, 'and exists');
-    @unlink($planFile);
+    foreach (glob($planFile . '*') ?: [] as $f) {
+        @unlink($f);
+    }
 });
 
 check('a service bill books only to Books\' purchase and expense ledgers, and only for someone who enters bills', function () {

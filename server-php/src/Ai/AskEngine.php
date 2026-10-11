@@ -12,6 +12,7 @@ use Aicountly\Api\Dashboards\Format;
 use Aicountly\Api\Dashboards\InventoryReader;
 use Aicountly\Api\Dashboards\Period;
 use Aicountly\Api\Db;
+use Aicountly\Api\LocalDate;
 use Aicountly\Api\Permissions;
 
 /**
@@ -232,6 +233,7 @@ final class AskEngine
     /** @return array<string, mixed> */
     private static function delayedOrders(Context $ctx, Period $period): array
     {
+        [$bo, $boParams] = self::branch($ctx, 'p.bo_id');
         $rows = Db::all(
             "SELECT p.po_id, p.po_no, p.supplier_name_snapshot, p.promised_date,
                     COUNT(*) AS open_lines,
@@ -239,17 +241,17 @@ final class AskEngine
                     MAX(p.currency_code) AS currency_code
              FROM purchase_orders p
              JOIN purchase_order_lines l ON l.po_id = p.po_id
-             WHERE p.cmp_id = :cmp AND p.fy_id = :fy
+             WHERE p.cmp_id = :cmp AND p.fy_id = :fy{$bo}
                AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED')
                AND l.ordered_qty > l.received_qty
                AND COALESCE(l.promised_date, p.promised_date) < CURRENT_DATE
              GROUP BY p.po_id, p.po_no, p.supplier_name_snapshot, p.promised_date
              ORDER BY p.promised_date ASC
              LIMIT 25",
-            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId],
+            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $boParams,
         );
 
-        $today = gmdate('Y-m-d');
+        $today = LocalDate::today();
         $records = array_map(static fn (array $r) => [
             'reference'  => $r['po_no'],
             'supplier'   => $r['supplier_name_snapshot'],
@@ -279,6 +281,7 @@ final class AskEngine
     /** @return array<string, mixed> */
     private static function priceIncreases(Context $ctx, Auth $auth, Period $period): array
     {
+        [$bo, $boParams] = self::branch($ctx, 'p.bo_id');
         $rows = Db::all(
             "WITH observations AS (
                 SELECT l.item_id, l.unit_id, p.currency_code, l.agreed_rate, p.po_date,
@@ -288,7 +291,7 @@ final class AskEngine
                        COUNT(*)    OVER (PARTITION BY l.item_id, l.unit_id, p.currency_code, p.supplier_account_id) AS observations
                 FROM purchase_order_lines l
                 JOIN purchase_orders p ON p.po_id = l.po_id
-                WHERE p.cmp_id = :cmp AND p.fy_id = :fy
+                WHERE p.cmp_id = :cmp AND p.fy_id = :fy{$bo}
                   AND p.po_date BETWEEN :from AND :to
                   AND p.status <> 'CANCELLED' AND l.item_id IS NOT NULL AND l.agreed_rate > 0
             )
@@ -303,7 +306,7 @@ final class AskEngine
             WHERE f.first_seen = 1 AND f.observations >= 2 AND t.agreed_rate > f.agreed_rate
             ORDER BY (t.agreed_rate - f.agreed_rate) / f.agreed_rate DESC
             LIMIT 20",
-            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $period->params(),
+            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $period->params() + $boParams,
         );
 
         // Item names come from Inventory, in one bulk call, under this user's
@@ -354,6 +357,8 @@ final class AskEngine
     /** @return array<string, mixed> */
     private static function billsToReview(Context $ctx): array
     {
+        [$bo, $boParams] = self::branch($ctx, 'COALESCE(b.bo_id, p.bo_id, 0)');
+        [$boBills] = self::branch($ctx, 'bo_id');
         $rows = Db::all(
             "SELECT e.exception_id, e.exception_kind, e.detail, e.variance_value::text AS variance_value,
                     b.request_id, b.supplier_invoice_no, p.supplier_name_snapshot, p.currency_code
@@ -361,16 +366,16 @@ final class AskEngine
              JOIN purchase_match_results m ON m.match_id = e.match_id
              LEFT JOIN purchase_bill_requests b ON b.request_id = m.bill_request_id
              LEFT JOIN purchase_orders p ON p.po_id = m.po_id
-             WHERE e.cmp_id = :cmp AND e.status = 'OPEN'
+             WHERE e.cmp_id = :cmp AND e.status = 'OPEN'{$bo}
              ORDER BY ABS(COALESCE(e.variance_value, 0)) DESC
              LIMIT 25",
-            ['cmp' => $ctx->cmpId],
+            ['cmp' => $ctx->cmpId] + $boParams,
         );
 
         $awaiting = (int) Db::scalar(
             "SELECT COUNT(*) FROM purchase_bill_requests
-             WHERE cmp_id = :cmp AND fy_id = :fy AND status IN ('DRAFT', 'MATCHING')",
-            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId],
+             WHERE cmp_id = :cmp AND fy_id = :fy AND status IN ('DRAFT', 'MATCHING'){$boBills}",
+            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $boParams,
         );
 
         $records = array_map(static fn (array $r) => [
@@ -402,27 +407,32 @@ final class AskEngine
     /** @return array<string, mixed> */
     private static function concentration(Context $ctx, Period $period): array
     {
+        // The same base and scope as the dashboards (F028): ordered value of every uncancelled
+        // order in the period in the person's branch scope — not the sum of the ten listed, which
+        // overstated every share.
+        [$bo, $boParams] = self::branch($ctx, 'p.bo_id');
+        $params = ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $period->params() + $boParams;
+        $where = "p.cmp_id = :cmp AND p.fy_id = :fy{$bo} AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'";
         $rows = Db::all(
             "SELECT p.supplier_account_id, p.supplier_name_snapshot,
                     SUM(p.total_amount)::text AS value, COUNT(*) AS orders,
                     COUNT(DISTINCT p.currency_code) AS currencies, MAX(p.currency_code) AS currency_code
              FROM purchase_orders p
-             WHERE p.cmp_id = :cmp AND p.fy_id = :fy
-               AND p.po_date BETWEEN :from AND :to AND p.status <> 'CANCELLED'
+             WHERE {$where}
              GROUP BY p.supplier_account_id, p.supplier_name_snapshot
              ORDER BY SUM(p.total_amount) DESC
              LIMIT 10",
-            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $period->params(),
+            $params,
         );
+        $base = Db::first(
+            "SELECT COALESCE(SUM(p.total_amount), 0)::text AS total, COUNT(DISTINCT p.currency_code) AS currencies, MAX(p.currency_code) AS currency_code
+             FROM purchase_orders p WHERE {$where}",
+            $params,
+        ) ?? ['total' => '0', 'currencies' => 0, 'currency_code' => 'INR'];
 
-        $total = Decimal::sum(array_map(static fn ($r) => Decimal::of($r['value']), $rows));
-        $currency = (string) ($rows[0]['currency_code'] ?? 'INR');
-        $mixed = false;
-        foreach ($rows as $row) {
-            if ((int) $row['currencies'] > 1) {
-                $mixed = true;
-            }
-        }
+        $total = Decimal::of($base['total']);
+        $currency = (string) ($base['currency_code'] ?? 'INR');
+        $mixed = (int) $base['currencies'] > 1;
 
         $records = array_map(static fn (array $r) => [
             'supplier' => $r['supplier_name_snapshot'] ?? ('Account ' . $r['supplier_account_id']),
@@ -442,12 +452,12 @@ final class AskEngine
                     . ' of ' . Format::money($total, $currency) . ' ordered in ' . $period->label() . '.',
             'records' => $records,
             'sources' => [['id' => 'purchases', 'label' => 'Purchases orders', 'as_of' => gmdate('c')]],
-            'calculation' => 'Ordered value per supplier as a share of total uncancelled ordered value in the period. The base is ordered value, not posted purchases — it measures commitment, which is what a buyer can still act on.',
+            'calculation' => 'Ordered value per supplier as a share of the total ordered value of every uncancelled order in the period (not just the suppliers listed), in the branch scope shown — the same base the dashboards use. The base is ordered value, not posted purchases — it measures commitment, which is what a buyer can still act on.',
             'uncertainty' => $mixed
-                ? 'Some suppliers have orders in more than one currency. Those shares combine amounts that are not comparable; treat them as indicative only.'
+                ? 'Orders in this period are in more than one currency. The shares combine amounts that are not comparable; treat them as indicative only, or filter to one currency on the dashboard.'
                 : null,
             'next_action' => ['label' => 'Open supplier concentration', 'route' => '/dashboard/suppliers', 'filters' => ['panel' => 'concentration']],
-            'summary_facts' => ['supplier_count' => count($records), 'top_share_pc' => $topShare],
+            'summary_facts' => ['supplier_count' => count($records), 'top_share_pc' => $topShare, 'base_total' => $total],
         ];
     }
 
@@ -474,7 +484,7 @@ final class AskEngine
 
         if ($itemIds !== []) {
             $placeholders = [];
-            $params = ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId];
+            $params = ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + self::branch($ctx, 'p.bo_id')[1];
             foreach (array_values(array_unique($itemIds)) as $index => $itemId) {
                 $placeholders[] = ':item' . $index;
                 $params['item' . $index] = $itemId;
@@ -483,7 +493,7 @@ final class AskEngine
                 "SELECT l.item_id, COALESCE(SUM(GREATEST(l.ordered_qty - l.received_qty, 0)), 0)::text AS on_order
                  FROM purchase_order_lines l
                  JOIN purchase_orders p ON p.po_id = l.po_id
-                 WHERE p.cmp_id = :cmp AND p.fy_id = :fy
+                 WHERE p.cmp_id = :cmp AND p.fy_id = :fy" . self::branch($ctx, 'p.bo_id')[0] . "
                    AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED')
                    AND l.item_id IN (" . implode(', ', $placeholders) . ')
                  GROUP BY l.item_id',
@@ -540,7 +550,8 @@ final class AskEngine
     {
         $granted = Permissions::granted($ctx, $auth);
         $placeholders = [];
-        $params = ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId, 'me' => $auth->uuid];
+        [$bo, $boParams] = self::branch($ctx, 'COALESCE(p.bo_id, r.bo_id, 0)');
+        $params = ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId, 'me' => $auth->uuid] + $boParams;
         foreach (array_values($granted) as $index => $permission) {
             $placeholders[] = ':perm' . $index;
             $params['perm' . $index] = $permission;
@@ -556,14 +567,17 @@ final class AskEngine
              FROM purchase_approval_requests a
              LEFT JOIN purchase_requisitions r ON a.entity_type = 'requisition'    AND r.requisition_id = a.entity_id
              LEFT JOIN purchase_orders       p ON a.entity_type = 'purchase_order' AND p.po_id          = a.entity_id
-             WHERE a.cmp_id = :cmp AND a.fy_id = :fy AND a.status = 'PENDING'" . $mineClause . '
+             WHERE a.cmp_id = :cmp AND a.fy_id = :fy AND a.status = 'PENDING'" . $bo . $mineClause . '
              ORDER BY a.created_at ASC LIMIT 25',
             $params,
         );
 
         $total = (int) Db::scalar(
-            "SELECT COUNT(*) FROM purchase_approval_requests WHERE cmp_id = :cmp AND fy_id = :fy AND status = 'PENDING'",
-            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId],
+            "SELECT COUNT(*) FROM purchase_approval_requests a
+               LEFT JOIN purchase_requisitions r ON a.entity_type = 'requisition'    AND r.requisition_id = a.entity_id
+               LEFT JOIN purchase_orders       p ON a.entity_type = 'purchase_order' AND p.po_id          = a.entity_id
+              WHERE a.cmp_id = :cmp AND a.fy_id = :fy AND a.status = 'PENDING'" . $bo,
+            ['cmp' => $ctx->cmpId, 'fy' => $ctx->fyId] + $boParams,
         );
 
         $records = array_map(static fn (array $r) => [
@@ -686,6 +700,22 @@ final class AskEngine
         }
 
         return $catalogue[0];
+    }
+
+    /**
+     * The branch a branch-scoped person sees, the same rule as the dashboards' scopeClause: their
+     * branch and company-level (bo_id 0) records. Nothing for a company-level context (F028: the
+     * answers used to include every branch while the panel said "Branch N").
+     *
+     * @return array{0: string, 1: array<string, int>}
+     */
+    private static function branch(Context $ctx, string $column): array
+    {
+        if ($ctx->boId <= 0) {
+            return ['', []];
+        }
+
+        return [' AND (' . $column . ' = :ask_bo_id OR ' . $column . ' = 0)', ['ask_bo_id' => $ctx->boId]];
     }
 
     /** @return array<string, mixed> */
