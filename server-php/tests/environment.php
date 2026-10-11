@@ -83,6 +83,13 @@ function clients(): array
         }
         $out[] = $ref->newInstance();
     }
+    // A product whose clients take constructor arguments lists them in tests/support/e8id_clients.php.
+    $extra = __DIR__ . '/support/e8id_clients.php';
+    if (is_file($extra)) {
+        foreach ((array) (require $extra) as $client) {
+            $out[] = $client;
+        }
+    }
     if (count($out) < 2) {
         throw new \RuntimeException('expected at least two sibling clients, found ' . count($out));
     }
@@ -174,7 +181,8 @@ check('an unrecognised APP_ENV fails closed: no base, and request() refuses with
     }
     foreach (clients() as $client) {
         same('', $client->base(), $client->service() . ' base');
-        same('environment_not_configured', $client->baseProblem(), $client->service() . ' problem');
+        same('environment_not_configured', Environment::baseProblem($client->base()), $client->service() . ' problem');
+        same(true, $client->baseProblem() !== null, $client->service() . ' refuses');
         $r = $client->request('GET', 'anything');
         same(false, $r['ok'], $client->service() . ' refused');
         same(0, $r['status'], $client->service() . ' status (unavailable, never a refusal)');
@@ -200,7 +208,8 @@ check('an explicit *_API_BASE still wins; production refuses one that points at 
         same(null, $client->baseProblem(), 'a production host is fine');
         foreach (['https://books.gh.aicountly.com', 'https://gh-books.aicountly.com', 'http://127.0.0.1:9000', 'http://localhost'] as $bad) {
             putenv($var . '=' . $bad);
-            same('production_base_not_production', $client->baseProblem(), $bad);
+            same('production_base_not_production', Environment::baseProblem($client->base()), $bad);
+            same(true, $client->baseProblem() !== null, $bad . ' refused by the client');
             $r = $client->request('POST', 'v1/anything', ['a' => 1]);
             same(false, $r['ok'], $bad . ' refused');
             same(0, $r['status'], $bad . ' status');
