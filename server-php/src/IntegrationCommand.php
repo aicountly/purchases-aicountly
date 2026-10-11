@@ -367,6 +367,11 @@ final class IntegrationCommand
     public static function classify(array $response): string
     {
         $status = (int) $response['status'];
+        // A 2xx whose body could not be read, as the HTTP client core marks it (E8-ID A10:
+        // outcome_unknown): the receiver may have applied it. Same key, reconcile on retry.
+        if (!empty($response['outcome_unknown'])) {
+            return 'uncertain';
+        }
         if ($response['ok']) {
             return is_array($response['body'] ?? null) ? 'completed' : 'uncertain';
         }

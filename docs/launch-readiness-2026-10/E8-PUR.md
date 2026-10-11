@@ -118,3 +118,18 @@ and writes a snapshot first).
 - **Operator**: confirm the host answers 404 for `/api/bin` and `/api/tests` (F483); run
   `bin/receipt-repair.php --cmp=<id>` per company after deploy and act on `bill_double_posts`,
   `duplicate_invoices`, `missing_indexes` (F221).
+
+## Merging beside the other packages' branches
+
+`origin/main` is fully merged into `claude/e8-pur` in all three repositories (2026-10-11). Textual
+conflicts expected when the package branches are combined, and how to resolve them:
+
+- purchases vs `claude/e8-id`: `src/Context.php` — keep this branch's 403 `company_access_denied`
+  (`retryable: false`; `tests/http_gate.php` and `launch_readiness.php` assert that code) with E8-ID's
+  503 wording; `src/IntegrationCommand.php` — keep this branch's `classify()` (it already honours
+  E8-ID's `outcome_unknown`, tested); `src/Clients/BooksClient.php` — keep the deletions (F374/F510:
+  E8-ID touched methods that have no caller).
+- Inventory vs `claude/e8-inv`: `app/Services/IntegrationHealthService.php` — keep both health checks.
+- Books vs `claude/e8-inv`: `CommercialVoucherShell.jsx`, `voucherPostFlow.test.js` — keep both
+  (this branch's open-inward-challan confirmation beside E8-INV's additions).
+

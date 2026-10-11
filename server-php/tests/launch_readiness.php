@@ -1453,6 +1453,11 @@ check('F170: one supplier invoice covering two orders is entered as parts — bo
     same(['INV-SPLIT', 'INV-SPLIT'], $refs, 'both Books vouchers carry the supplier\'s own invoice number');
 });
 
+check('E8-ID compatibility: a response the HTTP client marks outcome_unknown is UNCERTAIN, whatever its status', function () {
+    same('uncertain', IntegrationCommand::classify(['ok' => false, 'status' => 502, 'body' => null, 'error' => 'unreadable_response', 'outcome_unknown' => true]), 'outcome_unknown');
+    same('uncertain', IntegrationCommand::classify(['ok' => true, 'status' => 200, 'body' => null, 'error' => null]), 'an unreadable 2xx');
+});
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);
