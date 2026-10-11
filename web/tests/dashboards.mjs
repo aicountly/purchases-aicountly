@@ -656,7 +656,7 @@ await check('the monitoring pill reports what actually answered', async () => {
 
   const pill = page.locator('.purchase-monitor__pill')
   const label = ((await pill.textContent()) || '').trim()
-  ok(/AI monitoring live|Limited ai monitoring|AI monitoring unavailable/.test(label), `a real state, got "${label}"`)
+  ok(/Insights\s*(live|limited)/.test(label), `a real state, got "${label}"`)
 
   await pill.click()
   await page.waitForTimeout(250)

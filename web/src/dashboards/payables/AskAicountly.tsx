@@ -172,6 +172,12 @@ function Answer({ answer, onOpen }: { answer: AskAnswer; onOpen: (route: string)
       </p>
       <h3>{answer.question}</h3>
       <p>{answer.answer}</p>
+      {answer.narrative && (
+        <p style={{ fontSize: 12.5, borderLeft: '3px solid #6d28d9', paddingLeft: 8 }}>
+          <strong>AI commentary: </strong>
+          {answer.narrative}
+        </p>
+      )}
 
       {answer.calculation && (
         <dl>

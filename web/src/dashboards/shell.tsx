@@ -110,7 +110,8 @@ export function LiveChip({ sources }: { sources: SourceStatus[] }) {
       }
     >
       <span className="purchase-live__dot" aria-hidden />
-      AI monitoring
+      {/* Rule-based insights over live data: no AI model is behind this chip, so it does not say "AI" (F305). */}
+      Insights
       <strong style={{ fontWeight: 700 }}>{limited ? 'limited' : 'live'}</strong>
     </span>
   )

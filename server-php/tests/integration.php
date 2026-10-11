@@ -2268,6 +2268,13 @@ function delayedOrder(Context $ctx, Auth $auth): void
     $orders->issue((int) $po['po_id']);
 }
 
+check('F305: AI commentary that states a figure the records do not hold is dropped; one that only repeats them is kept', function () {
+    $result = ['answer' => '3 orders are late. The oldest is PO/26/0007, 12 days late.', 'records' => [['reference' => 'PO/26/0007', 'remaining' => '₹1,25,000.00']], 'summary_facts' => ['delayed_orders' => 3]];
+    assertSame([], AskEngine::ungroundedFigures('Three orders, led by PO/26/0007 with ₹1,25,000.00 still to come, are 12 days late at worst; 3 in all.', $result), 'every figure is in the rows');
+    assertSame(['45.2'], AskEngine::ungroundedFigures('3 orders are late; that is 45.2% of all orders.', $result), 'an invented share is caught');
+    assertSame(['2,00,000'], AskEngine::ungroundedFigures('All good: ₹2,00,000 is still to come.', $result), 'an invented amount is caught');
+});
+
 check('with a model bound in AI Pulse, the summary is written there — as this user, for this company', function () use ($ctx) {
     resetDatabase();
     AiClient::useClient(null);
@@ -2281,8 +2288,9 @@ check('with a model bound in AI Pulse, the summary is written there — as this 
     $answer = AskEngine::answer($ctx, $auth, Period::fromRequest(), 'which orders are delayed this week?');
 
     assertSame('delayed_orders', $answer['intent'], 'the keywords chose the question');
-    assertSame('ai_narrated', $answer['method'], 'the summary sentence came from AI Pulse');
-    assertSame('Stub summary written through AI Pulse.', $answer['answer'], 'word for word');
+    assertSame('ai_narrated', $answer['method'], 'the commentary came from AI Pulse');
+    assertSame('Stub summary written through AI Pulse.', $answer['narrative'], 'word for word, as commentary');
+    assertTrue(str_contains($answer['answer'], 'past the promised date'), 'beside the factual sentence, which stands unchanged (F305): ' . $answer['answer']);
     assertTrue(str_contains($answer['method_label'], 'through AI Pulse'), 'and the label says where it came from');
     assertTrue($answer['records'] !== [] && $answer['records'][0]['reference'] !== '', 'the figures are still the query\'s own');
 

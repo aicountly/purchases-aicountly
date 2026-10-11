@@ -191,9 +191,10 @@ final class AskEngine
             ? 'Answered from your purchase records by a fixed rule. AI, through AI Pulse, only chose which approved question you meant.'
             : 'Answered from your purchase records by a fixed rule. No AI model was consulted.';
 
-        // Where AI Pulse has a model, it writes the opening sentence over rows we
-        // already have. It cannot change a figure: the records below are what
-        // the query returned and are shown alongside.
+        // Where AI Pulse has a model, it writes a narrative over rows we already have — BESIDE the
+        // factual sentence, never instead of it (F305), and only when every figure it states is
+        // one the rows hold. A model sentence with a number we did not give it is dropped.
+        $narrative = null;
         if ($result['records'] !== []) {
             $narrated = AiClient::narrate($ctx, $auth, $intent['question'], [
                 'scope'   => self::scope($ctx, $period),
@@ -201,10 +202,15 @@ final class AskEngine
                 'records' => array_slice($result['records'], 0, 15),
             ]);
             if ($narrated['ok']) {
-                $result['answer'] = (string) $narrated['text'];
-                $methodLabel = 'Figures come from your purchase records; the summary sentence was written by AI, through AI Pulse, from those same figures.'
-                    . ($method === 'ai_routed' ? ' AI also chose which approved question you meant.' : '');
-                $method = 'ai_narrated';
+                $ungrounded = self::ungroundedFigures((string) $narrated['text'], $result);
+                if ($ungrounded === []) {
+                    $narrative = (string) $narrated['text'];
+                    $methodLabel = 'Figures and the summary come from your purchase records by a fixed rule; the "AI commentary" beneath was written by AI, through AI Pulse, from those same figures, and checked to state no figure they do not hold.'
+                        . ($method === 'ai_routed' ? ' AI also chose which approved question you meant.' : '');
+                    $method = 'ai_narrated';
+                } else {
+                    $aiError = 'The AI commentary was left out: it stated figures that are not in these records (' . implode(', ', array_slice($ungrounded, 0, 3)) . ').';
+                }
             } else {
                 $aiError = $narrated['error'];
             }
@@ -217,6 +223,7 @@ final class AskEngine
             'method'      => $method,
             'method_label' => $methodLabel,
             'answer'      => $result['answer'],
+            'narrative'   => $narrative,
             'scope'       => self::scope($ctx, $period),
             'sources'     => $result['sources'],
             'records'     => $result['records'],
@@ -700,6 +707,41 @@ final class AskEngine
         }
 
         return $catalogue[0];
+    }
+
+    /**
+     * The figures in a model's text that the answer does not hold (F305). Every number the text
+     * states — "45.2", "1,905", "3" — must appear among the answer's own sentence, records or
+     * summary facts, compared without grouping separators.
+     *
+     * @param array<string, mixed> $result
+     * @return list<string>
+     */
+    public static function ungroundedFigures(string $text, array $result): array
+    {
+        $haystack = json_encode([$result['answer'] ?? '', $result['records'] ?? [], $result['summary_facts'] ?? []], JSON_UNESCAPED_UNICODE) ?: '';
+        $known = [];
+        if (preg_match_all('/\d[\d,]*(?:\.\d+)?/', $haystack, $m) > 0) {
+            foreach ($m[0] as $n) {
+                $plain = str_replace(',', '', $n);
+                $known[$plain] = true;
+                if (str_contains($plain, '.')) {
+                    $known[rtrim(rtrim($plain, '0'), '.')] = true;
+                }
+            }
+        }
+        $missing = [];
+        if (preg_match_all('/\d[\d,]*(?:\.\d+)?/', $text, $m) > 0) {
+            foreach ($m[0] as $n) {
+                $plain = rtrim(str_replace(',', '', $n), '.');
+                $trimmed = str_contains($plain, '.') ? rtrim(rtrim($plain, '0'), '.') : $plain;
+                if (!isset($known[$plain]) && !isset($known[$trimmed])) {
+                    $missing[] = $n;
+                }
+            }
+        }
+
+        return array_values(array_unique($missing));
     }
 
     /**
