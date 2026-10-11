@@ -445,6 +445,22 @@ if (preg_match('#^(?:/api)?/contacts#', $path) === 1) {
     exit;
 }
 
+// Manage's product-to-product fiscal calendar (Inventory ServiceCompanyScope): company 88 is live
+// with years 5 and 6; any other company is not one Manage knows. Used by the real-Inventory
+// contract (tests/inventory_contract.php), where this stub stands in for Manage only.
+if (str_contains($path, '/api/internal/company-fiscal-calendar')) {
+    $cmp = (int) ($_GET['cmp_id'] ?? 0);
+    if ($cmp !== 88) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'error' => ['code' => 'not_found', 'message' => 'No such company']]);
+        exit;
+    }
+    echo json_encode(['data' => ['cmp_id' => 88, 'fy_list' => [
+        ['fy_id' => 6, 'fy_start' => '2026-04-01', 'fy_end' => '2027-03-31'],
+        ['fy_id' => 5, 'fy_start' => '2025-04-01', 'fy_end' => '2026-03-31'],
+    ], 'branch_ids' => []]]);
+    exit;
+}
 if (str_contains($path, '/companies') && !str_contains($path, '/companyinfo')) {
     // Manage's company list, as CompanyModel::listCompanies shapes it. Enough
     // rows to exercise the launcher's search, sort and default handling.

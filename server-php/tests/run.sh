@@ -85,4 +85,7 @@ php "$ROOT/tests/launch_readiness.php" || status=$?
 API_PORT="${API_PORT:-$((STUB_PORT + 1))}" php "$ROOT/tests/http_gate.php" || status=$?
 # Against a REAL Contacts when CONTACTS_CONTRACT_BASE is set (the e2e harness); skips otherwise.
 php "$ROOT/tests/contacts_contract.php" || status=$?
+# Against the REAL Inventory (its own front controller on a disposable database) when
+# INVENTORY_CONTRACT_ROOT and INVENTORY_CONTRACT_DB are set; skips otherwise (E8-PUR F222/F223).
+php "$ROOT/tests/contract_receivers.php" || status=$?
 exit $status
