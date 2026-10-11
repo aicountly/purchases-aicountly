@@ -67,6 +67,7 @@ final class AiClient
         'unauthenticated', 'company_access_denied', 'ai_unavailable', 'gateway_disabled',
         'budget_exhausted', 'rate_limited', 'auth_unavailable', 'company_check_unavailable',
         'database_unavailable', 'timeout', 'pulse_unreachable', 'not_configured',
+        'product_key_required', 'product_key_invalid', 'invalid_product_key', 'service_key_required', 'invalid_service_key',
     ];
 
     /**
@@ -313,6 +314,9 @@ final class AiClient
             'invalid_output', 'provider_error' => 'The model could not answer.',
             'timeout', 'pulse_unreachable' => 'AI Pulse did not answer in time.',
             'unauthenticated' => 'AI Pulse could not confirm this sign-in.',
+            // A configuration fault, not the person's: Purchases' own AI Pulse product key is missing
+            // or wrong (required from 2026-11-15) — F305.
+            'product_key_required', 'product_key_invalid', 'invalid_product_key', 'service_key_required', 'invalid_service_key' => 'AI commentary is not set up for Purchases on this server (its AI Pulse product key is missing or not accepted). An administrator can fix this.',
             'company_access_denied' => 'AI Pulse could not confirm your access to this company.',
             'auth_unavailable', 'company_check_unavailable', 'database_unavailable', 'internal_error', 'bad_response',
             'not_configured' => 'AI Pulse is not available right now.',
@@ -330,6 +334,7 @@ final class AiClient
         return match ($res['code']) {
             'ai_unavailable' => self::bindHint(),
             'gateway_disabled' => 'The AI gateway is switched off in AI Pulse (Admin → Settings).',
+            'product_key_required', 'product_key_invalid', 'invalid_product_key', 'service_key_required', 'invalid_service_key' => 'Set PULSE_SERVICE_KEY in the server environment to Purchases\' own AI Pulse gateway key (php spark pulse:gateway-key mint purchases, on the Pulse host). AI Pulse requires it from 2026-11-15.',
             'budget_exhausted', 'rate_limited' => 'AI Pulse limits AI use per company and per product; the limits are in AI Pulse → Admin → Settings.',
             'timeout', 'pulse_unreachable' => 'This server could not reach AI Pulse at ' . self::client()->origin()
                 . '. Check PULSE_API_ORIGIN in the server environment, and that this host can make outbound HTTPS calls.',

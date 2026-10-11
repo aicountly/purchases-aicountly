@@ -33,7 +33,7 @@ const STANDING_LABEL: Record<string, string> = {
 function bySupplier(suppliers: ConcentrationSupplier[]) {
   const head = suppliers.slice(0, 4).map((row) => ({
     id: String(row.supplier_account_id),
-    label: row.supplier_name ?? `Account ${row.supplier_account_id}`,
+    label: row.supplier_name ?? `Ledger #${row.supplier_account_id}`,
     share: row.share_pc,
     formatted: row.formatted,
   }))

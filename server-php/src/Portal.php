@@ -25,6 +25,14 @@ final class Portal
     private const CONNECT_TIMEOUT_SECONDS = 8;
     private const REQUEST_TIMEOUT_SECONDS = 15;
 
+    /**
+     * validatesession runs in front of EVERY authenticated request: a portal that is up but not
+     * answering must not hold each of them for 15 s (E8-ID). 2 s to connect, 6 s in all; past that
+     * the answer is "unavailable" (503 + Retry-After), never a sign-out.
+     */
+    private const VALIDATE_CONNECT_TIMEOUT_SECONDS = 2;
+    private const VALIDATE_TIMEOUT_SECONDS = 6;
+
     public static function base(): string
     {
         return rtrim(Env::get('PORTAL_AUTH_BASE', self::DEFAULT_AUTH_BASE), '/');
@@ -36,7 +44,7 @@ final class Portal
      * @param array<int, string> $headers
      * @return array{status: int, body: string, contentType: string, retryAfter?: ?int}
      */
-    public static function forward(string $method, string $path, array $headers, string $body): array
+    public static function forward(string $method, string $path, array $headers, string $body, int $connectTimeout = self::CONNECT_TIMEOUT_SECONDS, int $timeout = self::REQUEST_TIMEOUT_SECONDS): array
     {
         $url = self::base() . '/api/' . ltrim($path, '/');
 
@@ -50,8 +58,8 @@ final class Portal
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CUSTOMREQUEST => strtoupper($method),
             CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT_SECONDS,
-            CURLOPT_TIMEOUT => self::REQUEST_TIMEOUT_SECONDS,
+            CURLOPT_CONNECTTIMEOUT => $connectTimeout,
+            CURLOPT_TIMEOUT => $timeout,
             CURLOPT_HEADER => false,
             // The portal's own Retry-After, when it sends one, is passed on to our caller.
             CURLOPT_HEADERFUNCTION => static function ($handle, string $line) use (&$retryAfter): int {
@@ -117,7 +125,7 @@ final class Portal
         $result = self::forward('POST', 'validatesession', [
             'Authorization: Bearer ' . $sesKey,
             'Content-Type: application/json',
-        ], '');
+        ], '', self::VALIDATE_CONNECT_TIMEOUT_SECONDS, self::VALIDATE_TIMEOUT_SECONDS);
 
         $retry = max(1, min(60, (int) ($result['retryAfter'] ?? 0) ?: 5));
         $status = (int) $result['status'];

@@ -583,6 +583,7 @@ final class BillsDashboard extends Dashboard
         $rows = [];
         $failed = [];
         $names = [];
+        $credits = [];
 
         foreach ($suppliers as $supplier) {
             $supplierId = (int) $supplier['supplier_account_id'];
@@ -592,8 +593,18 @@ final class BillsDashboard extends Dashboard
                 $failed[] = $supplierId;
                 continue;
             }
+            // Only the supplier's bills are scheduled. Their debit notes and advances (the Dr side)
+            // are what they owe back — never a payment to plan (F274) — and are shown beside.
             foreach ($open['rows'] as $item) {
                 $rows[] = $item + ['supplier_name' => $supplier['supplier_name']];
+            }
+            $creditTotal = Decimal::sum(array_map(static fn ($r) => (string) $r['pending_amount'], array_merge(
+                $open['credits'] ?? [],
+                array_values(array_filter($open['on_account'] ?? [], static fn ($r) => ($r['side'] ?? '') === 'receivable')),
+            )));
+            if (!Decimal::isZero($creditTotal)) {
+                $credits[] = ['supplier_account_id' => $supplierId, 'supplier_name' => $supplier['supplier_name'], 'amount' => $creditTotal,
+                    'note' => 'Debit notes or advances not yet set off against a bill: settle them against these bills in Smart Books before paying in full.'];
             }
         }
 
@@ -674,6 +685,7 @@ final class BillsDashboard extends Dashboard
 
         return $this->panel([
             'rows'     => $out,
+            'credits'  => $credits,
             'currency' => $currency,
             'windows'  => [
                 'due_7'   => ['amount' => $windows['due_7'], 'formatted' => Format::money($windows['due_7'], $currency), 'label' => 'Due within 7 days'],

@@ -56,7 +56,7 @@ function SupplierCell({ row }: { row: PayableRow }) {
     <div className="aic-supplier-cell">
       <Avatar name={row.supplier_name} id={row.supplier_account_id} />
       <span className="aic-cell-stack">
-        <strong>{row.supplier_name ?? `Account ${row.supplier_account_id}`}</strong>
+        <strong>{row.supplier_name ?? `Ledger #${row.supplier_account_id}`}</strong>
         <small className="aic-sub">SUPP-{String(row.supplier_account_id).padStart(3, '0')}</small>
       </span>
     </div>

@@ -10,9 +10,27 @@ with a small PHP API alongside it. Both halves deploy to cPanel.
 
 ## What this app does today
 
-Login → Dashboard. The dashboard shows a welcome message and a **Log out**
-button, and nothing else. No navigation, no modules, no placeholder cards —
-those arrive with the product.
+Purchasing for a company, from need to payable, with Smart Books and Inventory as the
+books and the stock of record (nothing here keeps a copy of either):
+
+- **Requisitions** — raise, approve (with segregation of duties), convert to an order.
+- **Sourcing (RFQ)** — record who was asked, compare quotes, award and convert. Nothing is
+  sent to suppliers from here; the screen says so.
+- **Purchase orders** — approval rules, issue/acknowledge, amendments with version history,
+  short-close, cancel and reopen; supplier, items and warehouses confirmed with Books and
+  Inventory before anything is stored.
+- **Goods receipts (GRN)** — each delivery is its own Inventory document (batches, expiry,
+  serials, rejected quantity, duplicate-challan guard), recorded exactly once with
+  reconcile/retry for an unknown outcome; receipt returns and reversals.
+- **Bills** — three-way match at net rate with tolerances and binding decisions, direct
+  and service bills, reverse charge, place of supply and GSTIN checks, posting to Smart
+  Books exactly once (idempotent, lost-answer safe).
+- **Returns and claims** — purchase returns with debit notes that settle the bill they
+  correct, supplier claims and resolutions.
+- **Dashboards and Ask** — overview, procurement, suppliers, bills and payables, insights;
+  every figure states its basis; Ask answers from fixed rules, AI Pulse commentary (when
+  bound) is labelled and checked against the figures.
+- **Access** — permission profiles per company, segregation of duties, audit log.
 
 Signing in is the AICOUNTLY portal's job, the same as every other AICOUNTLY
 SaaS: the app redirects to the portal, the portal returns an `auth_token`, and

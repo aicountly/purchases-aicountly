@@ -160,6 +160,8 @@ final class ReturnClaimService
         if ($return['return_kind'] === 'financial') {
             $this->assertFinancialAuthority(self::id($return['adjustment_acc_id']), self::text($return['adjustment_reason']));
         }
+        // Nobody approves a return they raised (the company's segregation-of-duties policy; F265).
+        SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) ($return['created_by'] ?? ''), 'purchase return', 'purchase_return', $returnId, self::text($input['note'] ?? null));
 
         Db::transaction(function () use ($returnId, $return) {
             if ($return['po_id'] !== null) {
@@ -414,10 +416,13 @@ final class ReturnClaimService
         $revision = $this->debitNoteRevision($returnId, self::truthy($input['resend'] ?? false), self::text($input['note'] ?? null));
         // Where the supplier supplies from, from their Books ledger — only for a request not yet
         // sent; one already sent replays its stored body.
-        $supply = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $revision) === null
+        $firstSend = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $revision) === null;
+        $supply = $firstSend
             ? PlaceOfSupply::forSupplier((new BooksClient())->withSession($this->auth->sesKey()), $scope, (int) $return['supplier_account_id'])
             : null;
-        $payload = $this->debitNotePayload($return, $financial, $supply);
+        // The order's invoices it corrects, so Books settles them Agst Ref (F246).
+        $link = $firstSend ? DebitNoteLink::forOrder($scope, $this->auth, (int) $return['supplier_account_id'], self::id($return['po_id'])) : [];
+        $payload = $this->debitNotePayload($return, $financial, $supply) + $link;
         $voucher = (new DebitNotePoster($this->ctx, $this->auth))->post(self::COMMAND_DEBIT_NOTE, 'purchase_return', $returnId, $payload, 'return ' . $return['return_no'], $revision, null, $scope);
 
         Db::transaction(function () use ($returnId, $voucher, $financial) {
@@ -568,6 +573,9 @@ final class ReturnClaimService
         }
         $row['lines'] = $this->storedLines($returnId);
         $row['commands'] = IntegrationCommand::forEntity($this->ctx, 'purchase_return', $returnId);
+        // Said, not implied (F017): a dispatched return's goods have left, but Inventory counts them
+        // on hand until the debit note settles the dispatch challan.
+        $row['goods_still_counted_on_hand'] = ($row['return_kind'] ?? null) === 'physical' && ($row['status'] ?? null) === 'DISPATCHED';
 
         return $row;
     }
@@ -661,6 +669,12 @@ final class ReturnClaimService
      */
     public function updateClaim(int $claimId, string $action, array $input): array
     {
+        // Who may do it is decided before what exists: a stranger is refused, not told whether
+        // the claim is there.
+        $needs = ['submit' => 'claim.create', 'respond' => 'claim.create', 'approve' => 'claim.settle', 'reject' => 'claim.settle', 'close' => 'claim.settle', 'settle' => 'claim.settle'][$action] ?? null;
+        if ($needs !== null) {
+            Permissions::assert($this->ctx, $this->auth, $needs);
+        }
         $claim = $this->findClaim($claimId);
         if ($claim === []) {
             Http::notFound('That claim does not exist.');
@@ -681,6 +695,11 @@ final class ReturnClaimService
         Permissions::assert($this->ctx, $this->auth, $permission);
 
         $reason = self::text($input['note'] ?? $input['reason'] ?? null) ?? '';
+        if ($action === 'approve') {
+            // Approving a claim decides how much the supplier owes back: not by the person who
+            // raised it (the company's segregation-of-duties policy; F265).
+            SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) ($claim['created_by'] ?? ''), 'claim', 'claim', $claimId, $reason === '' ? null : $reason);
+        }
         Db::transaction(function () use ($claimId, $action, $from, $to, $input, $reason) {
             $locked = Db::first('SELECT * FROM purchase_claims WHERE claim_id = :id AND cmp_id = :cmp FOR UPDATE', ['id' => $claimId, 'cmp' => $this->ctx->cmpId]);
             if (!in_array($locked['status'], $from, true)) {

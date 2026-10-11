@@ -338,7 +338,7 @@ export function ProcurementDashboard({
                   header: 'Supplier',
                   render: (row) => (
                     <>
-                      {row.supplier_name ?? `Account ${row.supplier_account_id}`}
+                      {row.supplier_name ?? `Ledger #${row.supplier_account_id}`}
                       <span className="purchase-table__sub">
                         {row.line_count} line{row.line_count === 1 ? '' : 's'}, {row.open_lines} open
                       </span>

@@ -39,12 +39,14 @@ function Picker<T>({
   renderOption,
   keyOf,
 }: PickerProps<T> & {
-  search: (term: string, signal: AbortSignal) => Promise<T[]>
+  /** The matches, or the matches with how many there are in all (the owner's total). */
+  search: (term: string, signal: AbortSignal) => Promise<T[] | { rows: T[]; total: number }>
   renderOption: (record: T) => string
   keyOf: (record: T) => string | number
 }) {
   const [term, setTerm] = useState('')
   const [options, setOptions] = useState<T[]>([])
+  const [total, setTotal] = useState<number | null>(null)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -62,7 +64,11 @@ function Picker<T>({
     setFailed(false)
 
     search(debounced.trim(), controller.signal)
-      .then((rows) => setOptions(rows))
+      .then((answer) => {
+        const rows = Array.isArray(answer) ? answer : answer.rows
+        setOptions(rows)
+        setTotal(Array.isArray(answer) ? null : answer.total)
+      })
       .catch(() => {
         if (!controller.signal.aborted) setFailed(true)
       })
@@ -132,6 +138,12 @@ function Picker<T>({
           {!busy && !failed && options.length === 0 && (
             <div style={{ padding: '0.6rem', color: 'var(--muted)' }}>No matches.</div>
           )}
+          {/* Said, not hidden (F310): more match than are listed — typing more narrows to the rest. */}
+          {!busy && !failed && total !== null && total > options.length && (
+            <div style={{ padding: '0.45rem 0.6rem', color: 'var(--muted)', fontSize: '0.8rem' }}>
+              Showing {options.length} of {total} matches — type more of the name to find the rest.
+            </div>
+          )}
           {options.map((option) => (
             <button
               key={keyOf(option)}
@@ -199,8 +211,8 @@ export function SupplierPicker({
 }) {
   const search = useMemo(
     () => async (term: string, signal: AbortSignal) => {
-      const response = await api.list<CatalogSupplier>('v1/catalog/suppliers', { q: term }, signal)
-      return response.data
+      const response = await api.list<CatalogSupplier>('v1/catalog/suppliers', { q: term, limit: 50 }, signal)
+      return { rows: response.data, total: Number(response.meta?.total ?? response.data.length) }
     },
     [],
   )

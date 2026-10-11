@@ -15,11 +15,13 @@ namespace Aicountly\Api;
  *
  *   PENDING ──▶ POSTING ──▶ COMPLETED    the other product accepted; its reference is stored
  *                  │
- *                  ├──────▶ FAILED       it answered with a server error: nothing to
- *                  │                     suggest it acted, and the same key may be sent again
- *                  ├──────▶ UNCERTAIN    no answer at all, or "still processing": it may have
- *                  │                     acted. Retrying on the same key is safe and settles
- *                  │                     it; so does reconciling by our source identity
+ *                  ├──────▶ FAILED       it said nothing was written (a session, a permission,
+ *                  │                     a rate limit, a busy lock, a gate): the same key may
+ *                  │                     be sent again
+ *                  ├──────▶ UNCERTAIN    no answer, an unreadable answer, "still processing",
+ *                  │                     or a server error after the request arrived: it may
+ *                  │                     have acted. Retrying on the same key is safe and
+ *                  │                     settles it; so does reconciling by our source identity
  *                  └──────▶ BLOCKED      a business refusal. Retrying will not help;
  *                                        something has to change, and a changed request is a
  *                                        new revision with a new key
@@ -228,7 +230,7 @@ final class IntegrationCommand
     public static function fail(int $commandId, string $leaseToken, string $error, int $statusCode): bool
     {
         return self::settle($commandId, $leaseToken, self::FAILED, [
-            'last_error' => self::trimError($error), 'last_status_code' => $statusCode,
+            'last_error' => self::trimError(self::publicError($error, $statusCode)), 'last_status_code' => $statusCode,
         ]);
     }
 
@@ -236,7 +238,7 @@ final class IntegrationCommand
     public static function uncertain(int $commandId, string $leaseToken, string $error, int $statusCode = 0): bool
     {
         return self::settle($commandId, $leaseToken, self::UNCERTAIN, [
-            'last_error' => self::trimError($error), 'last_status_code' => $statusCode,
+            'last_error' => self::trimError(self::publicError($error, $statusCode)), 'last_status_code' => $statusCode,
         ]);
     }
 
@@ -314,7 +316,7 @@ final class IntegrationCommand
         $body = is_array($row['request_payload'] ?? null) ? $row['request_payload'] : [];
         $response = $send($body, (string) $row['idempotency_key']);
         $outcome = self::classify($response);
-        $message = $response['ok'] ? null : (string) ($response['error'] ?? ('HTTP ' . $response['status']));
+        $message = $response['ok'] ? null : self::publicError((string) ($response['error'] ?? ('HTTP ' . $response['status'])), (int) $response['status']);
 
         match ($outcome) {
             'failed'    => self::fail($commandId, $lease, (string) $message, (int) $response['status']),
@@ -327,39 +329,80 @@ final class IntegrationCommand
     }
 
     /**
-     * Classify an ApiClient response into the command outcome it implies.
+     * Error codes a receiver sends only BEFORE it writes anything — a gate it could not pass
+     * (company access, scope, integrity hold, configuration) or a lock it could not take
+     * (stock_busy: "Nothing was changed — try again"). A 5xx or 409 carrying one of these is
+     * FAILED: the same key may be sent again and cannot act twice. Every other 5xx after a
+     * write is UNCERTAIN (F007, F283).
+     */
+    public const NO_CHANGE_CODES = [
+        'stock_busy', 'company_access_unavailable', 'company_scope_unavailable', 'context_unavailable',
+        'integrity_hold', 'integration_not_configured', 'database_unavailable', 'service_unavailable',
+        'maintenance', 'manage_unavailable', 'fy_unavailable', 'period_unverified', 'idempotency_unavailable',
+        'not_migrated', 'grants_unavailable',
+    ];
+
+    /** Codes that say "your earlier request with this key is still being processed". */
+    public const IN_FLIGHT_CODES = ['request_in_progress', 'draft_post_in_progress', 'in_flight'];
+
+    /**
+     * Classify an ApiClient response to a WRITE into the command outcome it implies.
+     *
+     *   completed  a 2xx whose body could be read. A 2xx that is not JSON (a splash page, a WAF,
+     *              a proxy's HTML) proves nothing about what the receiver did: UNCERTAIN (F234)
+     *   uncertain  no answer, a timeout, "still processing" (an in-flight code, or Books'
+     *              lost-claim 409 "already being posted", which has no code), or a server error
+     *              after the request arrived — the receiver may have committed and then failed
+     *              (Inventory's books_handoff_unresolved, a fatal after commit, a gateway 502).
+     *              Retry on the same key settles it; so does Reconcile. Never withdrawable.
+     *   failed     nothing was written and the same request can succeed later: a session to
+     *              renew (401), a permission to grant (403), a rate limit (429), or a refusal
+     *              whose code or details.retryable says nothing changed (stock_busy 409, a 503
+     *              from a gate) — F212
+     *   blocked    a business refusal. Retrying will not help; something has to change.
      *
      * @param array{ok:bool, status:int, body:?array, error:?string} $response
      * @return 'completed'|'failed'|'uncertain'|'blocked'
      */
     public static function classify(array $response): string
     {
-        if ($response['ok']) {
-            return 'completed';
-        }
         $status = (int) $response['status'];
-        $code = self::errorCode($response['body'] ?? null);
-        if ($status === 0 || in_array($code, self::IN_FLIGHT_CODES, true) || $status === 408 || $status === 504) {
+        // A 2xx whose body could not be read, as the HTTP client core marks it (E8-ID A10:
+        // outcome_unknown): the receiver may have applied it. Same key, reconcile on retry.
+        if (!empty($response['outcome_unknown'])) {
             return 'uncertain';
         }
-        if ($status === 409 && $code === '') {
-            // F333: a 409 that names no business code (an older Books' "already being posted", a
-            // proxy) is not a decision — the post may complete. BLOCKED would let the bill be
-            // withdrawn and raised again beside a voucher Books then finishes; uncertain retries the
-            // same keys until Books says what happened.
+        if ($response['ok']) {
+            return is_array($response['body'] ?? null) ? 'completed' : 'uncertain';
+        }
+        $body = is_array($response['body'] ?? null) ? $response['body'] : null;
+        // CodeIgniter's fail() puts a string code in `error` ({status, error: "code", messages}).
+        $code = self::errorCode($body);
+        $retryable = $body['error']['details']['retryable'] ?? $body['details']['retryable'] ?? $body['retryable'] ?? null;
+        $message = strtolower((string) ($response['error'] ?? ''));
+
+        if ($status === 0 || $status === 408 || $status === 504 || in_array($code, self::IN_FLIGHT_CODES, true)) {
             return 'uncertain';
         }
-        if ($status === 401 || $status === 403 || $status === 429 || $status >= 500) {
-            // A session to renew, a permission to grant, a rate limit, a server fault:
-            // nothing was written, and the same request can succeed later.
+        if ($status === 409 && $code === '' && (str_contains($message, 'already being posted') || str_contains($message, 'still being posted'))) {
+            // F333: a code-less 409 saying the post is under way (an older Books, a proxy) is not a
+            // decision — the post may complete. BLOCKED would let the bill be withdrawn and raised
+            // again beside a voucher Books then finishes; uncertain retries the same keys. A code-less
+            // 409 with a business message ("Duplicate supplier invoice") stays a refusal.
+            return 'uncertain';
+        }
+        if (in_array($code, self::NO_CHANGE_CODES, true) || ($retryable === true && $status < 500)) {
             return 'failed';
+        }
+        if ($status === 401 || $status === 403 || $status === 429) {
+            return 'failed';
+        }
+        if ($status >= 500) {
+            return 'uncertain';
         }
 
         return 'blocked';
     }
-
-    /** Codes meaning "another request holds this right now — ask again on the same key". */
-    public const IN_FLIGHT_CODES = ['request_in_progress', 'draft_post_in_progress'];
 
     /**
      * The machine code of a refusal: `error.code` ({error:{code,message}}), CodeIgniter's fail()
@@ -557,6 +600,24 @@ final class IntegrationCommand
     }
 
     /** Keep the cause, drop the novel — an error column is not a log. */
+    /**
+     * E8-ID / F021 — what a person may be shown for an attempt that got NO answer (status 0). A
+     * transport failure's text names internal hosts, ports and addresses ("Failed to connect to
+     * 10.0.3.7 port 8443"): it goes to the log, and the command records only that there was no
+     * answer. Our own short codes (unreadable_response, books_base_unconfigured, …) are kept.
+     */
+    public static function publicError(string $error, int $statusCode): string
+    {
+        if ($statusCode !== 0 || (preg_match('/^[a-z0-9_]{1,80}$/', $error) === 1 && preg_match('/_(unreachable|timeout)$/', $error) !== 1)) {
+            return $error;
+        }
+        if (preg_match('/^[a-z0-9_]{1,80}$/', $error) !== 1) {
+            error_log('[integration] no answer: ' . $error);
+        }
+
+        return 'No answer from the other product (it may be down or unreachable). Nothing is lost: retry once it is back.';
+    }
+
     private static function trimError(string $error): string
     {
         $clean = trim(preg_replace('/\s+/', ' ', $error) ?? $error);

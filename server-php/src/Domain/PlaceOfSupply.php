@@ -107,7 +107,11 @@ final class PlaceOfSupply
         return self::stateCode($m[1]);
     }
 
-    /** A GSTIN as typed, normalised; null when empty; refused when it is not one. */
+    /**
+     * A GSTIN as typed, normalised; null when empty; refused when it is not one — its shape, its
+     * state code, and its check digit (a well-formed but invented GSTIN used to be accepted and
+     * flip the tax from CGST/SGST to IGST; F122).
+     */
     public static function normaliseGstin(mixed $value, string $field): ?string
     {
         $gstin = strtoupper(trim(is_string($value) ? $value : ''));
@@ -117,8 +121,45 @@ final class PlaceOfSupply
         if (self::stateOfGstin($gstin) === null) {
             Http::validationFailed('That is not a GSTIN: 15 characters, starting with the two-digit state code.', ['field' => $field]);
         }
+        if (!self::checkDigitValid($gstin)) {
+            Http::validationFailed('That GSTIN\'s check digit (its last character) is wrong: check it against the supplier\'s invoice.', ['field' => $field]);
+        }
 
         return $gstin;
+    }
+
+    /** The GSTIN check digit (mod 36 over its first 14 characters, as the GST portal computes it). */
+    public static function checkDigitValid(string $gstin): bool
+    {
+        $chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        if (strlen($gstin) !== 15) {
+            return false;
+        }
+        $sum = 0;
+        for ($i = 0; $i < 14; $i++) {
+            $value = strpos($chars, $gstin[$i]);
+            if ($value === false) {
+                return false;
+            }
+            $product = $value * ($i % 2 === 0 ? 1 : 2);
+            $sum += intdiv($product, 36) + $product % 36;
+        }
+
+        return $chars[(36 - $sum % 36) % 36] === $gstin[14];
+    }
+
+    /**
+     * Whether the supplier's ledger says this is a supplier abroad (import): registration
+     * overseas, non-resident, or a country other than India.
+     *
+     * @param array<string, mixed> $ledger
+     */
+    public static function isOverseas(array $ledger): bool
+    {
+        $regType = strtolower(trim((string) ($ledger['gst_reg_type'] ?? '')));
+        $country = strtoupper(trim((string) ($ledger['country_code'] ?? '')));
+
+        return $regType === 'overseas' || self::truthy($ledger['is_non_resident'] ?? false) || !in_array($country, ['', 'IN', 'IND', 'INDIA'], true);
     }
 
     /**
@@ -131,6 +172,13 @@ final class PlaceOfSupply
     public static function explainRefusal(string $booksMessage, array $payload, string $resend): string
     {
         $message = trim($booksMessage) === '' ? 'Smart Books refused it.' : trim($booksMessage);
+        // The COMPANY's state unknown for a company-level bill: Books' words name "branch #0", which
+        // no one can set. Said as what to do instead (A13).
+        if ((int) ($payload['bo_id'] ?? -1) === 0 && preg_match('/branch #0|company\'s \(branch\'s\) GST state|company state/i', $message) === 1) {
+            return 'Smart Books does not know this company\'s GST state, so it cannot split the GST on a bill entered under All branches. '
+                . 'Set the company\'s GSTIN or registered-office state in AICOUNTLY Manage and ' . lcfirst($resend)
+                . ' — or cancel this bill and enter it again under the branch it belongs to.';
+        }
         $sentWithout = trim((string) ($payload['party']['pos_state_code'] ?? '')) === '';
         $aboutSupply = preg_match('/place of supply|pos[_ ]state|state code|gst[_ ]?split|split the gst|company state|branch state/i', $message) === 1;
         if (!$sentWithout || !$aboutSupply) {

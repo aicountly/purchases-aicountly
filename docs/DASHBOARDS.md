@@ -532,7 +532,7 @@ same way.
 ```bash
 server-php/tests/run.sh                       # 122 integration tests
 PURCHASE_APP_URL=http://127.0.0.1:5173 \
-  npm --prefix web run test:ui                # 31 browser checks
+  npm --prefix web run test:ui                # 36 browser checks (35/35 + phone overflow, E8-PUR F451)
 ```
 
 See `docs/DEVELOPMENT.md` for the local stack the browser checks need.

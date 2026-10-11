@@ -111,6 +111,10 @@ final class Routes
         $router->post('v1/purchase-orders/{id}/receive', [PurchaseOrdersController::class, 'receive']);
         $router->post('v1/purchase-orders/{id}/cancel', [PurchaseOrdersController::class, 'cancel']);
         $router->post('v1/purchase-orders/{id}/short-close', [PurchaseOrdersController::class, 'shortClose']);
+        // An issued order changed as a new version (approval above the threshold), and what a
+        // short-close stopped waiting for expected again (F167, F420).
+        $router->post('v1/purchase-orders/{id}/amend', [PurchaseOrdersController::class, 'amend']);
+        $router->post('v1/purchase-orders/{id}/reopen', [PurchaseOrdersController::class, 'reopen']);
         $router->post('v1/receipt-requests/{id}/retry', [PurchaseOrdersController::class, 'retryReceipt']);
         $router->post('v1/receipt-requests/{id}/reconcile', [PurchaseOrdersController::class, 'reconcileReceipt']);
         $router->post('v1/receipt-requests/{id}/cancel', [PurchaseOrdersController::class, 'cancelReceipt']);

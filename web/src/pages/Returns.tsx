@@ -39,7 +39,7 @@ export function ReturnsList() {
           columns={[
             { key: 'no', header: 'Number', render: (row) => <Link to={`/returns/${row.return_id}`} onClick={(e) => e.stopPropagation()}>{row.return_no}</Link> },
             { key: 'date', header: 'Raised', render: (row) => date(row.return_date) },
-            { key: 'supplier', header: 'Supplier', render: (row) => `Account ${row.supplier_account_id}` },
+            { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? `Ledger #${row.supplier_account_id}` },
             { key: 'reason', header: 'Reason', render: (row) => row.reason_note ?? row.reason_code ?? '—' },
             { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
           ]}
@@ -79,6 +79,37 @@ export function ReturnDetail() {
   }
   const act = (path: string, body: Record<string, unknown> = {}) => post(`v1/returns/${id}/${path}`, body)
 
+  /**
+   * Dispatch and debit note as one step (F017): Inventory moves the goods out of stock when the
+   * debit note settles the dispatch, so leaving the debit note for later leaves goods that have gone
+   * counted as on hand (and sellable). The dispatch is durable on its own; if the debit note cannot
+   * be raised now, the screen says the goods are still counted until it is.
+   */
+  async function sendBack() {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.post(`v1/returns/${id}/dispatch`, {})
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : String(err))
+      setBusy(false)
+      reload()
+      return
+    }
+    try {
+      await api.post(`v1/returns/${id}/debit-note`, {})
+    } catch (err) {
+      setError(
+        'The dispatch is recorded in Inventory, but the debit note could not be raised: ' +
+          (err instanceof ApiError ? err.message : String(err)) +
+          ' Until it is, Inventory still counts these goods as on hand. Raise the debit note as soon as you can.',
+      )
+    } finally {
+      setBusy(false)
+      reload()
+    }
+  }
+
   if (loading) return <p style={{ color: 'var(--muted)' }}>Loading…</p>
 
   const item = data?.data
@@ -107,7 +138,7 @@ export function ReturnDetail() {
             <Button tone="primary" disabled={busy} onClick={() => act('approve')}>Approve</Button>
           )}
           {physical && item.status === 'APPROVED' && can('return.approve') && (
-            <Button tone="primary" disabled={busy} onClick={() => act('dispatch')}>Record the dispatch in Inventory</Button>
+            <Button tone="primary" disabled={busy} onClick={() => void sendBack()}>Send back: dispatch and debit note</Button>
           )}
           {canDebit && can('return.approve') && (
             <Button tone="primary" disabled={busy} onClick={() => act('debit-note')}>Raise the debit note in Smart Books</Button>
@@ -135,7 +166,12 @@ export function ReturnDetail() {
 
       {physical && item.status === 'APPROVED' && (
         <Notice tone="info">
-          The debit note is raised once Inventory has recorded the goods leaving. The goods leave stock once — with the debit note, which settles the dispatch.
+          Sending back records the dispatch in Inventory and raises the debit note in Smart Books in one step. The goods leave stock once — with the debit note, which settles the dispatch.
+        </Notice>
+      )}
+      {physical && item.status === 'DISPATCHED' && (
+        <Notice tone="warning" title="Goods have gone, but are still counted on hand">
+          The dispatch is recorded, but until the debit note posts Inventory still counts these goods as on hand and available. Raise the debit note now.
         </Notice>
       )}
 

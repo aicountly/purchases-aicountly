@@ -58,13 +58,30 @@ final class SettingsController extends Controller
         'is_active',
     ];
 
+    private static function personName(\Aicountly\Api\Auth $auth, \Aicountly\Api\Context $ctx): ?string
+    {
+        $name = $auth->displayName();
+        if ($name !== $auth->uuid && trim($name) !== '') {
+            return $name;
+        }
+        $label = \Aicountly\Api\Db::scalar(
+            'SELECT member_label FROM ' . Permissions::TABLE_ASSIGNMENTS . " WHERE cmp_id = :cmp AND user_uuid = :uuid AND member_label IS NOT NULL AND member_label <> '' ORDER BY updated_at DESC LIMIT 1",
+            ['cmp' => $ctx->cmpId, 'uuid' => $auth->uuid],
+        );
+
+        return is_string($label) && trim($label) !== '' ? trim($label) : null;
+    }
+
     public static function session(): void
     {
         [$auth, $ctx] = self::enter();
 
         Http::data([
             'uuid'         => $auth->uuid,
-            'display_name' => $auth->displayName(),
+            // The portal's session carries no name (validatesession answers ids only), so the name is
+            // the one this company's access screen gave the person, else none — never the numeric
+            // portal id dressed up as a name (F310).
+            'display_name' => self::personName($auth, $ctx),
             'kind'         => $auth->kind,
             'is_owner'     => $auth->ownsCompany($ctx->cmpId),
             // Whether Manage named a role at all. A client that only knows
@@ -91,12 +108,14 @@ final class SettingsController extends Controller
     public static function show(): void
     {
         [$auth, $ctx] = self::enter();
+        // Approval thresholds, tolerances and the segregation policy are how to stay under a
+        // control: for people with a seat in Purchases, not any member of the company (F357).
+        Permissions::assertSeat($ctx, $auth);
 
-        $row = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
-        if ($row === null) {
-            Db::insert('purchase_settings', ['cmp_id' => $ctx->cmpId], 'cmp_id');
-            $row = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
-        }
+        // A read writes nothing: a company with no row yet is shown the defaults its first save
+        // will store (the table's own column defaults, read without inserting).
+        $row = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId])
+            ?? self::defaultSettings($ctx->cmpId);
 
         // `meta` rather than a second endpoint: the profile-type list and the
         // number format are what the SCREEN needs to render this row, and a
@@ -227,11 +246,20 @@ final class SettingsController extends Controller
 
         if ($changes !== []) {
             $changes['updated_at'] = gmdate('Y-m-d H:i:s');
-            Db::run('INSERT INTO purchase_settings (cmp_id) VALUES (:cmp) ON CONFLICT (cmp_id) DO NOTHING', ['cmp' => $ctx->cmpId]);
-            $before = Db::first('SELECT sod_policy, over_receipt_tolerance_pc FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]) ?? [];
+            $fresh = self::newSettingsRow($ctx->cmpId);
+            Db::run('INSERT INTO purchase_settings (cmp_id, receive_stock_at_grn) VALUES (:cmp, :grn) ON CONFLICT (cmp_id) DO NOTHING', ['cmp' => $ctx->cmpId, 'grn' => $fresh['receive_stock_at_grn'] ? 'true' : 'false']);
+            $before = Db::first('SELECT sod_policy, over_receipt_tolerance_pc, receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]) ?? [];
+            $wasOn = in_array($before['receive_stock_at_grn'] ?? null, [true, 't', 1, '1', 'true'], true);
+            if (array_key_exists('receive_stock_at_grn', $changes) && $wasOn !== $changes['receive_stock_at_grn']) {
+                // E8-INV A11: how goods receipts move stock is shown with who last changed it.
+                $changes['receive_stock_at_grn_changed_at'] = gmdate('Y-m-d H:i:s');
+                $changes['receive_stock_at_grn_changed_by'] = $auth->displayName() !== '' ? $auth->displayName() : $auth->uuid;
+            } else {
+                unset($changes['receive_stock_at_grn']);
+            }
             Db::update('purchase_settings', $changes, ['cmp_id' => $ctx->cmpId]);
             // Controls, not preferences: who changed them, from what, to what.
-            $governed = array_intersect_key($changes, ['sod_policy' => true, 'over_receipt_tolerance_pc' => true]);
+            $governed = array_intersect_key($changes, ['sod_policy' => true, 'over_receipt_tolerance_pc' => true, 'receive_stock_at_grn' => true]);
             if ($governed !== []) {
                 \Aicountly\Api\Audit::record($ctx, $auth, 'settings.controls_changed', 'settings', $ctx->cmpId, array_intersect_key($before, $governed), $governed, (string) ($body['reason'] ?? ''));
             }
@@ -241,6 +269,27 @@ final class SettingsController extends Controller
     }
 
     /** Three-way match tolerances. */
+    /**
+     * The row a company with no settings yet would get on its first save — PostgreSQL's own column
+     * defaults, inside a transaction that is rolled back, so nothing is stored by a read.
+     *
+     * @return array<string, mixed>
+     */
+    private static function defaultSettings(int $cmpId): array
+    {
+        $pdo = Db::connect();
+        $pdo->beginTransaction();
+        try {
+            // The row a first save would store, including the new-company receipt rule (E8-INV A11).
+            Db::insert('purchase_settings', self::newSettingsRow($cmpId), 'cmp_id');
+            $row = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $cmpId]) ?? [];
+        } finally {
+            $pdo->rollBack();
+        }
+
+        return $row;
+    }
+
     public static function matchPolicies(): void
     {
         [$auth, $ctx] = self::enter();
@@ -404,6 +453,19 @@ final class SettingsController extends Controller
      * A bare `(bool)` cast reads the string "false" as true, which is how a
      * checkbox somebody had just cleared came back ticked.
      */
+    /**
+     * The first settings row of a company (E8-INV A11): the stock mode it is ALREADY working
+     * under, so writing the row never flips it. A company with receipts recorded before the row
+     * existed keeps challan_only; a company with none takes the new default (goods into stock at
+     * the receipt).
+     *
+     * @return array{cmp_id:int, receive_stock_at_grn:bool}
+     */
+    private static function newSettingsRow(int $cmpId): array
+    {
+        return ['cmp_id' => $cmpId, 'receive_stock_at_grn' => \Aicountly\Api\Domain\ReceiptService::stockEffectFor($cmpId) === 'physical'];
+    }
+
     private static function boolean(mixed $raw): bool
     {
         if (is_bool($raw)) {

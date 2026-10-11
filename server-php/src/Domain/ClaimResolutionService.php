@@ -134,6 +134,20 @@ final class ClaimResolutionService
     {
         Permissions::assert($this->ctx, $this->auth, 'claim.settle');
 
+        // A debit note with nothing going back is a financial adjustment: it needs the same
+        // authority as a financial return (return.financial_adjustment), and nobody approves a
+        // resolution they proposed themselves (F265).
+        $proposed = Db::first('SELECT * FROM purchase_claim_resolutions WHERE resolution_id = :id AND cmp_id = :cmp', ['id' => $resolutionId, 'cmp' => $this->ctx->cmpId]);
+        if ($proposed === null) {
+            Http::notFound('That resolution does not exist.');
+        }
+        if ($proposed['kind'] === 'financial_adjustment') {
+            Permissions::assert($this->ctx, $this->auth, 'return.financial_adjustment');
+        }
+        if ($proposed['status'] === 'PROPOSED') {
+            SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) ($proposed['proposed_by'] ?? ''), 'claim resolution', 'claim', (int) $proposed['claim_id'], self::text($input['note'] ?? null));
+        }
+
         $resolution = Db::transaction(function () use ($resolutionId) {
             $r = $this->lock($resolutionId);
             if (!in_array($r['status'], ['PROPOSED', 'FAILED', 'UNCERTAIN', 'APPROVED'], true)) {
@@ -165,9 +179,12 @@ final class ClaimResolutionService
             case 'financial_adjustment':
                 // Where the supplier supplies from, read from their Books ledger — only for a
                 // debit note not yet sent; one already sent replays its stored body.
-                $supply = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'claim_resolution', $resolutionId) === null
+                $firstSend = IntegrationCommand::find($this->ctx->cmpId, self::COMMAND_DEBIT_NOTE, 'claim_resolution', $resolutionId) === null;
+                $supply = $firstSend
                     ? PlaceOfSupply::forSupplier((new BooksClient())->withSession($this->auth->sesKey()), $this->ctx, (int) $claim['supplier_account_id'])
                     : null;
+                // The claim's order's invoices, settled Agst Ref by the note (F246).
+                $link = $firstSend ? DebitNoteLink::forOrder($this->ctx, $this->auth, (int) $claim['supplier_account_id'], $claim['po_id'] === null ? null : (int) $claim['po_id']) : [];
                 $payload = [
                     'vch_date'     => gmdate('Y-m-d'),
                     'party'        => array_filter([
@@ -193,6 +210,7 @@ final class ClaimResolutionService
                 if (($supply['supply_nature'] ?? null) !== null) {
                     $payload['supply_nature'] = $supply['supply_nature'];
                 }
+                $payload += $link;
                 $voucher = (new DebitNotePoster($this->ctx, $this->auth))->post(
                     self::COMMAND_DEBIT_NOTE, 'claim_resolution', $resolutionId, $payload, 'claim ' . $claim['claim_no'], 0,
                     fn (string $status, string $message) => $this->mark($resolutionId, $status, $message),

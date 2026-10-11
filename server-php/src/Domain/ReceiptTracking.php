@@ -54,6 +54,8 @@ final class ReceiptTracking
      */
     public function check(int $poId, array $input): void
     {
+        $this->checkExpiry($poId, $input);
+
         $named = [];
         foreach (is_array($input['lines'] ?? null) ? $input['lines'] : [] as $index => $want) {
             if (!is_array($want)) {
@@ -128,6 +130,66 @@ final class ReceiptTracking
     }
 
     /**
+     * An expiry-tracked item is received into a batch that carries its expiry (F009): a GRN that
+     * named a new batch without one created a batch FEFO and the expiry controls never see. Each
+     * goods line received of such an item names its batch — an existing batch_id, or a batch_no
+     * with its expiry_date (or its mfg_date, when the item has a shelf life Inventory dates it
+     * from). Inventory answers the tracking flags; an Inventory that does not report track_expiry
+     * is not second-guessed here (it refuses the batch itself).
+     *
+     * @param array<string, mixed> $input the receive request
+     */
+    private function checkExpiry(int $poId, array $input): void
+    {
+        $poLines = [];
+        foreach (Db::all('SELECT line_id, line_no, item_id, is_service FROM purchase_order_lines WHERE po_id = :po AND cmp_id = :cmp', ['po' => $poId, 'cmp' => $this->ctx->cmpId]) as $row) {
+            if ($row['item_id'] !== null && !self::truthy($row['is_service'])) {
+                $poLines[(int) $row['line_id']] = $row;
+            }
+        }
+        $wanted = is_array($input['lines'] ?? null) && $input['lines'] !== []
+            ? array_values(array_filter($input['lines'], static fn ($w) => is_array($w) && isset($poLines[(int) ($w['line_id'] ?? 0)]) && (!isset($w['qty']) || (float) $w['qty'] > 0)))
+            : array_map(static fn (array $l) => ['line_id' => (int) $l['line_id']], array_values($poLines));
+        if ($wanted === []) {
+            return;
+        }
+        $itemIds = array_values(array_unique(array_map(static fn (array $w) => (int) $poLines[(int) $w['line_id']]['item_id'], $wanted)));
+        $lookup = (new InventoryClient())->withSession($this->auth->sesKey())->bulkLookupItems($this->ctx, $itemIds);
+        $rows = $lookup['ok'] && is_array($lookup['body'] ?? null) ? ($lookup['body']['data'] ?? null) : null;
+        if (!is_array($rows)) {
+            Http::error(503, 'inventory_unavailable', 'Inventory could not say how these items are tracked just now, so nothing was recorded. Try again.', ['retryable' => true, 'detail' => $lookup['error'] ?? null]);
+        }
+        $items = [];
+        foreach ($rows as $item) {
+            if (is_array($item) && isset($item['item_id'])) {
+                $items[(int) $item['item_id']] = $item;
+            }
+        }
+        foreach ($wanted as $want) {
+            $line = $poLines[(int) $want['line_id']];
+            $item = $items[(int) $line['item_id']] ?? null;
+            if ($item === null || !array_key_exists('track_expiry', $item) || !self::truthy($item['track_expiry'])) {
+                continue;
+            }
+            $name = (string) ($item['item_name'] ?? ('item #' . $line['item_id']));
+            $lineNo = (int) $line['line_no'];
+            if (self::id($want['batch_id'] ?? null) !== null) {
+                continue; // an existing batch: its dates are Inventory's
+            }
+            if (self::text($want['batch_no'] ?? null) === null) {
+                Http::validationFailed(sprintf('Line %d: %s tracks expiry, so name the batch received and its expiry date.', $lineNo, $name), ['field' => 'lines', 'line_id' => (int) $line['line_id'], 'reason' => 'batch_required', 'item_id' => (int) $line['item_id']]);
+            }
+            $shelfLife = (int) ($item['shelf_life_days'] ?? 0);
+            if (self::text($want['expiry_date'] ?? null) === null && (self::text($want['mfg_date'] ?? null) === null || $shelfLife <= 0)) {
+                Http::validationFailed(
+                    sprintf('Line %d: %s tracks expiry, so batch %s needs its expiry date%s.', $lineNo, $name, (string) $want['batch_no'], $shelfLife > 0 ? ' (or its manufacturing date: Inventory adds the item\'s shelf life)' : ''),
+                    ['field' => 'lines', 'line_id' => (int) $line['line_id'], 'reason' => 'expiry_required', 'item_id' => (int) $line['item_id']],
+                );
+            }
+        }
+    }
+
+    /**
      * Register what the receipt names and keep the ids on its lines — only while nothing has
      * been sent for it (no command yet), so a stored body is never rewritten.
      *
@@ -169,7 +231,7 @@ final class ReceiptTracking
             if ($batchNo !== null && self::id($line['batch_id'] ?? null) === null) {
                 $key = $itemId . '|' . $batchNo;
                 if (!isset($batches[$key])) {
-                    $found = $this->batchId($inventory, $registrar, $scope, $itemId, $batchNo, $lineNo);
+                    $found = $this->batchId($inventory, $registrar, $scope, $itemId, $batchNo, $lineNo, self::text($line['mfg_date'] ?? null), self::text($line['expiry_date'] ?? null));
                     if (is_array($found)) {
                         return ['receipt' => $receipt, 'problem' => $found];
                     }
@@ -223,9 +285,9 @@ final class ReceiptTracking
     }
 
     /** @return int|array{status: int, code: string, message: string, retryable: bool} the batch id, or why not */
-    private function batchId(InventoryClient $inventory, ?InventoryClient $registrar, Context $scope, int $itemId, string $batchNo, int $lineNo): int|array
+    private function batchId(InventoryClient $inventory, ?InventoryClient $registrar, Context $scope, int $itemId, string $batchNo, int $lineNo, ?string $mfgDate = null, ?string $expiryDate = null): int|array
     {
-        $created = self::registerInInventory($registrar, $inventory, static fn (InventoryClient $c): array => $c->createBatch($scope, $itemId, $batchNo));
+        $created = self::registerInInventory($registrar, $inventory, static fn (InventoryClient $c): array => $c->createBatch($scope, $itemId, $batchNo, $mfgDate, $expiryDate));
         if ($created['ok'] && self::id($created['body']['data']['batch_id'] ?? null) !== null) {
             return (int) $created['body']['data']['batch_id'];
         }

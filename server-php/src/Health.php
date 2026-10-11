@@ -32,6 +32,27 @@ final class Health
     private const MIGRATIONS_TABLE = 'purchase_sql_migrations';
 
     /**
+     * Which environment this deployment is configured as, and every sibling base it would use, with
+     * any problem as a fixed code (A20 / F062): an unrecognised AIC_ENVIRONMENT/APP_ENV, or a
+     * production deployment pointing at a sandbox or loopback host. Base origins are public
+     * hostnames; no key is ever read here.
+     *
+     * @return array<string, mixed>
+     */
+    public static function environment(): array
+    {
+        $bases = [];
+        foreach ([new Clients\BooksClient(), new Clients\InventoryClient(), new Clients\ManageClient(), new Clients\ContactsClient()] as $client) {
+            $base = $client->base();
+            $bases[$client->baseVariable()] = $base === '' ? null : $base;
+        }
+        $bases['PULSE_API_ORIGIN'] = (new Ai\PulseAiClient())->origin();
+        $bases['PORTAL_AUTH_BASE'] = Portal::base();
+
+        return Environment::report($bases);
+    }
+
+    /**
      * `source` says where the database name and username came from: "console" (CONSOLE_API_URL and
      * CONSOLE_DB_DETAILS_KEY are both set, so Console is asked) or "env" (DB_NAME / DB_USER in api/.env).
      * "env" on a deployed server is the sign that Console is not in use, whatever else is configured.

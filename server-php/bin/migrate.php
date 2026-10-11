@@ -16,6 +16,13 @@ declare(strict_types=1);
 
 namespace Aicountly\Api;
 
+// A worker, never a web page (F483). .htaccess refuses bin/ over HTTP; this holds on a server that
+// ignores .htaccess.
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit;
+}
+
 require __DIR__ . '/../src/Env.php';
 require __DIR__ . '/../src/Db.php';
 
@@ -106,6 +113,18 @@ foreach ($files as $path) {
         }
         fwrite(STDERR, "FAILED   {$name}\n         {$e->getMessage()}\n");
         exit(1);
+    }
+}
+
+// 009 creates the duplicate-invoice index only when the data allows it, with nothing but a
+// Postgres WARNING otherwise — easy to miss in a deploy log, and while it is missing new duplicate
+// supplier invoices can be entered (E8-PUR F221). Said plainly at the end of every apply run.
+if (!$status && !$dryRun) {
+    $hasBills = $pdo->query("SELECT to_regclass('purchase_bill_requests') IS NOT NULL")->fetchColumn();
+    $hasIndex = $pdo->query("SELECT 1 FROM pg_indexes WHERE indexname = 'uq_purchase_bills_supplier_invoice'")->fetchColumn();
+    if ($hasBills && !$hasIndex) {
+        fwrite(STDERR, "\nWARNING  uq_purchase_bills_supplier_invoice is MISSING: duplicate supplier invoices exist, so migration 009 could not create it,\n"
+            . "         and new duplicates can be entered until it does. Run: php bin/receipt-repair.php --cmp=<id> (duplicate_invoices, missing_indexes).\n");
     }
 }
 

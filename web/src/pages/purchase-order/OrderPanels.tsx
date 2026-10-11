@@ -1,8 +1,10 @@
+import { stockModeChangedText } from './stockMode'
 import { useState } from 'react'
 import { Download } from 'lucide-react'
 import { api, ApiError } from '../../services/api'
 import type { PoCommunication, PurchaseOrder, ReceiptAppliedLine, ReceiptRequest } from '../../services/types'
 import { useWarehouses } from '../../hooks/useWarehouses'
+import { localToday } from '../../utils/localDate'
 import { Button, Card, date, Field, Input, Notice, qty, Select, Textarea } from '../../ui'
 
 type Run = (path: string, body?: Record<string, unknown>) => Promise<boolean>
@@ -17,6 +19,8 @@ interface ReceiptDraftLine {
   rejection_reason: string
   warehouse_id: string
   batch_no: string
+  mfg_date: string
+  expiry_date: string
   serials: string
   inspection_note: string
 }
@@ -30,6 +34,7 @@ function newToken(): string {
  * batch or serials it came with. Each delivery is its own GRN in Inventory; the form carries one
  * token, so pressing Save twice (or a retried request) records it once.
  */
+
 export function ReceiveGoodsPanel({
   po,
   onDone,
@@ -43,6 +48,13 @@ export function ReceiveGoodsPanel({
   const [token] = useState(newToken)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // UNCERTAIN is not "not recorded": Inventory may hold the GRN and the answer was lost (F482).
+  const [uncertain, setUncertain] = useState(false)
+  const [receivedAt, setReceivedAt] = useState(localToday)
+  // A second receipt of a challan already recorded on this order is refused (F281); the person
+  // may confirm a genuine split delivery under one challan, with a reason.
+  const [duplicateDc, setDuplicateDc] = useState(false)
+  const [dcReason, setDcReason] = useState('')
   const [dcNo, setDcNo] = useState('')
   const [dcDate, setDcDate] = useState('')
   const [vehicle, setVehicle] = useState('')
@@ -64,6 +76,8 @@ export function ReceiveGoodsPanel({
           rejection_reason: '',
           warehouse_id: String(l.warehouse_id ?? po.delivery_warehouse_id ?? ''),
           batch_no: '',
+          mfg_date: '',
+          expiry_date: '',
           serials: '',
           inspection_note: '',
         }
@@ -80,8 +94,10 @@ export function ReceiveGoodsPanel({
     try {
       await api.post(`v1/purchase-orders/${po.po_id}/receive`, {
         client_token: token,
-        received_at: new Date().toISOString().slice(0, 10),
+        received_at: receivedAt || undefined,
         supplier_dc_no: dcNo.trim() || undefined,
+        confirm_duplicate_dc: duplicateDc && dcReason.trim() ? true : undefined,
+        duplicate_dc_reason: duplicateDc && dcReason.trim() ? dcReason.trim() : undefined,
         supplier_dc_date: dcDate || undefined,
         vehicle_no: vehicle.trim() || undefined,
         inspection_note: note.trim() || undefined,
@@ -95,12 +111,16 @@ export function ReceiveGoodsPanel({
             rejection_reason: l.rejection_reason.trim() || undefined,
             warehouse_id: l.warehouse_id ? Number(l.warehouse_id) : undefined,
             batch_no: l.batch_no.trim() || undefined,
+            mfg_date: l.batch_no.trim() && l.mfg_date ? l.mfg_date : undefined,
+            expiry_date: l.batch_no.trim() && l.expiry_date ? l.expiry_date : undefined,
             serials: l.serials.trim() ? l.serials.split(/[\s,]+/).filter(Boolean) : undefined,
             inspection_note: l.inspection_note.trim() || undefined,
           })),
       })
       onDone()
     } catch (err) {
+      setUncertain(err instanceof ApiError && err.code === 'inventory_uncertain')
+      if (err instanceof ApiError && err.code === 'duplicate_supplier_dc') setDuplicateDc(true)
       setError(err instanceof ApiError ? err.message : String(err))
     } finally {
       setBusy(false)
@@ -114,14 +134,31 @@ export function ReceiveGoodsPanel({
           {po.grn_stock_effect === 'physical'
             ? "This delivery is recorded in Inventory as its own goods receipt (GRN): the goods are in stock from now, at the order's rate until the supplier's bill trues the cost up. The bill will not receive them again."
             : "This delivery is recorded in Inventory as its own goods receipt (GRN). The goods wait on Inventory's pending register and go into stock when the supplier's bill is posted — once, from this receipt."}
+          {' '}
+          <span data-testid="grn-mode-changed">{stockModeChangedText(po.grn_stock_effect_changed)}</span>
         </Notice>
-        {error && <Notice tone="danger" title="The delivery was not recorded" onDismiss={() => setError(null)}>{error}</Notice>}
+        {error && (
+          <Notice
+            tone={uncertain ? 'warning' : 'danger'}
+            title={uncertain ? 'The delivery may have been recorded' : 'The delivery was not recorded'}
+            onDismiss={() => setError(null)}
+          >
+            {error}
+          </Notice>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(12rem, 1fr))', gap: '0.6rem' }}>
+          <Field label="Received on" hint="Within the financial year you are in, and not after today."><Input type="date" value={receivedAt} max={localToday()} onChange={(e) => setReceivedAt(e.target.value)} /></Field>
           <Field label="Supplier delivery challan no."><Input value={dcNo} onChange={(e) => setDcNo(e.target.value)} /></Field>
           <Field label="Challan date"><Input type="date" value={dcDate} onChange={(e) => setDcDate(e.target.value)} /></Field>
           <Field label="Vehicle no."><Input value={vehicle} onChange={(e) => setVehicle(e.target.value)} /></Field>
         </div>
+
+        {duplicateDc && (
+          <Field label="This challan is already recorded on this order — why record it again?" hint="Only for a genuine second delivery under the same challan (at least 10 characters). If the first receipt was wrong, withdraw or return it instead.">
+            <Input value={dcReason} onChange={(e) => setDcReason(e.target.value)} />
+          </Field>
+        )}
 
         {lines.length === 0 && <Notice tone="warning">Nothing on this order is waiting to be received.</Notice>}
         {lines.map((l) => (
@@ -140,6 +177,12 @@ export function ReceiveGoodsPanel({
               </Field>
               <Field label="Batch"><Input value={l.batch_no} onChange={(e) => set(l.line_id, { batch_no: e.target.value })} /></Field>
             </div>
+            {l.batch_no.trim() !== '' && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(9rem, 1fr))', gap: '0.55rem', marginTop: '0.4rem' }}>
+                <Field label="Manufactured on"><Input type="date" value={l.mfg_date} onChange={(e) => set(l.line_id, { mfg_date: e.target.value })} /></Field>
+                <Field label="Expires on" hint="Required for an item Inventory tracks by expiry (or give the manufacturing date when the item has a shelf life)."><Input type="date" value={l.expiry_date} onChange={(e) => set(l.line_id, { expiry_date: e.target.value })} /></Field>
+              </div>
+            )}
             {Number(l.rejected_qty || 0) > 0 && (
               <Field label="Why was it rejected?"><Input value={l.rejection_reason} onChange={(e) => set(l.line_id, { rejection_reason: e.target.value })} /></Field>
             )}
@@ -323,6 +366,79 @@ export function ShortClosePanel({ po, run, busy, onCancel }: { po: PurchaseOrder
           <Button onClick={onCancel}>Keep waiting</Button>
           <Button tone="danger" disabled={busy || reason.trim() === '' || remaining.length === 0} onClick={async () => { if (await run('short-close', { reason: reason.trim() })) onCancel() }}>
             Short-close
+          </Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+/**
+ * Amend what was agreed with the supplier (F167): quantities, rates, discounts and the promised
+ * date, as a new version of the order. The server decides whether it applies at once or waits for
+ * an approver (above the company's threshold), refuses a quantity below what has already arrived
+ * or been billed, and asks for price.override for a higher rate.
+ */
+export function AmendPanel({ po, run, busy, onCancel }: { po: PurchaseOrder; run: Run; busy: boolean; onCancel: () => void }) {
+  const [reason, setReason] = useState('')
+  const [promised, setPromised] = useState(po.promised_date ?? '')
+  const [lines, setLines] = useState(() =>
+    po.lines.map((l) => ({ line_id: l.line_id, line_no: l.line_no, label: l.description ?? `Item #${l.item_id}`, ordered_qty: String(Number(l.ordered_qty)), agreed_rate: String(Number(l.agreed_rate)), discount_pc: String(Number(l.discount_pc ?? 0)) })),
+  )
+  const changed = lines.filter((l) => {
+    const was = po.lines.find((p) => p.line_id === l.line_id)
+    return was && (Number(was.ordered_qty) !== Number(l.ordered_qty) || Number(was.agreed_rate) !== Number(l.agreed_rate) || Number(was.discount_pc ?? 0) !== Number(l.discount_pc))
+  })
+  const promisedChanged = (po.promised_date ?? '') !== promised
+
+  return (
+    <Card title={`Amend ${po.po_no} (now version ${po.version_no ?? 0})`}>
+      <div style={{ display: 'grid', gap: '0.6rem' }} data-testid="amend-panel">
+        <div className="table-scroll" style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', fontSize: '0.85rem', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--muted)' }}><th>Line</th><th>Item</th><th>Quantity</th><th>Rate</th><th>Discount %</th></tr>
+            </thead>
+            <tbody>
+              {lines.map((l, index) => (
+                <tr key={l.line_id}>
+                  <td>{l.line_no}</td>
+                  <td>{l.label}</td>
+                  {(['ordered_qty', 'agreed_rate', 'discount_pc'] as const).map((field) => (
+                    <td key={field}>
+                      <Input
+                        aria-label={`${field} of line ${l.line_no}`}
+                        inputMode="decimal"
+                        value={l[field]}
+                        style={{ width: '7rem' }}
+                        onChange={(e) => setLines(lines.map((x, i) => (i === index ? { ...x, [field]: e.target.value } : x)))}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Field label="Promised date"><Input type="date" value={promised} onChange={(e) => setPromised(e.target.value)} /></Field>
+        <Field label="What was agreed, and with whom" hint="Recorded with the amendment. Above the approval threshold it waits for an approver.">
+          <Input value={reason} onChange={(e) => setReason(e.target.value)} />
+        </Field>
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <Button onClick={onCancel}>Back</Button>
+          <Button
+            tone="primary"
+            disabled={busy || reason.trim() === '' || (changed.length === 0 && !promisedChanged)}
+            onClick={async () => {
+              const ok = await run('amend', {
+                reason: reason.trim(),
+                ...(promisedChanged ? { promised_date: promised || null } : {}),
+                lines: changed.map((l) => ({ line_id: l.line_id, ordered_qty: l.ordered_qty, agreed_rate: l.agreed_rate, discount_pc: l.discount_pc })),
+              })
+              if (ok) onCancel()
+            }}
+          >
+            Amend the order
           </Button>
         </div>
       </div>

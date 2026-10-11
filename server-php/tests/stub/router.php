@@ -43,6 +43,19 @@ $control = is_file($controlFile) ? (json_decode((string) file_get_contents($cont
 // `after: true` does the work and THEN fails the response — the lost-response case: the
 // other product recorded the document, the caller never heard. Handled at the end.
 $failAfter = !empty($control['path']) && str_contains($path, (string) $control['path']) && !empty($control['after']);
+if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter && !empty($control['html'])) {
+    // Something in front of the receiver answering in its place — a splash page, a WAF, a
+    // proxy's error page: not the receiver's JSON, whatever the status says (F234).
+    http_response_code((int) ($control['status'] ?? 200));
+    header('Content-Type: text/html');
+    echo '<!doctype html><html><body><h1>Please wait</h1></body></html>';
+    exit;
+}
+if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter && !empty($control['bare'])) {
+    // A bare status with no body: a route the receiver does not have, behind a proxy.
+    http_response_code((int) ($control['status'] ?? 404));
+    exit;
+}
 if (!empty($control['path']) && str_contains($path, (string) $control['path']) && !$failAfter) {
     http_response_code((int) ($control['status'] ?? 500));
     // `message` lets a test answer with the receiver's own words (Books' refusal of a key it
@@ -59,8 +72,15 @@ if ($failAfter) {
     register_shutdown_function(static function () use ($control): void {
         ob_end_clean();
         http_response_code((int) ($control['status'] ?? 504));
+        if (!empty($control['html'])) {
+            header('Content-Type: text/html');
+            echo '<!doctype html><html><body>Bad gateway</body></html>';
+
+            return;
+        }
         header('Content-Type: application/json');
-        echo json_encode(['error' => ['code' => 'stub_lost_response', 'message' => 'Response lost after the work was done'], 'message' => 'Response lost']);
+        $lost = (string) ($control['message'] ?? 'Response lost after the work was done');
+        echo json_encode(['error' => ['code' => (string) ($control['code'] ?? 'stub_lost_response'), 'message' => $lost], 'message' => $lost]);
     });
 }
 
@@ -264,6 +284,11 @@ if (str_contains($path, '/validatesession')) {
     // rules need: an approval inbox that showed you your own orders would be
     // testing nothing. The real portal's keys are opaque and carry none of this.
     $incoming = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    if (stripos($incoming, 'revoked') !== false) {
+        // A signed-out or revoked session, as the portal answers it: status 0, nobody.
+        echo json_encode(['status' => 0, 'message' => 'Invalid or expired session']);
+        exit;
+    }
     $uuid = preg_match('/as-([a-z0-9_-]+)/i', $incoming, $m) === 1 ? strtolower($m[1]) : 'user-owner';
     echo json_encode([
         'status'      => 1,
@@ -420,6 +445,22 @@ if (preg_match('#^(?:/api)?/contacts#', $path) === 1) {
     exit;
 }
 
+// Manage's product-to-product fiscal calendar (Inventory ServiceCompanyScope): company 88 is live
+// with years 5 and 6; any other company is not one Manage knows. Used by the real-Inventory
+// contract (tests/inventory_contract.php), where this stub stands in for Manage only.
+if (str_contains($path, '/api/internal/company-fiscal-calendar')) {
+    $cmp = (int) ($_GET['cmp_id'] ?? 0);
+    if ($cmp !== 88) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'error' => ['code' => 'not_found', 'message' => 'No such company']]);
+        exit;
+    }
+    echo json_encode(['data' => ['cmp_id' => 88, 'fy_list' => [
+        ['fy_id' => 6, 'fy_start' => '2026-04-01', 'fy_end' => '2027-03-31'],
+        ['fy_id' => 5, 'fy_start' => '2025-04-01', 'fy_end' => '2026-03-31'],
+    ], 'branch_ids' => []]]);
+    exit;
+}
 if (str_contains($path, '/companies') && !str_contains($path, '/companyinfo')) {
     // Manage's company list, as CompanyModel::listCompanies shapes it. Enough
     // rows to exercise the launcher's search, sort and default handling.
@@ -448,11 +489,23 @@ if (str_contains($path, '/companyinfo')) {
     $cmpId = (int) ($_GET['comp_id'] ?? 0);
     $bearer = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     $role = preg_match('/role-([a-z0-9]+)/i', $bearer, $m) === 1 ? strtolower($m[1]) : '1';
+    // A session that is not a member of this company — removed, or another tenant's (`role-none`),
+    // and company 502, which belongs to another tenant for every stub session — is answered as
+    // Manage answers it: 404 {success:false, message:"Company not found or access denied"}
+    // (index.php companyinfo → Response::error). The stub used to answer 200 for any company.
+    if ($role === 'none' || $cmpId === 502) {
+        http_response_code(404);
+        echo json_encode(['success' => false, 'message' => 'Company not found or access denied']);
+        exit;
+    }
 
     $company = [
         'comp_id' => $cmpId,
         'cmp_id' => $cmpId,
         'comp_name' => 'Stub Trading Co',
+        // The registered office's state (Manage: ghm_company_address.state_id), a GST state code
+        // here; mode manage_no_ro_state answers as a company that never filled it in.
+        'ro_state' => empty($modes['manage_no_ro_state']) ? '29' : '',
         // Manage sends its years newest first; the launcher relies on that
         // ordering to preselect the current one.
         'fy_list' => [
@@ -476,23 +529,6 @@ if (str_contains($path, '/companyinfo')) {
 }
 
 // --- Inventory ------------------------------------------------------------
-if (str_contains($path, '/v1/capabilities') && $method === 'GET') {
-    $caps = is_file(sys_get_temp_dir() . '/stub-inventory-caps.json')
-        ? json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-inventory-caps.json'), true)
-        : ['validates_stock_effect' => true, 'stock_effects' => [
-            'PURCHASE_RECEIPT' => ['on_invoice', 'defer_inward', 'from_challan', 'from_physical_challan'],
-            'PURCHASE_RETURN'  => ['on_invoice', 'from_challan', 'from_physical_challan'],
-            'INWARD_CHALLAN'   => ['challan_only', 'physical', 'settle_deferred'],
-            'DELIVERY_CHALLAN' => ['challan_only', 'physical'],
-        ]];
-    if ($caps === null) {
-        http_response_code(404);
-        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'no route'], 'message' => 'no route']);
-        exit;
-    }
-    echo json_encode(['data' => $caps]);
-    exit;
-}
 if (str_contains($path, '/v1/valuation/unit-costs')) {
     $ids = array_filter(explode(',', (string) ($_GET['item_ids'] ?? '')));
     echo json_encode(['data' => array_map(static fn ($id) => ['item_id' => (int) $id, 'unit_cost' => 80.0], $ids)]);
@@ -556,8 +592,20 @@ if (preg_match('#/v1/(batches|serials/bulk)$#', $path, $mm) === 1 && $method ===
                 exit;
             }
         }
+        // BatchesController::buildRow: an expiry-tracked item's new batch needs its expiry, given
+        // or derived from mfg_date and the item's shelf life (Inventory, E8-PUR F009).
+        $tracked = $modes['tracked_items'][(string) $itemId] ?? [];
+        $expiry = isset($body['expiry_date']) ? (string) $body['expiry_date'] : null;
+        if ($expiry === null && !empty($body['mfg_date']) && (int) ($tracked['shelf_life_days'] ?? 0) > 0) {
+            $expiry = date('Y-m-d', strtotime($body['mfg_date'] . ' +' . (int) $tracked['shelf_life_days'] . ' days'));
+        }
+        if ((int) ($tracked['expiry'] ?? 0) === 1 && $expiry === null) {
+            http_response_code(422);
+            echo json_encode(['error' => ['code' => 'validation_failed', 'message' => 'This item tracks expiry, so a new batch needs its expiry date', 'details' => ['reason' => 'expiry_required']], 'message' => 'expiry required']);
+            exit;
+        }
         $id = 61000 + count($serialState['batches']) + 1;
-        $serialState['batches'][(string) $id] = ['batch_id' => $id, 'item_id' => $itemId, 'batch_no' => $no, 'status' => 'active'];
+        $serialState['batches'][(string) $id] = ['batch_id' => $id, 'item_id' => $itemId, 'batch_no' => $no, 'status' => 'active', 'mfg_date' => $body['mfg_date'] ?? null, 'expiry_date' => $expiry];
         file_put_contents($serialStore, json_encode($serialState));
         http_response_code(201);
         echo json_encode(['data' => $serialState['batches'][(string) $id]]);
@@ -712,6 +760,48 @@ function stubSourceKey(array $b): ?string {
     return ($b['source_app'] ?? '') . '|' . $b['source_document_type'] . '|' . (int) $b['source_document_id'];
 }
 
+/**
+ * Inventory's open goods receipts of a supplier, as its pending register (GET v1/pending-quantities,
+ * PendingRegisterQuery) answers them: one row per receipt line still pending a bill, with the
+ * receipt's number and the open quantity. Both kinds of inward challan open such a line.
+ */
+function stubOpenReceipts(array $documents, int $partyRef, ?string $onlyEffect = null): array {
+    $rows = [];
+    foreach ($documents['by_id'] as $doc) {
+        if (($doc['document_type'] ?? '') !== 'INWARD_CHALLAN' || ($doc['status'] ?? '') !== 'POSTED' || (int) ($doc['party_ref'] ?? 0) !== $partyRef) {
+            continue;
+        }
+        if ($onlyEffect !== null && (string) ($doc['stock_effect'] ?? 'challan_only') !== $onlyEffect) {
+            continue;
+        }
+        $settled = stubSettledQty((int) $doc['document_id']);
+        foreach ((array) ($doc['lines'] ?? []) as $line) {
+            $qty = (float) ($line['qty'] ?? 0);
+            $take = min($qty, $settled);
+            $settled -= $take;
+            $open = round($qty - $take, 4);
+            if ($open > 0.00005) {
+                $rows[] = [
+                    'pending_id' => (int) $doc['document_id'] * 10 + count($rows), 'document_id' => (int) $doc['document_id'],
+                    'document_no' => $doc['document_no'] ?? null, 'document_date' => $doc['document_date'] ?? null, 'document_type' => 'INWARD_CHALLAN',
+                    'pending_kind' => 'challan', 'direction' => 'in', 'item_id' => (int) ($line['item_id'] ?? 0), 'party_ref' => $partyRef,
+                    'qty_original' => $qty, 'qty_open' => $open, 'status' => 'open',
+                ];
+            }
+        }
+    }
+    return $rows;
+}
+
+if (str_contains($path, '/v1/pending-quantities') && $method === 'GET') {
+    $rows = stubOpenReceipts($documents, (int) ($_GET['party_ref'] ?? 0));
+    if (!empty($_GET['item_id'])) {
+        $rows = array_values(array_filter($rows, static fn ($r) => $r['item_id'] === (int) $_GET['item_id']));
+    }
+    echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows), 'limit' => (int) ($_GET['limit'] ?? 100), 'offset' => 0]]);
+    exit;
+}
+
 if (str_contains($path, '/v1/inventory-documents/by-source')) {
     $sourceKey = ($_GET['source_app'] ?? '') . '|' . ($_GET['source_document_type'] ?? '') . '|' . (int) ($_GET['source_document_id'] ?? 0);
     // Real findBySource: the newest live document, a single row.
@@ -856,6 +946,23 @@ if (preg_match('#/v1/inventory-documents/(\d+)/revise$#', $path, $vm) === 1 && $
     echo json_encode(['data' => remember($store, $seen, $key, $replacement), 'duplicate' => false]);
     exit;
 }
+// DocumentsController::index with document_ids (and include_lines=1): the documents asked for, in
+// this company, with their lines — one read for an order's GRNs (E8-PUR F402).
+if (preg_match('#/v1/inventory-documents$#', $path) === 1 && $method === 'GET' && isset($_GET['document_ids'])) {
+    $asked = array_values(array_filter(array_map('intval', explode(',', (string) $_GET['document_ids']))));
+    $rows = [];
+    foreach ($asked as $id) {
+        $doc = $documents['by_id'][(string) $id] ?? null;
+        if (is_array($doc)) {
+            if (($_GET['include_lines'] ?? '') !== '1') {
+                unset($doc['lines']);
+            }
+            $rows[] = $doc;
+        }
+    }
+    echo json_encode(['data' => $rows, 'meta' => ['total' => count($rows)]]);
+    exit;
+}
 if (preg_match('#/v1/inventory-documents/(\d+)$#', $path, $gm) === 1 && $method === 'GET') {
     $doc = $documents['by_id'][$gm[1]] ?? null;
     if ($doc === null) {
@@ -913,6 +1020,8 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
         'document_type'        => $type,
         'stock_effect'         => $body['stock_effect'] ?? null,
         'status'               => 'POSTED',
+        'party_ref'            => isset($body['party_ref']) && $body['party_ref'] !== '' ? (int) $body['party_ref'] : null,
+        'document_date'        => $body['document_date'] ?? null,
         'source_app'           => $body['source_app'] ?? null,
         'source_document_type' => $body['source_document_type'] ?? null,
         'source_document_id'   => isset($body['source_document_id']) ? (int) $body['source_document_id'] : null,
@@ -956,7 +1065,8 @@ if (str_contains($path, '/v1/inventory-documents/post')) {
  * the group is an id, named by v1/item-groups.
  */
 if (str_contains($path, '/v1/items/bulk-lookup')) {
-    $ids = array_values(array_unique(array_filter(array_map('intval', (array) ($body['item_ids'] ?? [])), static fn ($i) => $i > 0)));
+    // Items 90000 and above are another company's: Inventory's bulk lookup leaves them out.
+    $ids = array_values(array_unique(array_filter(array_map('intval', (array) ($body['item_ids'] ?? [])), static fn ($i) => $i > 0 && $i < 90000)));
     echo json_encode(['data' => array_map(static fn ($id) => [
         'item_id'              => $id,
         'item_uuid'            => 'item-' . $id,
@@ -974,6 +1084,8 @@ if (str_contains($path, '/v1/items/bulk-lookup')) {
         // {"<item_id>": {"serial": 1, "batch": 0, "units": [{"unit_id", "conversion_factor"}]}}.
         'track_serial'         => (int) ($modes['tracked_items'][(string) $id]['serial'] ?? 0),
         'track_batch'          => (int) ($modes['tracked_items'][(string) $id]['batch'] ?? 0),
+        'track_expiry'         => (int) ($modes['tracked_items'][(string) $id]['expiry'] ?? 0),
+        'shelf_life_days'      => $modes['tracked_items'][(string) $id]['shelf_life_days'] ?? null,
         'units'                => $modes['tracked_items'][(string) $id]['units'] ?? [],
     ], $ids)]);
     exit;
@@ -983,21 +1095,18 @@ if (str_contains($path, '/v1/item-groups') && $method === 'GET') {
     exit;
 }
 if (str_contains($path, '/v1/reports/replenishment')) {
+    // ReportsController::replenishment answers the list envelope: data is the rows, the totals ride in meta.
     echo json_encode(['data' => [
-        'as_of' => gmdate('Y-m-d'),
-        'rows'  => [
-            ['item_id' => 7001, 'item_name' => 'OPC Cement 50kg', 'uom' => 'Bags', 'available_qty' => 320.0, 'reorder_level' => 500.0, 'safety_stock' => 200.0, 'suggested_qty' => 1000.0, 'lead_days' => 6],
-            ['item_id' => 7002, 'item_name' => 'TMT Steel 12mm',  'uom' => 'MT',   'available_qty' => 1.2,   'reorder_level' => 5.0,   'safety_stock' => 2.0,   'suggested_qty' => 5.0,    'lead_days' => 4],
-            ['item_id' => 7003, 'item_name' => 'Wire 2.5 sqmm',   'uom' => 'Coils', 'available_qty' => 8.0,  'reorder_level' => 25.0,  'safety_stock' => 10.0,  'suggested_qty' => null,   'lead_days' => null],
-        ],
-    ]]);
+        // Inventory's own row keys (InventoryReportService::replenishment), F458/F223.
+        ['item_id' => 7001, 'item_name' => 'OPC Cement 50kg', 'unit_symbol' => 'Bags', 'on_hand' => 400.0, 'available' => 320.0, 'reorder_point_qty' => 500.0, 'safety_stock_qty' => 200.0, 'suggested_qty' => 1000.0, 'lead_time_days' => 6, 'default_warehouse_id' => 1],
+        ['item_id' => 7002, 'item_name' => 'TMT Steel 12mm',  'unit_symbol' => 'MT',   'on_hand' => 3.2,   'available' => 1.2,   'reorder_point_qty' => 5.0,   'safety_stock_qty' => 2.0,   'suggested_qty' => 5.0,    'lead_time_days' => 4, 'default_warehouse_id' => 1],
+        ['item_id' => 7003, 'item_name' => 'Wire 2.5 sqmm',   'unit_symbol' => 'Coils', 'on_hand' => 8.0,  'available' => 8.0,   'reorder_point_qty' => 25.0,  'safety_stock_qty' => 10.0,  'suggested_qty' => null,   'lead_time_days' => null, 'default_warehouse_id' => null],
+    ], 'meta' => ['total' => 3, 'limit' => 100, 'offset' => 0]]);
     exit;
 }
 if (str_contains($path, '/v1/warehouses')) {
-    echo json_encode(['data' => [
-        ['warehouse_id' => 1, 'warehouse_name' => 'Main Store'],
-        ['warehouse_id' => 2, 'warehouse_name' => 'Site Store'],
-    ]]);
+    // Warehouses 1-9 are this company's; 90 and above belong to another tenant.
+    echo json_encode(['data' => array_map(static fn (int $id) => ['warehouse_id' => $id, 'warehouse_name' => $id === 1 ? 'Main Store' : ($id === 2 ? 'Site Store' : 'Bay ' . $id)], range(1, 9))]);
     exit;
 }
 
@@ -1034,7 +1143,31 @@ if (preg_match('#/masters/accounts/(\d+)$#', $path, $am) === 1 && $method === 'G
     $overrides = is_file(sys_get_temp_dir() . '/stub-accounts.json') ? (json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-accounts.json'), true) ?: []) : [];
     $accId = (int) $am[1];
     $row = ['acc_id' => $accId, 'acc_name' => 'Northern Distributors', 'credit_limit' => 500000, 'credit_days' => 30,
-        'gstin' => '27AAPFU0939F1ZV', 'gst_reg_type' => 'regular', 'state_code' => '27', 'country_code' => 'IN', 'is_non_resident' => 0];
+        'gstin' => '27AAPFU0939F1ZV', 'gst_reg_type' => 'regular', 'state_code' => '27', 'country_code' => 'IN', 'is_non_resident' => 0,
+        // AccountsController::show resolves the account's anchor up its group chain.
+        'resolved_anchor_code' => 'SUNDRY_CREDITORS'];
+    // Ledgers 80-89 are customers (Sundry Debtors); 900000 and above exist in no company the
+    // caller may open — Books answers 404 for them, as it does for another tenant's ledger.
+    // The ledger's own name and anchor, as the list above has them; any other id is a supplier.
+    $known = [
+        601 => ['Deccan Steel Traders', 'SUNDRY_CREDITORS'], 602 => ['Konkan Steel Works', 'SUNDRY_CREDITORS'],
+        501 => ['Northern Distributors', 'SUNDRY_CREDITORS'], 502 => ['Eastern Metals', 'SUNDRY_CREDITORS'],
+        7101 => ['Purchase - Raw Materials', 'PURCHASE_ACCOUNTS'], 7201 => ['Freight Inward', 'DIRECT_EXPENSES'],
+        7301 => ['Repairs and Maintenance', 'INDIRECT_EXPENSES'], 7302 => ['Freight and Cartage', 'INDIRECT_EXPENSES'],
+        7401 => ['Domestic Sales', 'SALES_ACCOUNTS'],
+    ];
+    if (isset($known[$accId])) {
+        [$row['acc_name'], $row['resolved_anchor_code']] = $known[$accId];
+    }
+    if ($accId >= 80 && $accId <= 89) {
+        $row['resolved_anchor_code'] = 'SUNDRY_DEBTORS';
+        $row['acc_name'] = 'Walk-in Customer ' . $accId;
+    }
+    if ($accId >= 900000) {
+        http_response_code(404);
+        echo json_encode(['status' => 404, 'error' => 404, 'messages' => ['error' => 'Account not found']]);
+        exit;
+    }
     if (isset($overrides[(string) $accId]) && $overrides[(string) $accId] === null) {
         http_response_code(404);
         echo json_encode(['status' => 404, 'error' => 404, 'messages' => ['error' => 'Account not found']]);
@@ -1067,6 +1200,55 @@ if (str_contains($path, '/reports/bill-by-bill')) {
         'source_vch_type_id' => $flagOnAccount ? null : 11, 'is_on_account' => $flagOnAccount, 'is_undefined_reference' => 0,
         'overdue_days' => 0, 'age_bucket' => 'not_due',
     ];
+    if (!empty($modes['books_live_bills'])) {
+        // The supplier's account as the posted vouchers make it: a purchase is a bill on the Cr
+        // side (2); a debit note settles the bills it names Agst Ref — each no more than is pending
+        // or the note has left — and is a Dr bill (1) only for the rest (New Ref).
+        $file = sys_get_temp_dir() . '/stub-vouchers.json';
+        $held = is_file($file) ? (json_decode((string) file_get_contents($file), true) ?: []) : [];
+        $bills = [];
+        foreach ($held as $vid => $v) {
+            if (!empty($v['cancelled']) || (int) ($v['party']['acc_id'] ?? 0) !== $accId) {
+                continue;
+            }
+            $total = (float) ($v['tax_summary']['grand_total'] ?? 0);
+            if ((int) ($v['vch_type_id'] ?? 0) === 11) {
+                $bills[(int) $vid] = ['bill_id' => (int) $vid, 'acc_id' => $accId, 'bill_ref' => $v['bill']['bill_ref'] ?? null, 'bill_date' => $v['bill']['bill_date'] ?? null,
+                    'due_date' => $v['bill']['due_date'] ?? null, 'original_amount' => $total, 'pending_amount' => $total, 'dr_cr' => 2,
+                    'source_vch_txn_id' => (int) $vid, 'source_vch_type_id' => 11, 'is_on_account' => 0, 'is_undefined_reference' => 0];
+            }
+        }
+        foreach ($held as $vid => $v) {
+            if (!empty($v['cancelled']) || (int) ($v['party']['acc_id'] ?? 0) !== $accId || (int) ($v['vch_type_id'] ?? 0) !== 3) {
+                continue;
+            }
+            $left = (float) ($v['tax_summary']['grand_total'] ?? 0);
+            foreach ((array) ($v['against_bills'] ?? []) as $a) {
+                $target = (int) ($a['bill_id'] ?? 0);
+                if (!isset($bills[$target]) || $left <= 0) {
+                    continue;
+                }
+                $take = min((float) $a['amount'], (float) $bills[$target]['pending_amount'], $left);
+                $bills[$target]['pending_amount'] = round((float) $bills[$target]['pending_amount'] - $take, 4);
+                $left = round($left - $take, 4);
+            }
+            if ($left > 0) {
+                $bills[(int) $vid] = ['bill_id' => (int) $vid, 'acc_id' => $accId, 'bill_ref' => $v['bill']['bill_ref'] ?? null, 'bill_date' => $v['bill']['bill_date'] ?? null,
+                    'due_date' => null, 'original_amount' => $left, 'pending_amount' => $left, 'dr_cr' => 1,
+                    'source_vch_txn_id' => (int) $vid, 'source_vch_type_id' => 3, 'is_on_account' => 0, 'is_undefined_reference' => 0];
+            }
+        }
+        $rows = array_map(static function (array $b): array {
+            $b['original_amount'] = number_format((float) $b['original_amount'], 4, '.', '');
+            $b['pending_amount'] = number_format((float) $b['pending_amount'], 4, '.', '');
+            return $b;
+        }, array_values($bills));
+        if (($_GET['show_settled'] ?? null) !== '1') {
+            $rows = array_values(array_filter($rows, static fn (array $r) => (float) $r['pending_amount'] > 0));
+        }
+        echo json_encode(['data' => ['report' => 'bill_by_bill', 'acc_id' => $accId, 'rows' => $rows]]);
+        exit;
+    }
     $rows = [
         $bill(1, 'INV/0001', '2026-08-01', '2026-08-31', '200000.0000', '120000.5000'),
         $bill(2, 'INV/0002', '2026-08-10', null, '45000.2500', '45000.2500'),
@@ -1107,9 +1289,10 @@ if (str_contains($path, '/dashboard/purchase')) {
             ['date' => '2026-09-02', 'amount' => 428000.5],
             ['date' => '2026-09-03', 'amount' => 265000.0],
         ]],
+        // Books TradeRegister::topParties: {acc_id, label, amount} (F275/F223).
         'top_suppliers' => [
-            ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'amount' => 1166400.0],
-            ['acc_id' => 502, 'acc_name' => 'Metro Electricals',     'amount' => 874800.0],
+            ['acc_id' => 501, 'label' => 'Northern Distributors', 'amount' => 1166400.0],
+            ['acc_id' => 502, 'label' => 'Metro Electricals',    'amount' => 874800.0],
         ],
         'payables_ageing' => [
             'not_due' => 1200000.0, 'b_0_30' => 320000.0, 'b_31_60' => 100000.0,
@@ -1143,18 +1326,6 @@ $booksWrite = str_contains($path, '/vouchers/drafts') && $method === 'POST';
 if ($booksWrite && !preg_match('/^Bearer\s+\S+/', (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''))) {
     http_response_code(401);
     echo json_encode(['status' => 401, 'error' => 401, 'messages' => ['error' => 'Invalid or expired session'], 'message' => 'Invalid or expired session']);
-    exit;
-}
-if (str_contains($path, '/integration/capabilities') && $method === 'GET') {
-    $caps = is_file(sys_get_temp_dir() . '/stub-books-caps.json')
-        ? json_decode((string) file_get_contents(sys_get_temp_dir() . '/stub-books-caps.json'), true)
-        : ['stock_effects' => BOOKS_STOCK_EFFECTS, 'refuses_unknown_stock_effect' => true];
-    if ($caps === null) {
-        http_response_code(404);
-        echo json_encode(['error' => ['code' => 'not_found', 'message' => 'no route'], 'message' => 'no route']);
-        exit;
-    }
-    echo json_encode(['data' => $caps]);
     exit;
 }
 
@@ -1202,6 +1373,19 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
             }
         }
     }
+    // Inventory's open-receipt guard (E8-PUR A09), as Books relays it: a purchase that receives its
+    // goods on the invoice beside a PHYSICAL goods receipt of the same supplier still pending a
+    // bill is refused 409 open_inward_challan (OpenInwardChallanException), unless confirmed.
+    if ($type === 11 && $effect === 'on_invoice' && empty($voucherPayload['confirm_no_open_grn']) && !empty($voucherPayload['inventory_lines'])) {
+        $items = array_map(static fn ($l) => (int) ($l['item_id'] ?? 0), $voucherPayload['inventory_lines']);
+        $open = array_values(array_filter(stubOpenReceipts($documents, (int) ($voucherPayload['party']['acc_id'] ?? 0), 'physical'), static fn ($r) => in_array($r['item_id'], $items, true)));
+        if ($open !== []) {
+            $msg = 'Goods receipt ' . implode(', ', array_unique(array_column($open, 'document_no'))) . ' of this supplier already put these items on hand and is not billed yet.';
+            http_response_code(409);
+            echo json_encode(['status' => 409, 'error' => ['code' => 'open_inward_challan', 'message' => $msg, 'details' => ['receipts' => array_map(static fn ($r) => ['document_id' => $r['document_id'], 'document_no' => $r['document_no'], 'item_id' => $r['item_id'], 'open_qty' => $r['qty_open']], $open), 'confirm_field' => 'confirm_no_open_grn', 'reason_field' => 'confirm_no_open_grn_reason']], 'messages' => ['error' => $msg], 'message' => $msg]);
+            exit;
+        }
+    }
     if ($effect === 'from_physical_challan' && empty($voucherPayload['challan_settlements'])) {
         http_response_code(422);
         echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => 'Name the goods receipts this invoice settles (challan_settlements).']]);
@@ -1233,6 +1417,19 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
     // is unknown — no party.pos_state_code — is a 422 and nothing is posted. Every categorised line
     // counts as GST-rated here. Mode books_before_c1 answers as Books did before it: posted, no GST.
     $posState = trim((string) ($voucherPayload['party']['pos_state_code'] ?? ''));
+    // The company's state, as CommercialVoucherComposer resolves it: the payload's
+    // company_state_code, else the branch's (or, for bo_id 0, the company's) GST profile in Manage.
+    // Mode books_company_state_unknown answers as a Books that could resolve neither.
+    $companyStateSent = trim((string) ($voucherPayload['company_state_code'] ?? ''));
+    $categorisedLines = array_filter(array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []), static fn ($l) => !empty($l['tax_cat_id']) && abs((float) ($l['amount'] ?? 0)) >= 0.00005);
+    if (!empty($modes['books_company_state_unknown']) && $companyStateSent === '' && $categorisedLines !== [] && $posState !== '') {
+        $boId = (int) ($voucherPayload['bo_id'] ?? 0);
+        http_response_code(422);
+        echo json_encode(['status' => 422, 'error' => 422, 'messages' => ['error' => sprintf(
+            '%d line(s) carry GST, but the company\'s (branch\'s) GST state is not known, so Books cannot tell whether to charge CGST + SGST or IGST. Nothing was posted (it would have posted with no GST). Set the GSTIN or state of branch #%d in AICOUNTLY Manage, or send company_state_code, and retry.',
+            count($categorisedLines), $boId)]]);
+        exit;
+    }
     $categorised = array_filter(array_merge($voucherPayload['inventory_lines'] ?? [], $voucherPayload['service_lines'] ?? []), static fn ($l) => !empty($l['tax_cat_id']) && abs((float) ($l['amount'] ?? 0)) >= 0.00005);
     $origin = strtolower(trim((string) ($headers['x-saas-origin'] ?? '')));
     if (empty($modes['books_before_c1']) && $origin !== '' && $origin !== 'books' && $categorised !== [] && $posState === '') {
@@ -1310,9 +1507,14 @@ if (preg_match('#/vouchers/drafts/(\d+)/post$#', $path, $dm) === 1) {
         'tax_summary' => ['taxable_value' => round($taxable, 4), 'cgst' => round($cgst, 4), 'sgst' => round($sgst, 4), 'igst' => round($igst, 4), 'grand_total' => $grandTotal],
         'pos_state_code' => $posState === '' ? null : $posState,
         'supply_nature' => $voucherPayload['supply_nature'] ?? null,
+        // VoucherReadService answers the header's flag as is_reverse_charge (0 / 1).
+        'is_reverse_charge' => (int) (!empty($voucherPayload['is_reverse_charge'])),
         'stock'       => $stock,
         'challan_settlements' => $voucherPayload['challan_settlements'] ?? [],
         'source_document_id'  => $voucherPayload['source_document_id'] ?? null,
+        // A note's Agst Ref bills and the purchase it is against (BillAllocationService).
+        'against_bills'       => $voucherPayload['against_bills'] ?? [],
+        'original_document'   => $voucherPayload['original_document'] ?? null,
     ];
     file_put_contents($voucherStore, json_encode($vouchers));
 

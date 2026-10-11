@@ -56,12 +56,32 @@ final class ThreeWayMatchService
         if ($poId === null) {
             // A bill with no purchase order behind it cannot be three-way
             // matched. Saying so is honest; inventing a pass is not.
+            $detail = 'This bill is not against a purchase order, so it cannot be matched automatically.';
+            $confirmation = $bill['open_grn_confirmation'] ?? null;
+            $confirmation = is_string($confirmation) ? Db::jsonColumn($confirmation) : $confirmation;
+            if (is_array($confirmation) && !empty($confirmation['confirmed'])) {
+                // The reviewer is told what the person entering it decided (A09): the goods of
+                // open receipts of this supplier, and why these are said to be different.
+                $names = array_values(array_unique(array_map(
+                    static fn ($r) => is_array($r) ? (string) ($r['receipt_no'] ?? $r['document_no'] ?? ('#' . ($r['inventory_document_id'] ?? '?'))) : '',
+                    (array) ($confirmation['receipts'] ?? []),
+                )));
+                $detail .= sprintf(
+                    ' It receives goods although receipt%s %s of this supplier %s open and unbilled; %s confirmed these are different goods: "%s".',
+                    count($names) === 1 ? '' : 's',
+                    implode(', ', $names),
+                    count($names) === 1 ? 'is' : 'are',
+                    (string) ($confirmation['confirmed_by'] ?? 'the person entering it'),
+                    (string) ($confirmation['reason'] ?? ''),
+                );
+            }
+
             return [
                 'verdict'    => self::REVIEW_REQUIRED,
                 'variances'  => [],
                 'exceptions' => [[
                     'exception_kind' => 'missing_receipt',
-                    'detail'         => 'This bill is not against a purchase order, so it cannot be matched automatically.',
+                    'detail'         => $detail,
                 ]],
                 'receipts_reachable' => true,
             ];
@@ -94,12 +114,21 @@ final class ThreeWayMatchService
         $exceptions = [];
         $worst = self::MATCHED;
 
+        // Every bill line naming an order line, AGGREGATED per order line: quantities and net
+        // amounts (after each bill line's own discount) added up. Keyed by the order line alone,
+        // the last bill line used to overwrite the others, so an inflated earlier line was never
+        // checked (A31).
         $billByPoLine = [];
         foreach ($billLines as $line) {
             $poLineId = (int) ($line['po_line_id'] ?? 0);
-            if ($poLineId > 0) {
-                $billByPoLine[$poLineId] = $line;
+            if ($poLineId <= 0) {
+                continue;
             }
+            $qty = (float) ($line['qty'] ?? 0);
+            $amount = self::netAmount($line);
+            $billByPoLine[$poLineId]['qty'] = ($billByPoLine[$poLineId]['qty'] ?? 0.0) + $qty;
+            $billByPoLine[$poLineId]['amount'] = ($billByPoLine[$poLineId]['amount'] ?? 0.0) + $amount;
+            $billByPoLine[$poLineId]['lines'][] = ['line_no' => (int) ($line['line_no'] ?? 0), 'qty' => $qty, 'amount' => $amount];
         }
 
         foreach ($poLines as $poLine) {
@@ -110,9 +139,13 @@ final class ThreeWayMatchService
             }
 
             $orderedQty = (float) $poLine['ordered_qty'];
-            $agreedRate = (float) $poLine['agreed_rate'];
-            $billedQty  = (float) ($billLine['qty'] ?? 0);
-            $billedRate = (float) ($billLine['rate'] ?? 0);
+            // The rate AGREED is what the order line costs per unit after its discount — its line
+            // amount over its quantity — not the gross list rate: a bill at the gross rate against
+            // a discounted line charges more than was agreed (A31).
+            $agreedRate = ReceiptService::netRate($poLine);
+            $billedQty  = round((float) $billLine['qty'], 4);
+            $billedAmount = round((float) $billLine['amount'], 4);
+            $billedRate = $billedQty > 0 ? round($billedAmount / $billedQty, 4) : 0.0;
             // Already billed on earlier bills, so an over-bill is caught across
             // the whole PO rather than one bill at a time.
             $alreadyBilled = (float) $poLine['billed_qty'];
@@ -124,6 +157,7 @@ final class ThreeWayMatchService
                 if ($receiptsReachable) {
                     $exceptions[] = [
                         'exception_kind' => 'missing_receipt',
+                        'po_line_id'     => $poLineId,
                         'detail'         => sprintf('Line %d is billed but nothing has been received against it.', (int) $poLine['line_no']),
                         'po_value'       => $orderedQty,
                         'receipt_value'  => 0.0,
@@ -151,6 +185,7 @@ final class ThreeWayMatchService
                     if (!$withinTolerance) {
                         $exceptions[] = [
                             'exception_kind' => 'over_billed',
+                            'po_line_id'     => $poLineId,
                             'detail'         => sprintf(
                                 'Line %d is billed for %s but only %s has been received.',
                                 (int) $poLine['line_no'],
@@ -169,18 +204,33 @@ final class ThreeWayMatchService
                 }
             }
 
-            // --- Rate: billed against the rate we AGREED -------------------
+            // --- Rate: each bill line's NET unit price against the NET rate we AGREED ---
+            // Every bill line on its own, so one inflated line is found whichever order the lines
+            // are in, and then the order line's bill lines together (their weighted rate).
             if ($agreedRate > 0) {
-                $rateVariance = $billedRate - $agreedRate;
-                $ratePc = ($rateVariance / $agreedRate) * 100;
-
-                if (abs($ratePc) > 0.0001) {
+                $checks = [];
+                foreach ($billLine['lines'] as $piece) {
+                    if ($piece['qty'] > 0) {
+                        $checks[] = ['line_no' => $piece['line_no'], 'rate' => round($piece['amount'] / $piece['qty'], 4)];
+                    }
+                }
+                if (count($checks) > 1) {
+                    $checks[] = ['line_no' => null, 'rate' => $billedRate];
+                }
+                $raisedRate = false;
+                foreach ($checks as $check) {
+                    $rateVariance = $check['rate'] - $agreedRate;
+                    $ratePc = ($rateVariance / $agreedRate) * 100;
+                    if (abs($ratePc) <= 0.0001) {
+                        continue;
+                    }
                     $withinTolerance = abs($ratePc) <= (float) $policy['rate_tolerance_pc'];
                     $variances[] = [
                         'line_no'     => (int) $poLine['line_no'],
+                        'bill_line_no' => $check['line_no'],
                         'kind'        => 'rate',
                         'agreed_rate' => $agreedRate,
-                        'billed_rate' => $billedRate,
+                        'billed_rate' => $check['rate'],
                         'variance_pc' => round($ratePc, 3),
                         'within_tolerance' => $withinTolerance,
                     ];
@@ -195,23 +245,52 @@ final class ThreeWayMatchService
                     if ($withinTolerance) {
                         $worst = self::worse($worst, self::WITHIN_TOLERANCE);
                     } elseif ($rateVariance > 0) {
+                        if ($raisedRate) {
+                            continue; // one rate exception per order line; the variances list them all
+                        }
+                        $raisedRate = true;
                         $exceptions[] = [
                             'exception_kind' => 'rate',
+                            'po_line_id'     => $poLineId,
                             'detail'         => sprintf(
-                                'Line %d is billed at %s against an agreed %s (%+.2f%%).',
+                                'Line %d is billed at a net %s%s against an agreed net %s (%+.2f%%).',
                                 (int) $poLine['line_no'],
-                                self::num($billedRate),
+                                self::num($check['rate']),
+                                $check['line_no'] !== null && count($billLine['lines']) > 1 ? sprintf(' on bill line %d', (int) $check['line_no']) : '',
                                 self::num($agreedRate),
                                 $ratePc,
                             ),
                             'po_value'       => $agreedRate,
-                            'bill_value'     => $billedRate,
+                            'bill_value'     => $check['rate'],
                             'variance_value' => round($rateVariance, 4),
                         ];
                         $worst = self::worse($worst, self::BLOCKED);
                     } else {
                         $worst = self::worse($worst, self::WITHIN_TOLERANCE);
                     }
+                }
+
+                // --- Value: what this order line costs on the bill against what the same
+                // quantity costs at the agreed net rate. A company that sets an absolute value
+                // tolerance caps what a rate tolerated in percent may add up to on one line.
+                $agreedValue = round($billedQty * $agreedRate, 4);
+                $valueVariance = round($billedAmount - $agreedValue, 4);
+                $valueTolerance = (float) ($policy['value_tolerance_amt'] ?? 0);
+                if ($valueTolerance > 0 && $valueVariance > $valueTolerance && !$raisedRate) {
+                    $exceptions[] = [
+                        'exception_kind' => 'value',
+                        'po_line_id'     => $poLineId,
+                        'detail'         => sprintf(
+                            'Line %d costs %s on the bill against %s at the agreed net rate.',
+                            (int) $poLine['line_no'],
+                            self::num($billedAmount),
+                            self::num($agreedValue),
+                        ),
+                        'po_value'       => $agreedValue,
+                        'bill_value'     => $billedAmount,
+                        'variance_value' => $valueVariance,
+                    ];
+                    $worst = self::worse($worst, self::BLOCKED);
                 }
             }
         }
@@ -220,10 +299,43 @@ final class ThreeWayMatchService
         // A supplier adding something nobody ordered is the classic procurement
         // fraud, so it is never quietly absorbed into the total.
         $knownPoLineIds = array_map(static fn (array $row) => (int) $row['line_id'], $poLines);
+        // Charges the order agreed — its freight and other charges — billed on lines declared as
+        // such (F163) are compared with the order's own figure, all such lines of a kind together:
+        // within it, a declared charge is not an unordered line; beyond it, the excess is.
+        $order = Db::first('SELECT freight_amount, other_charges FROM purchase_orders WHERE po_id = :po AND cmp_id = :cmp', ['po' => $poId, 'cmp' => $this->ctx->cmpId]) ?? [];
+        $agreed = ['freight' => (float) ($order['freight_amount'] ?? 0), 'other_charges' => (float) ($order['other_charges'] ?? 0)];
+        $charged = ['freight' => 0.0, 'other_charges' => 0.0];
+        foreach ($billLines as $line) {
+            $kind = $line['charge_kind'] ?? null;
+            if ((int) ($line['po_line_id'] ?? 0) <= 0 && isset($charged[$kind])) {
+                $charged[$kind] += (float) ($line['amount'] ?? 0);
+            }
+        }
+        foreach ($charged as $kind => $amount) {
+            if ($amount <= 0.00005) {
+                continue;
+            }
+            $excess = round($amount - $agreed[$kind], 4);
+            if ($excess > max(0.01, $agreed[$kind] * (float) ($policy['rate_tolerance_pc'] ?? 0) / 100)) {
+                $exceptions[] = [
+                    'exception_kind' => 'value',
+                    'detail'         => sprintf('The bill charges %s of %s; the order agreed %s.', $kind === 'freight' ? 'freight' : 'other charges', self::money($amount), self::money($agreed[$kind])),
+                    'order_value'    => $agreed[$kind],
+                    'bill_value'     => $amount,
+                    'variance_value' => $excess,
+                ];
+                $worst = self::worse($worst, self::REVIEW_REQUIRED);
+            } else {
+                $variances[] = ['kind' => 'charge', 'charge_kind' => $kind, 'billed' => $amount, 'agreed' => $agreed[$kind], 'note' => 'A charge the order agreed, billed within it.'];
+            }
+        }
         foreach ($billLines as $line) {
             $poLineId = (int) ($line['po_line_id'] ?? 0);
             if (in_array($poLineId, $knownPoLineIds, true)) {
                 continue;
+            }
+            if ($poLineId <= 0 && isset($charged[$line['charge_kind'] ?? ''])) {
+                continue; // a declared charge: compared with the order's above
             }
             $exceptions[] = [
                 'exception_kind' => 'value',
@@ -260,12 +372,29 @@ final class ThreeWayMatchService
     {
         $result = $this->evaluate($bill);
         $policy = $this->policy();
+        $revision = (int) ($bill['revision'] ?? 0);
+
+        // Decisions already taken on THIS revision of the bill: an identical finding keeps its
+        // decision. Re-running the match therefore never reopens an accepted variance nor
+        // launders a rejected one; a finding that changed is new, and OPEN (F497, A26).
+        $decided = [];
+        foreach (Db::all(
+            "SELECT e.* FROM purchase_match_exceptions e
+               JOIN purchase_match_results m ON m.match_id = e.match_id
+              WHERE m.bill_request_id = :bill AND m.cmp_id = :cmp AND m.bill_revision = :rev
+                AND e.status IN ('ACCEPTED', 'REJECTED') AND e.fingerprint IS NOT NULL
+              ORDER BY e.exception_id",
+            ['bill' => (int) $bill['request_id'], 'cmp' => $this->ctx->cmpId, 'rev' => $revision],
+        ) as $row) {
+            $decided[(string) $row['fingerprint']] = $row;
+        }
 
         $matchId = (int) Db::insert('purchase_match_results', [
             'cmp_id'          => $this->ctx->cmpId,
             'fy_id'           => $this->ctx->fyId,
             'po_id'           => $bill['po_id'] === null ? null : (int) $bill['po_id'],
             'bill_request_id' => (int) $bill['request_id'],
+            'bill_revision'   => $revision,
             'policy_id'       => isset($policy['policy_id']) ? (int) $policy['policy_id'] : null,
             'verdict'         => $result['verdict'],
             'variances'       => $result['variances'],
@@ -280,8 +409,10 @@ final class ThreeWayMatchService
             'matched_by'      => $this->auth->uuid,
         ], 'match_id');
 
-        foreach ($result['exceptions'] as $exception) {
-            Db::insert('purchase_match_exceptions', [
+        foreach ($result['exceptions'] as $index => $exception) {
+            $fingerprint = self::fingerprint($exception);
+            $earlier = $decided[$fingerprint] ?? null;
+            $row = [
                 'match_id'       => $matchId,
                 'cmp_id'         => $this->ctx->cmpId,
                 'exception_kind' => $exception['exception_kind'],
@@ -290,12 +421,67 @@ final class ThreeWayMatchService
                 'receipt_value'  => $exception['receipt_value'] ?? null,
                 'bill_value'     => $exception['bill_value'] ?? null,
                 'variance_value' => $exception['variance_value'] ?? null,
-            ], 'exception_id');
+                'po_line_id'     => $exception['po_line_id'] ?? null,
+                'fingerprint'    => $fingerprint,
+            ];
+            if ($earlier !== null) {
+                $row += [
+                    'status'                    => $earlier['status'],
+                    'decided_by'                => $earlier['decided_by'],
+                    'decided_at'                => $earlier['decided_at'],
+                    'decision_note'             => $earlier['decision_note'],
+                    'carried_from_exception_id' => (int) $earlier['exception_id'],
+                ];
+                $result['exceptions'][$index]['status'] = $earlier['status'];
+                $result['exceptions'][$index]['carried_from_exception_id'] = (int) $earlier['exception_id'];
+            }
+            Db::insert('purchase_match_exceptions', $row, 'exception_id');
         }
 
         $result['match_id'] = $matchId;
 
         return $result;
+    }
+
+    /**
+     * The bill status a stored match leaves the bill in:
+     *   REJECTED   somebody rejected one of its exceptions — only Revise or Cancel remain
+     *   EXCEPTION  an exception is still open
+     *   MATCHED    nothing open: clean, within tolerance, or every exception accepted
+     */
+    public static function billStatusFor(int $matchId): string
+    {
+        $row = Db::first(
+            "SELECT COUNT(*) FILTER (WHERE status = 'REJECTED') AS rejected,
+                    COUNT(*) FILTER (WHERE status = 'OPEN') AS open
+               FROM purchase_match_exceptions WHERE match_id = :id",
+            ['id' => $matchId],
+        ) ?? [];
+        if ((int) ($row['rejected'] ?? 0) > 0) {
+            return 'REJECTED';
+        }
+
+        return (int) ($row['open'] ?? 0) > 0 ? 'EXCEPTION' : 'MATCHED';
+    }
+
+    /**
+     * What an exception found, as a key: its kind, the order line, and the values compared. Two
+     * runs that find the same thing on the same revision produce the same key.
+     *
+     * @param array<string, mixed> $exception
+     */
+    public static function fingerprint(array $exception): string
+    {
+        $value = static fn ($v) => $v === null ? '-' : number_format((float) $v, 4, '.', '');
+
+        return implode('|', [
+            (string) ($exception['exception_kind'] ?? ''),
+            (string) (int) ($exception['po_line_id'] ?? 0),
+            $value($exception['po_value'] ?? null),
+            $value($exception['receipt_value'] ?? null),
+            $value($exception['bill_value'] ?? null),
+            md5((string) ($exception['detail'] ?? '')),
+        ]);
     }
 
     /**
@@ -308,6 +494,11 @@ final class ThreeWayMatchService
      *
      * @return array{0: array<int, float>, 1: bool} received-by-line, and whether Inventory answered
      */
+    private static function money(float $value): string
+    {
+        return number_format($value, 2, '.', ',');
+    }
+
     private function receivedQuantities(int $poId): array
     {
         $ledger = (new ReceiptLedger($this->ctx, $this->auth))->forOrder($poId);
@@ -342,6 +533,22 @@ final class ThreeWayMatchService
         $rank = [self::MATCHED => 0, self::WITHIN_TOLERANCE => 1, self::REVIEW_REQUIRED => 2, self::BLOCKED => 3];
 
         return $rank[$candidate] > $rank[$current] ? $candidate : $current;
+    }
+
+    /**
+     * A bill line's amount after its own discount — as stored (BillService::normaliseLines), or
+     * from its quantity, rate and discount when an older row has none.
+     *
+     * @param array<string, mixed> $line
+     */
+    private static function netAmount(array $line): float
+    {
+        if (isset($line['amount']) && is_numeric($line['amount'])) {
+            return (float) $line['amount'];
+        }
+        $gross = (float) ($line['qty'] ?? 0) * (float) ($line['rate'] ?? 0);
+
+        return round($gross - $gross * (float) ($line['discount_pc'] ?? 0) / 100, 4);
     }
 
     private static function num(float $value): string
