@@ -13,11 +13,19 @@
  * deciding what somebody may open. Nothing from it is stored except the three
  * ids, plus two conveniences that live only in this browser: which company to
  * offer first, and the handful most recently opened.
+ *
+ * DISCOVERY IS NOT ACCESS. "Browse all workspace companies" lists every company of the
+ * person's workspaces from Manage's company registry, including ones they may not open in
+ * Purchases — listed, so nobody registers one twice. A company Manage marks as not open
+ * here (its list row's `can_open_in_current_app`, or the registry's status) shows the
+ * "Company Access Restricted" dialog with "Request access" instead of being chosen. The
+ * server still asks Manage, for Purchases, on every scoped request.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  ArrowLeft,
   Building2,
   Check,
   ChevronRight,
@@ -25,14 +33,61 @@ import {
   LogOut,
   Search,
   Star,
+  Users,
   X,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
 import { usePurchases } from '../context/PurchasesContext'
 import { fetchAllCompanies, fetchCompanyInfo } from '../services/manage'
-import type { CompanyInfo, CompanyOption } from '../services/manage'
+import type { CompanyInfo, CompanyListOption } from '../services/manage'
+// Module by module rather than the package index, so the access panels stay in the lazily
+// loaded Users & Access chunk.
+import { CompanyAccessBadge } from '../company-access/CompanyAccessBadge.tsx'
+import { CompanyDirectoryPicker } from '../company-access/CompanyDirectoryPicker.tsx'
+import { RestrictedCompanyDialog } from '../company-access/RestrictedCompanyDialog.tsx'
+import type { AccessStatus, DirectoryCompany } from '../company-access/companyRegistryClient.ts'
+import { COMPANY_REGISTRY_APP_NAME, companyRegistry } from '../services/companyRegistry'
 import './choose-company.css'
+
+/** A row of Manage's list, as the launcher's own option, from a workspace-directory company. */
+function fromDirectory(company: DirectoryCompany): CompanyListOption {
+  return {
+    cmpId: company.cmp_id,
+    name: company.legal_name,
+    shortName: null,
+    ownership: company.is_owner ? 'owner' : 'shared',
+    acsType: company.is_owner ? 1 : 0,
+    status: null,
+    appAccessStatus: company.access_status,
+    canOpenInCurrentApp: true,
+  }
+}
+
+/** A list row Manage marked as not open here, in the registry's shape — used only when the registry cannot be asked. */
+function restrictedRow(c: CompanyListOption): DirectoryCompany {
+  const status = (c.appAccessStatus ?? 'ACCESS_RESTRICTED') as AccessStatus
+  return {
+    canonical_company_id: c.cmpId,
+    cmp_id: c.cmpId,
+    legal_name: c.name,
+    display_name: c.name,
+    company_code: '',
+    company_status: 'active',
+    relationship: c.ownership === 'owner' ? 'owner' : 'member',
+    workspace: null,
+    is_owner: c.ownership === 'owner',
+    is_discoverable: true,
+    workspace_visibility: null,
+    app: 'purchases',
+    access_status: status,
+    can_open_in_current_app: false,
+    can_request_access: ['ACCESS_RESTRICTED', 'ACCESS_EXPIRED', 'ACCESS_REVOKED'].includes(status),
+    can_manage_access: false,
+    request: null,
+    entitlement_version: 0,
+  }
+}
 
 const DEFAULT_KEY = 'purchases:default-company'
 const RECENT_KEY = 'purchases:recent-companies'
@@ -72,11 +127,13 @@ export default function ChooseCompany() {
   const { scope, setCompanyScope } = usePurchases()
   const navigate = useNavigate()
 
-  const [companies, setCompanies] = useState<CompanyOption[] | null>(null)
+  const [companies, setCompanies] = useState<CompanyListOption[] | null>(null)
+  const [browsing, setBrowsing] = useState(false)
+  const [restricted, setRestricted] = useState<DirectoryCompany | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
 
-  const [chosen, setChosen] = useState<CompanyOption | null>(null)
+  const [chosen, setChosen] = useState<CompanyListOption | null>(null)
   const [info, setInfo] = useState<CompanyInfo | null>(null)
   const [loadingInfo, setLoadingInfo] = useState(false)
   const [fyId, setFyId] = useState<number | null>(null)
@@ -97,7 +154,7 @@ export default function ChooseCompany() {
         if (cancelled) return
         setCompanies(rows)
         // A list of one is not a choice worth making somebody click through.
-        if (rows.length === 1) setChosen(rows[0])
+        if (rows.length === 1 && rows[0].canOpenInCurrentApp !== false) setChosen(rows[0])
       })
       .catch((e: unknown) => {
         if (cancelled) return
@@ -155,6 +212,27 @@ export default function ChooseCompany() {
     navigate('/dashboard/overview')
   }, [chosen, fyId, boId, setCompanyScope, navigate])
 
+  /** Choosing a card: a company Manage will not open here for this person is explained, never chosen. */
+  const pick = useCallback((company: CompanyListOption) => {
+    if (company.canOpenInCurrentApp !== false) {
+      setChosen(company)
+      return
+    }
+    setChosen(null)
+    companyRegistry
+      .summary(company.cmpId)
+      .then(setRestricted)
+      .catch(() => setRestricted(restrictedRow(company)))
+  }, [])
+
+  /** From the workspace directory: only ever called for a company this person may open here. */
+  const pickFromDirectory = useCallback((company: DirectoryCompany) => {
+    const option = (companies ?? []).find((c) => c.cmpId === company.cmp_id) ?? fromDirectory(company)
+    setCompanies((prev) => (prev === null || prev.some((c) => c.cmpId === option.cmpId) ? prev : [...prev, option]))
+    setBrowsing(false)
+    setChosen(option)
+  }, [companies])
+
   const toggleDefault = useCallback((cmpId: number) => {
     setDefaultId((current) => {
       const next = current === cmpId ? null : cmpId
@@ -180,6 +258,7 @@ export default function ChooseCompany() {
   }, [companies, query, defaultId])
 
   const owned = (companies ?? []).filter((c) => c.ownership !== 'shared').length
+  const openable = (companies ?? []).filter((c) => c.canOpenInCurrentApp !== false).length
   const recentRows = useMemo(
     () => recent.filter((r) => (companies ?? []).some((c) => c.cmpId === r.cmpId)),
     [recent, companies],
@@ -221,13 +300,43 @@ export default function ChooseCompany() {
               autoFocus
             />
           </div>
+
+          <div style={{ marginTop: '0.75rem' }}>
+            <button
+              type="button"
+              className="launcher__btn"
+              aria-pressed={browsing}
+              onClick={() => setBrowsing((b) => !b)}
+              title="Every company registered in your workspaces, with your access in Purchases"
+            >
+              {browsing ? <ArrowLeft size={15} aria-hidden /> : <Users size={15} aria-hidden />}
+              {browsing ? 'Back to your companies' : 'Browse all workspace companies'}
+            </button>
+          </div>
         </div>
 
-        {!loading && (companies ?? []).length > 0 && (
+        {browsing && (
+          <section className="launcher__section">
+            <div className="launcher__section-head">
+              <h2>Workspace companies</h2>
+            </div>
+            <div className="launcher__note">
+              <CompanyDirectoryPicker
+                client={companyRegistry}
+                appName={COMPANY_REGISTRY_APP_NAME}
+                title={null}
+                selectedCmpId={chosen?.cmpId ?? scope?.cmp_id ?? null}
+                onOpen={pickFromDirectory}
+              />
+            </div>
+          </section>
+        )}
+
+        {!browsing && !loading && (companies ?? []).length > 0 && (
           <div className="launcher__stats">
             <div className="launcher__stat">
-              <strong>{(companies ?? []).length}</strong>
-              <span>{(companies ?? []).length === 1 ? 'Company' : 'Companies'} you can open</span>
+              <strong>{openable}</strong>
+              <span>{openable === 1 ? 'Company' : 'Companies'} you can open</span>
             </div>
             <div className="launcher__stat">
               <strong>{owned}</strong>
@@ -249,7 +358,7 @@ export default function ChooseCompany() {
           </div>
         )}
 
-        {recentRows.length > 0 && query.trim() === '' && (
+        {!browsing && recentRows.length > 0 && query.trim() === '' && (
           <section className="launcher__section">
             <div className="launcher__section-head">
               <h2>
@@ -267,7 +376,7 @@ export default function ChooseCompany() {
                     company={company}
                     selected={chosen?.cmpId === company.cmpId}
                     isDefault={defaultId === company.cmpId}
-                    onPick={() => setChosen(company)}
+                    onPick={() => pick(company)}
                     onToggleDefault={() => toggleDefault(company.cmpId)}
                   />
                 )
@@ -276,6 +385,7 @@ export default function ChooseCompany() {
           </section>
         )}
 
+        {!browsing && (
         <section className="launcher__section">
           <div className="launcher__section-head">
             <h2>{query.trim() === '' ? 'All companies' : `Matching “${query.trim()}”`}</h2>
@@ -297,12 +407,18 @@ export default function ChooseCompany() {
               </strong>
               {(companies ?? []).length === 0 ? (
                 <>
-                  Aicountly Manage lists no companies for this sign-in. Create one in Manage, or ask
-                  whoever owns the company to give you access — this product cannot grant it, and it
-                  would be wrong if it could.
+                  Aicountly Manage lists no companies for this sign-in. Search your workspace companies
+                  first (Browse all workspace companies, above) — a company someone in your workspace
+                  already registered is listed there even before you can open it, so it is never
+                  registered twice. Otherwise create one in Manage, or ask whoever owns the company to
+                  give you access.
                 </>
               ) : (
-                <>Try part of the company name, or clear the search to see all of them.</>
+                <>
+                  Try part of the company name, or clear the search to see all of them. Not one of
+                  yours? Search your workspace companies first (Browse all workspace companies, above)
+                  before creating it.
+                </>
               )}
             </div>
           ) : (
@@ -313,13 +429,14 @@ export default function ChooseCompany() {
                   company={company}
                   selected={chosen?.cmpId === company.cmpId}
                   isDefault={defaultId === company.cmpId}
-                  onPick={() => setChosen(company)}
+                  onPick={() => pick(company)}
                   onToggleDefault={() => toggleDefault(company.cmpId)}
                 />
               ))}
             </div>
           )}
         </section>
+        )}
 
         {chosen !== null && (
           <div className="launcher__confirm" ref={confirmRef}>
@@ -391,6 +508,20 @@ export default function ChooseCompany() {
         )}
       </div>
 
+      {restricted !== null && (
+        <RestrictedCompanyDialog
+          client={companyRegistry}
+          company={restricted}
+          appName={COMPANY_REGISTRY_APP_NAME}
+          onClose={() => setRestricted(null)}
+          onRequested={(next) =>
+            setCompanies((prev) =>
+              prev === null ? prev : prev.map((c) => (c.cmpId === next.cmp_id ? { ...c, appAccessStatus: next.access_status } : c)),
+            )
+          }
+        />
+      )}
+
       <footer className="launcher__foot">
         <span>Companies, branches and financial years are managed in Aicountly Manage.</span>
         <span>Aicountly Purchase</span>
@@ -406,7 +537,7 @@ function CompanyCard({
   onPick,
   onToggleDefault,
 }: {
-  company: CompanyOption
+  company: CompanyListOption
   selected: boolean
   isDefault: boolean
   onPick: () => void
@@ -430,6 +561,7 @@ function CompanyCard({
             {company.ownership === 'shared' ? 'Shared with you' : 'You own this'}
           </span>
           {isDefault && <span className="launcher__tag launcher__tag--default">Opens first</span>}
+          {company.canOpenInCurrentApp === false && <CompanyAccessBadge status={company.appAccessStatus} />}
         </span>
       </button>
 

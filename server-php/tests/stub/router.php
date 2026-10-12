@@ -498,6 +498,23 @@ if (str_contains($path, '/companyinfo')) {
         echo json_encode(['success' => false, 'message' => 'Company not found or access denied']);
         exit;
     }
+    // Company registry: 4033 is a workspace company this session may SEE but not open in
+    // Purchases. Manage answers that only to a caller naming the product (?app=, or the
+    // X-Saas-Origin / X-Source-App header; `purchase` is Manage's alias); without it companyinfo is
+    // company membership exactly as before.
+    $infoApp = strtolower(trim((string) ($_GET['app'] ?? $headers['x-saas-origin'] ?? $headers['x-source-app'] ?? '')));
+    if ($cmpId === 4033 && in_array($infoApp, ['purchases', 'purchase'], true)) {
+        http_response_code(403);
+        $refusal = 'You can see this company, but you do not have access to it in Aicountly Purchases. Ask the company owner for access.';
+        echo json_encode([
+            'success' => false,
+            'status'  => 0,
+            'code'    => 'COMPANY_ACCESS_REQUIRED',
+            'message' => $refusal,
+            'error'   => ['code' => 'COMPANY_ACCESS_REQUIRED', 'message' => $refusal, 'details' => ['cmp_id' => 4033, 'app' => 'purchases']],
+        ]);
+        exit;
+    }
 
     $company = [
         'comp_id' => $cmpId,

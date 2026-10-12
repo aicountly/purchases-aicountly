@@ -164,6 +164,18 @@ final class Context
             // (F424, F450). Anything Manage did not clearly say — no answer, a 5xx, a page that is
             // not its JSON — stays 503: unreachable is not "allowed", and not "refused" either.
             if (in_array((int) $result['status'], [401, 403, 404], true) && is_array($result['body'] ?? null)) {
+                // Company registry: Manage is asked for THIS product (ApiClient sends X-Saas-Origin /
+                // X-Source-App = APP_PRODUCT_KEY, 'purchases'), and answers 403 COMPANY_ACCESS_REQUIRED
+                // to a workspace member who may see the company but not open it in Purchases. Still a
+                // denial, same code; Manage's reason rides along so the browser can offer "Request access".
+                $manageCode = (string) ($result['body']['code'] ?? $result['body']['error']['code'] ?? '');
+                if ((int) $result['status'] === 403 && $manageCode === 'COMPANY_ACCESS_REQUIRED') {
+                    Http::error(403, 'company_access_denied', 'You can see this company, but you do not have access to it in Purchases. Ask the company owner for access, or choose another company.', [
+                        'retryable'   => false,
+                        'manage_code' => 'COMPANY_ACCESS_REQUIRED',
+                        'cmp_id'      => $this->cmpId,
+                    ]);
+                }
                 Http::error(403, 'company_access_denied', 'You do not have access to this company. Ask its owner to add you in Manage, or choose another company.', ['retryable' => false]);
             }
             Http::error(503, 'context_unavailable', 'Cannot confirm company access right now. Please retry.', ['retryable' => true]);

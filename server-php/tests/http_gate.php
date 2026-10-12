@@ -263,6 +263,23 @@ check('F424/F450: a company Manage says the caller may not open is 403 company_a
     }
 });
 
+check('Company registry: Manage is asked for Purchases, and a company visible but not granted in Purchases is 403 company_access_denied with Manage\'s reason', function () use ($api, $owner) {
+    Context::forgetVerified();
+    $r = call('GET', $api . '/v1/purchase-orders?cmp_id=4033&fy_id=6&bo_id=0', $owner);
+    $details = $r['body']['error']['details'] ?? [];
+    if ($r['status'] !== 403 || ($r['body']['error']['code'] ?? null) !== 'company_access_denied'
+        || ($details['manage_code'] ?? null) !== 'COMPANY_ACCESS_REQUIRED' || ($details['retryable'] ?? null) !== false) {
+        throw new \RuntimeException('cmp 4033 -> ' . $r['status'] . ' ' . $r['raw']);
+    }
+    $log = sys_get_temp_dir() . '/stub-requests.jsonl';
+    $logged = is_file($log) ? array_map(static fn (string $l) => (array) json_decode($l, true), array_filter(explode("\n", (string) file_get_contents($log)))) : [];
+    $asked = array_values(array_filter($logged, static fn (array $q) => str_contains((string) ($q['path'] ?? ''), '/companyinfo') && (string) ($q['query']['comp_id'] ?? '') === '4033'));
+    $last = end($asked) ?: [];
+    if (($last['headers']['x-saas-origin'] ?? null) !== 'purchases' || ($last['headers']['x-source-app'] ?? null) !== 'purchases') {
+        throw new \RuntimeException('companyinfo did not name the product: ' . json_encode($last['headers'] ?? null));
+    }
+});
+
 check('Manage down, or answering what is not its JSON: 503 context_unavailable, retryable — never "allowed"', function () use ($api, $owner) {
     foreach ([['status' => 503], ['status' => 502, 'html' => true], ['status' => 404, 'html' => true]] as $shape) {
         stubControl(['path' => '/companyinfo'] + $shape);

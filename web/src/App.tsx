@@ -17,6 +17,7 @@ import Claims from './pages/Claims'
 import Suppliers from './pages/Suppliers'
 import Approvals from './pages/Approvals'
 import Settings from './pages/Settings'
+import { CompanyAccessRequired } from './shell/CompanyAccessRequired'
 import { Button, Notice } from './ui'
 import { initAnalytics, trackPageView } from './utils/analytics'
 
@@ -51,6 +52,9 @@ initAnalytics()
  */
 const Access = lazy(() => import('./pages/access'))
 
+/** Users & Access (company access, Manage's registry): an administration screen, loaded on demand like Access. */
+const UsersAccess = lazy(() => import('./pages/UsersAccess'))
+
 function PageViews() {
   const location = useLocation()
   useEffect(() => {
@@ -67,11 +71,16 @@ function PageViews() {
  * would be a screen full of 400s. Asking once, up front, is kinder than that.
  */
 function RequireScope({ children }: { children: React.ReactNode }) {
-  const { session, loading, error, errorCode, setCompanyScope, reload } = usePurchases()
+  const { scope, session, loading, error, errorCode, errorReason, setCompanyScope, reload } = usePurchases()
 
   // The missing-scope case never reaches here: Framed sends it to the launcher
   // before the application frame is drawn at all.
   if (loading && !session) return <p style={{ color: 'var(--muted)' }}>Opening…</p>
+  if (error && errorCode === 'company_access_denied' && errorReason === 'COMPANY_ACCESS_REQUIRED' && scope) {
+    // Manage's company registry: the company is in this person's workspace, but not granted to them
+    // in Purchases. Still a definite no — the way forward is asking the owner, not retrying.
+    return <CompanyAccessRequired cmpId={scope.cmp_id} message={error} onChooseAnother={() => setCompanyScope(null)} />
+  }
   if (error && (errorCode === 'company_access_denied' || errorCode === 'no_purchases_access')) {
     // A definite no — removed from the company, another tenant's, or no Purchases seat. Retrying
     // will not change it; choosing another company, or asking the owner, will (F450, F310).
@@ -211,6 +220,18 @@ export default function App() {
                 <RequireScope>
                   <Suspense fallback={<p style={{ color: 'var(--muted)' }}>Opening…</p>}>
                     <Access />
+                  </Suspense>
+                </RequireScope>
+              }
+            />
+
+            {/* Company access (Manage's company registry), beside the Purchases profiles above. */}
+            <Route
+              path="users-access"
+              element={
+                <RequireScope>
+                  <Suspense fallback={<p style={{ color: 'var(--muted)' }}>Opening…</p>}>
+                    <UsersAccess />
                   </Suspense>
                 </RequireScope>
               }
