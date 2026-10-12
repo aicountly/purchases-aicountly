@@ -1759,7 +1759,7 @@ check('a bill is posted, read back and revised in the year and branch it was ent
 });
 
 // ---------------------------------------------------------------------------
-echo "\nLaunch 2026-10-01 — PU3: a product's key acts only for its companies, and only reads unless granted\n";
+echo "\nLaunch 2026-10-01 — PU3: a product's key acts for any company (owner decision 2026-10-12), and only reads unless granted\n";
 
 /** What Auth::resolve() builds for a product's X-Service-Key: the product, an actor it names, no session. */
 function productKey(string $app = 'insights'): Auth
@@ -1773,41 +1773,57 @@ function productKey(string $app = 'insights'): Auth
     return $auth;
 }
 
-check('a product key opens only the companies it is bound to, and reads but cannot write, approve or administer', function () use ($ctx, $owner) {
+check('a product key opens any company, and reads but cannot write, approve or administer', function () use ($ctx, $owner) {
     reset();
     $po = orderOf($ctx, $owner);
     $key = productKey();
 
-    $refusal = refused(fn () => Context::of(88, 6, 0)->assertAllowed($key), 'SERVICE_KEY_COMPANIES', 'a key bound to no company');
-    same(403, $refusal['status'], 'opens none');
-    [$status] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key);
-    same(403, $status, 'not even to read');
-
-    putenv('SERVICE_KEY_COMPANIES=insights:88|94,billing:91');
+    // Company scope is not configured per deployment (owner decision 2026-10-12): any real company.
+    Context::of(88, 6, 0)->assertAllowed($key);
+    Context::of(91, 6, 0)->assertAllowed($key);
+    $none = refused(fn () => Context::of(0, 6, 0)->assertAllowed($key), 'must name a company', 'a key naming no company');
+    same(403, $none['status'], 'but only a real company id');
     try {
-        Context::of(88, 6, 0)->assertAllowed($key);
         [$status, $payload] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key);
-        same(200, $status, 'its own company\'s orders are readable');
+        same(200, $status, 'a company\'s orders are readable');
         same((int) $po['po_id'], (int) ($payload['data'][0]['po_id'] ?? 0), 'and read');
-        [$status] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key, ['cmp_id' => '91', 'fy_id' => '6', 'bo_id' => '0']);
-        same(403, $status, 'another company\'s are not, though another product may hold that one');
+        [$status, $payload] = endpoint([Controllers\PurchaseOrdersController::class, 'index'], $key, ['cmp_id' => '91', 'fy_id' => '6', 'bo_id' => '0']);
+        same(200, $status, 'another company opens too, with no list of companies to configure');
+        same([], array_values(array_filter((array) ($payload['data'] ?? []), static fn ($row) => (int) ($row['po_id'] ?? 0) === (int) $po['po_id'])), 'and shows only that company\'s rows, not company 88\'s order');
 
         same(ServiceKeys::DEFAULT_PERMISSIONS, Permissions::granted($ctx, $key), 'unlisted, a key only reads');
         $write = refused(fn () => (new PurchaseOrderService($ctx, $key))->create(['supplier_account_id' => 601, 'supplier_name' => 'X', 'po_date' => '2026-09-01', 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 1]]]), 'SERVICE_KEY_PERMISSIONS', 'a write');
         same(403, $write['status'], 'refused, naming the setting');
+        $otherWrite = refused(fn () => (new PurchaseOrderService(Context::of(91, 6, 0), $key))->create(['supplier_account_id' => 601, 'supplier_name' => 'X', 'po_date' => '2026-09-01', 'lines' => [['item_id' => 201, 'unit_id' => 1, 'ordered_qty' => 1, 'agreed_rate' => 1]]]), 'SERVICE_KEY_PERMISSIONS', 'a write in another company');
+        same(403, $otherWrite['status'], 'any company does not mean any permission');
 
         putenv('SERVICE_KEY_PERMISSIONS=insights:po.view|po.create|access.manage|po.approve|bill.post|made.up');
         Permissions::forget();
         same(['po.view', 'po.create'], Permissions::granted($ctx, $key), 'granted more, it holds real codes only and never administration, approval or posting');
         [$status] = endpoint([Controllers\AccessController::class, 'profiles'], $key);
         same(403, $status, 'access administration stays closed to a key');
+        [$status] = endpoint([Controllers\AccessController::class, 'profiles'], $key, ['cmp_id' => '91', 'fy_id' => '6', 'bo_id' => '0']);
+        same(403, $status, 'in every company');
         same([], Permissions::grantable($ctx, $key), 'and a key can grant nobody anything');
         refused(fn () => (new PurchaseOrderService($ctx, $key))->cancel((int) $po['po_id'], ['reason' => 'test']), 'service key is not allowed', 'nor cancel an order');
         refused(fn () => (new PurchaseOrderService($ctx, $key))->decide((int) $po['po_id'], 'approve', []), 'service key is not allowed', 'nor approve one');
     } finally {
-        putenv('SERVICE_KEY_COMPANIES');
         putenv('SERVICE_KEY_PERMISSIONS');
         Permissions::forget();
+    }
+
+    // Opening every company is not opening to every caller: a key this deployment does not hold is no identity.
+    putenv('SERVICE_KEYS=insights:k-insights-0001');
+    try {
+        $_SERVER['HTTP_X_SERVICE_KEY'] = 'not-a-key';
+        same(null, Auth::resolve(), 'an unknown key resolves to nobody');
+        $_GET = ['cmp_id' => '91', 'fy_id' => '6', 'bo_id' => '0'];
+        Auth::adopt(null);
+        $unknown = refused(fn () => Auth::require(), '', 'an unknown key, for any company');
+        same(401, $unknown['status'], 'and is turned away before any company is considered');
+    } finally {
+        unset($_SERVER['HTTP_X_SERVICE_KEY']);
+        putenv('SERVICE_KEYS');
     }
 });
 

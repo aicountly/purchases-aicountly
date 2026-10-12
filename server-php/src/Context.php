@@ -84,10 +84,12 @@ final class Context
         if ($auth->isService()) {
             // A service key is issued to a product, not to a person, and the owning product
             // has already checked the human behind it — there is no session here to ask Manage
-            // with. What it must still not do is act for a company outside the key's binding,
-            // and until this check existed nothing stopped it: any key opened any company.
+            // with. Company scope is not configured per deployment (owner decision 2026-10-12):
+            // a key acts for any company, still limited by the routes that accept it and its
+            // permissions (ServiceKeys::permissions — read-only unless granted, never NEVER).
+            // Only a real company id is accepted.
             if (!ServiceKeys::allowsCompany($auth->sourceApp, $this->cmpId)) {
-                Http::forbidden('The ' . $auth->sourceApp . ' service key is not allowed to act for this company (SERVICE_KEY_COMPANIES).');
+                Http::forbidden('A service key must name a company (cmp_id).');
             }
 
             return;
