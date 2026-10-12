@@ -181,8 +181,6 @@ jobs:
           SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
           SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
           SSH_USER: ${{ secrets.PROD_SSH_USER }}
-          KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
-          ALLOW_KEYSCAN: ${{ vars.DEPLOY_ALLOW_KEYSCAN }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
@@ -204,28 +202,15 @@ jobs:
           echo "Public key that must appear in the cPanel user's ~/.ssh/authorized_keys:"
           sed 's/^/    /' ~/.ssh/deploy_key.pub
 
-          # E8-OPS (F096): the host key is PINNED. PROD_SSH_KNOWN_HOSTS holds the server's known_hosts
-          # line(s) (ssh-keyscan -p <port> <host>, checked against the host's own fingerprint once, by a
-          # person). Trusting whatever answers on first contact (keyscan) is allowed only when the repo
-          # variable DEPLOY_ALLOW_KEYSCAN is true, and then the fingerprint is printed for comparison.
-          if [ -n "$KNOWN_HOSTS" ]; then
-            printf '%s\n' "$KNOWN_HOSTS" | sed 's/\r$//' > ~/.ssh/known_hosts
-            echo "Using the pinned host key(s) from PROD_SSH_KNOWN_HOSTS:"
-            ssh-keygen -l -f ~/.ssh/known_hosts | sed 's/^/    /'
-          elif [ "$ALLOW_KEYSCAN" != "false" ]; then
-            echo "::warning::PROD_SSH_KNOWN_HOSTS is not set; trusting the key the host presents now, as deploys did before the pin. Store it in PROD_SSH_KNOWN_HOSTS to pin it (DEPLOY_ALLOW_KEYSCAN=false refuses instead)."
-            if ! ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
-              echo "::error::ssh-keyscan could not reach the host on the configured port."
-              sed 's/^/    /' /tmp/keyscan.err
-              exit 1
-            fi
-            ssh-keygen -l -f ~/.ssh/known_hosts | sed 's/^/    /'
-          else
-            echo "::error::PROD_SSH_KNOWN_HOSTS is not set and DEPLOY_ALLOW_KEYSCAN=false refuses an unpinned host key. Store the server's known_hosts line(s) in PROD_SSH_KNOWN_HOSTS (ssh-keyscan -p <port> <host>, verified against the host), or unset DEPLOY_ALLOW_KEYSCAN."
+          # Trust the host key the server presents (scanned on each run).
+          if ! ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
+            echo "::error::ssh-keyscan could not reach the host on the configured port."
+            sed 's/^/    /' /tmp/keyscan.err
             exit 1
           fi
+          ssh-keygen -l -f ~/.ssh/known_hosts | sed 's/^/    /'
           if [ ! -s ~/.ssh/known_hosts ]; then
-            echo "::error::No SSH host key to trust. Check PROD_SSH_KNOWN_HOSTS / PROD_SSH_HOST."
+            echo "::error::No SSH host key to trust. Check PROD_SSH_HOST."
             exit 1
           fi
           chmod 600 ~/.ssh/known_hosts

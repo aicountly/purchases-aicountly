@@ -14,7 +14,7 @@ STATIC, OPERATIONALLY-PENDING (an operator step; prepared, not performed).
 | Finding | Status | What was done / evidence |
 |---|---|---|
 | A24 | implemented | console ops/estate/contract-graph.py (routes called vs served, cycles books<->inventory and pay<->sales, deploy order, reviewed unmatched set; estate test 7). scripts/ops/receivers.txt + preflight-receivers.sh in pay/sales/purchases/billing/pos/books/Inventory deploys: a receiver that does not serve a needed route stops the deploy unless preflight_override_reason is given (kit test EXECUTED, self-validating 404 control). |
-| F096 | implemented | Staged schema-before-code release (bin/ops/release.sh: stage outside docroot, pre-migration snapshot, migrate from stage, switch, jobs) in pay/sales/purchases/billing/pos/books/Inventory; production deploys main-only, bound to GitHub environments, cancel-in-progress false, host keys pinned (StrictHostKeyChecking=yes, appleboy fingerprints) in 16+ repos. Kit/release tests EXECUTED (router 27-29/0, books 17/0, inventory 16/0). Environment reviewers and *_SSH_KNOWN_HOSTS secrets are operator settings. |
+| F096 | implemented | Staged schema-before-code release (bin/ops/release.sh: stage outside docroot, pre-migration snapshot, migrate from stage, switch, jobs) in pay/sales/purchases/billing/pos/books/Inventory; production deploys main-only, bound to GitHub environments, cancel-in-progress false, host keys pinned (StrictHostKeyChecking=yes, appleboy fingerprints) in 16+ repos — pin removed 2026-10-12 (owner decision); host keys are scanned on each run. Kit/release tests EXECUTED (router 27-29/0, books 17/0, inventory 16/0). Environment reviewers are operator settings. |
 | F159 | implemented | bin/db-snapshot.php + kit snapshot-lib (pg_dump --snapshot, manifest with exact row counts, sha256, 0700, retention 14) before every migration; restore-drill.php (drill/restore-named targets only). EXECUTED in kit/estate tests (tampered dump refused, populated drill). RPO/RTO sign-off operator. |
 | F160 | implemented | Deploys install the scheduler (kit install-jobs.sh marker blocks from bin/ops/jobs.txt; legacy lines removed) for pay, sales, purchases, billing, pos, books, Inventory, pulse; health reports job states (running/failing/stale/never_ran/scheduled). |
 | F162 | implemented | Health reports revision (compared by post-deploy), job heartbeats and ready; Console Cron Job Monitor gets heartbeats (migration 059 registers the product jobs). Alert routing is an operator setting. |
@@ -33,8 +33,9 @@ STATIC, OPERATIONALLY-PENDING (an operator step; prepared, not performed).
 ## Operator steps this package leaves (none performed here)
 
 * GitHub: set required reviewers and the deployment-branch rule on the `production` / `sandbox`
-  environments; store each product's `*_SSH_KNOWN_HOSTS` (and `*_SSH_FINGERPRINT` for appleboy
-  actions) — deploys refuse to trust an unpinned host key unless `DEPLOY_ALLOW_KEYSCAN=true`.
+  environments.
+  (Host-key pinning through `*_SSH_KNOWN_HOSTS` / `*_SSH_FINGERPRINT` was removed on 2026-10-12 at the
+  owner's decision: deploys scan and trust the host key the server presents.)
 * Deploy receivers before their consumers (the receiver preflight stops a deploy otherwise; the order
   is in `console-react-app/ops/estate/CONTRACT_GRAPH.md`).
 * A08: access-log review, rotation in the documented order, provider revocation (Alankit), evidence in
