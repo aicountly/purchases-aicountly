@@ -12,22 +12,20 @@ namespace Aicountly\Api;
  * over enough requests, its content.
  *
  * A key proves WHICH PRODUCT is calling. It does not make that product the owner of every
- * company with every permission — which is what it was until October 2026: a configured key
- * skipped the Manage check (Context::assertAllowed) and held every permission
- * (Permissions::allows), so one leaked key opened every company's procurement, approvals and
- * access administration. Two settings now bound it, the fleet pattern (sales-aicountly 691c407,
- * crm-aicountly ServiceKeys::allowsCompany), stricter here on companies:
- *
- *   SERVICE_KEY_COMPANIES=insights:12|15
- *        the Manage company ids a product key may act for. REQUIRED: a product with no entry
- *        may act for no company at all — there is no session to ask Manage with, so the
- *        binding is the only tenant check a key has. There is no wildcard.
+ * permission — which is what it was until October 2026: a configured key skipped the Manage
+ * check (Context::assertAllowed) and held every permission (Permissions::allows), so one leaked
+ * key could also administer access, approve and post. One setting now bounds what it may do:
  *
  *   SERVICE_KEY_PERMISSIONS=insights:po.view|reports.view
  *        what a product key may do, as this product's permission codes. A product NOT listed
  *        is READ-ONLY (DEFAULT_PERMISSIONS). Codes this product does not define are dropped, and
  *        NEVER is removed whatever is listed: administration, and every decision segregation of
  *        duties reserves for a person.
+ *
+ * COMPANY SCOPE is not configured per deployment (owner decision 2026-10-12): a product key acts
+ * for any company (any cmp_id > 0). There used to be a per-deployment company allow-list; it was
+ * removed. A key is still limited by the routes that accept it and by the permissions above, and
+ * every query stays scoped to the one company the request names.
  *
  * No product calls Purchases with a key today (Email, Insights and Connect send the person's own
  * session), so these bounds break no caller; they decide what a key could do the day one is set.
@@ -69,21 +67,15 @@ final class ServiceKeys
         return null;
     }
 
-    /** Whether SERVICE_KEY_COMPANIES names any company for this product at all. */
-    public static function hasCompanyBinding(string $app): bool
-    {
-        return self::listFor('SERVICE_KEY_COMPANIES', $app) !== null;
-    }
-
-    /** Whether a product key may act for this company: only one SERVICE_KEY_COMPANIES lists for it. */
+    /**
+     * Whether a product key may act for this company: any real company (cmp_id > 0).
+     *
+     * Company scope is not configured per deployment (owner decision 2026-10-12); a key is
+     * bounded by its routes and permissions, not by a list of companies.
+     */
     public static function allowsCompany(string $app, int $cmpId): bool
     {
-        $ids = self::listFor('SERVICE_KEY_COMPANIES', $app);
-        if ($ids === null || $cmpId <= 0) {
-            return false;
-        }
-
-        return in_array($cmpId, array_map('intval', array_filter($ids, static fn (string $v) => ctype_digit($v))), true);
+        return $cmpId > 0;
     }
 
     /**

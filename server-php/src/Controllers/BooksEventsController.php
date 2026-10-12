@@ -7,15 +7,15 @@ namespace Aicountly\Api\Controllers;
 use Aicountly\Api\Auth;
 use Aicountly\Api\Domain\BooksVoucherEvents;
 use Aicountly\Api\Http;
-use Aicountly\Api\ServiceKeys;
 use Aicountly\Api\Support\BooksEventSignature;
 
 /**
  * POST /api/v1/integration/books/voucher-events — Books tells us it cancelled or edited a voucher
  * it holds for one of our bills (E8-BK-POST A16). Books only: the X-Service-Key must resolve to `books`
  * (SERVICE_KEYS=books:<key>) AND the body must carry Books' signature (BooksEventSignature). The
- * company is the event's, checked against the key's company scope; the document is found by the
- * Books voucher id WE stored for that company, never by an id taken on trust.
+ * company is the event's (any company: a key's company scope is not configured per deployment,
+ * owner decision 2026-10-12); the document is found by the Books voucher id WE stored for that
+ * company, never by an id taken on trust.
  *
  * Answers {data: {status: applied|ignored, reference, reason?}} — Books records a delivery only
  * with a reference, and redelivers (same event id) until it gets one.
@@ -50,11 +50,8 @@ final class BooksEventsController extends Controller
         }
         // Books keeps every company's accounts in this deployment, and the event is signed with the
         // secret only Books holds; it touches only a bill WE stored against that company and voucher.
-        // So the company binding narrows Books when it is configured, and is not required for this
-        // one endpoint (every other service route still needs SERVICE_KEY_COMPANIES).
-        if (ServiceKeys::hasCompanyBinding('books') && !ServiceKeys::allowsCompany('books', $cmpId)) {
-            Http::forbidden('The books service key is not allowed to act for this company.');
-        }
+        // Company scope is not configured per deployment (owner decision 2026-10-12): the key acts
+        // for any company (cmp_id > 0, checked above).
 
         Http::data(BooksVoucherEvents::apply($event, $auth));
     }

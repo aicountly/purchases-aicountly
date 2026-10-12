@@ -191,10 +191,14 @@ was lost would be recorded twice.
 
 Every caller today — Email, Insights, Connect — sends the **person's own session**, and gets
 exactly that person's company access and permissions. A product key (`SERVICE_KEYS`) is bounded
-(`ServiceKeys`): it acts only for the companies `SERVICE_KEY_COMPANIES` lists for it (none by
-default — a key has no session to ask Manage with), it only reads unless
-`SERVICE_KEY_PERMISSIONS` grants more, and it never holds administration, an approval, match
-resolution or anything that posts to Books, whatever is listed.
+(`ServiceKeys`): it only reads unless `SERVICE_KEY_PERMISSIONS` grants more, and it never holds
+administration, an approval, match resolution or anything that posts to Books, whatever is listed.
+Company scope is not configured per deployment: a key acts for any company (`cmp_id` > 0), and
+every query stays scoped to the one company the request names.
+
+*2026-10-12, owner decision:* the per-deployment company allow-list for product keys
+(`SERVICE_KEY_COMPANIES`) was removed. Key authentication, the routes that accept a key and the
+permission bounds above are unchanged.
 
 ## Why there is no reconciliation cron
 
