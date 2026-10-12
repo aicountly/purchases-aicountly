@@ -245,6 +245,10 @@ jobs:
             PubkeyAcceptedAlgorithms +ssh-rsa
             HostKeyAlgorithms +ssh-rsa
             BatchMode yes
+            # A long silent step (the pre-migration pg_dump snapshot) looked idle and the host's firewall
+            # dropped the session ("client_loop: send disconnect: Broken pipe"); keepalives prevent it.
+            ServerAliveInterval 30
+            ServerAliveCountMax 20
           CFG
           chmod 600 ~/.ssh/config
 
