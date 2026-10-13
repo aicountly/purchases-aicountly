@@ -13,8 +13,36 @@
  */
 
 import { api } from './api'
-import { companyListTotal, parseCompanyInfo, parseCompanyList } from '../company/manageShapes'
+import { companyListTotal, extractCompanyRows, parseCompanyInfo, parseCompanyRow } from '../company/manageShapes'
 import type { CompanyInfo, CompanyOption } from '../company/manageShapes'
+
+/**
+ * A company row plus what Manage says about opening it IN PURCHASES.
+ *
+ * Manage adds `app_access_status` / `can_open_in_current_app` to its list rows when the
+ * caller names the product — this API's ManageClient sends `X-Saas-Origin: purchases` on
+ * every call, so the relayed rows carry them. Absent (an older Manage) means unknown: the
+ * row is treated as before, and the server still decides on open.
+ */
+export interface CompanyListOption extends CompanyOption {
+  appAccessStatus: string | null
+  /** false = visible in the workspace but not open to this person in Purchases. null = not reported. */
+  canOpenInCurrentApp: boolean | null
+}
+
+function listOptions(body: unknown): CompanyListOption[] {
+  const seen = new Set<number>()
+  const out: CompanyListOption[] = []
+  for (const row of extractCompanyRows(body)) {
+    const c = parseCompanyRow(row)
+    if (!c || seen.has(c.cmpId)) continue
+    seen.add(c.cmpId)
+    const status = typeof row.app_access_status === 'string' ? row.app_access_status : null
+    const canOpen = typeof row.can_open_in_current_app === 'boolean' ? row.can_open_in_current_app : null
+    out.push({ ...c, appAccessStatus: status, canOpenInCurrentApp: canOpen })
+  }
+  return out
+}
 
 const PER_PAGE = 100
 const MAX_PAGES = 20
@@ -26,8 +54,8 @@ const MAX_PAGES = 20
  * single unbounded response is how that person's switcher times out. MAX_PAGES
  * bounds it so a malformed `total` cannot spin forever.
  */
-export async function fetchAllCompanies(signal?: AbortSignal): Promise<CompanyOption[]> {
-  const merged: CompanyOption[] = []
+export async function fetchAllCompanies(signal?: AbortSignal): Promise<CompanyListOption[]> {
+  const merged: CompanyListOption[] = []
   const seen = new Set<number>()
   let reportedTotal: number | null = null
 
@@ -38,7 +66,7 @@ export async function fetchAllCompanies(signal?: AbortSignal): Promise<CompanyOp
       per_page: PER_PAGE,
     }, signal)
 
-    const rows = parseCompanyList(body)
+    const rows = listOptions(body)
     if (reportedTotal === null) reportedTotal = companyListTotal(body, rows)
 
     for (const row of rows) {

@@ -39,6 +39,11 @@ interface PurchasesContextValue {
   error: string | null
   /** Why opening the company failed: company_access_denied (Manage said no), context_unavailable (could not ask), … */
   errorCode: string | null
+  /**
+   * Manage's own reason behind a company_access_denied, when it gave one: COMPANY_ACCESS_REQUIRED
+   * = the company is visible in the person's workspace but not granted to them in Purchases.
+   */
+  errorReason: string | null
   reload: () => void
 }
 
@@ -66,6 +71,7 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [errorCode, setErrorCode] = useState<string | null>(null)
+  const [errorReason, setErrorReason] = useState<string | null>(null)
   const [reloadToken, setReloadToken] = useState(0)
 
   // The API module reads the scope on every call, so it is registered as soon
@@ -99,6 +105,7 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
     setLoading(true)
     setError(null)
     setErrorCode(null)
+    setErrorReason(null)
 
     api
       .one<PurchasesSession>('v1/session', undefined, controller.signal)
@@ -109,6 +116,7 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
         if (cancelled || controller.signal.aborted) return
         setError(err.message)
         setErrorCode(err instanceof ApiError ? err.code : null)
+        setErrorReason(err instanceof ApiError && typeof err.details.manage_code === 'string' ? err.details.manage_code : null)
         setSession(null)
       })
       .finally(() => {
@@ -139,9 +147,10 @@ export function PurchasesProvider({ children }: { children: ReactNode }) {
       loading,
       error,
       errorCode,
+      errorReason,
       reload: () => setReloadToken((n) => n + 1),
     }),
-    [scope, setCompanyScope, session, can, loading, error, errorCode],
+    [scope, setCompanyScope, session, can, loading, error, errorCode, errorReason],
   )
 
   return <PurchasesContextObject.Provider value={value}>{children}</PurchasesContextObject.Provider>

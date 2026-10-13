@@ -39,6 +39,31 @@ in to another AICOUNTLY product lands straight on the dashboard.
 
 See [docs/auth/AICOUNTLY_AUTH_WORKFLOW.md](docs/auth/AICOUNTLY_AUTH_WORKFLOW.md).
 
+## Company access (registry)
+
+Which companies a person may **open** in Purchases is decided by Manage's company registry, per
+application. Purchases' catalog key is **`purchases`**.
+
+- **Server gate.** `server-php/src/Context.php` (`askManage()`) asks Manage `GET /api/companyinfo`
+  on every scoped request. `ApiClient` names the product on every outbound call
+  (`X-Saas-Origin` / `X-Source-App` = `APP_PRODUCT_KEY`, default `purchases`), so Manage answers
+  for Purchases: a workspace member who may see the company but not open it here gets
+  `403 COMPANY_ACCESS_REQUIRED`, which Purchases returns as `403 company_access_denied` with
+  `details.manage_code = COMPANY_ACCESS_REQUIRED` (the app then shows "Company access restricted"
+  with "Request access"). Manage unreachable stays a 503, never an allow.
+- **Client.** `web/src/services/companyRegistry.ts` talks to Manage `/api/v1/*` directly with the
+  person's session key. The shared screens are vendored verbatim in `web/src/company-access/`
+  (copied from manage-aicountly `Saas Common Handler/company-access`; change them there, copy again).
+- **Company picker.** The choose-company page has "Browse all workspace companies", listing every
+  company of the person's workspaces; a company restricted in Purchases is badged and shows
+  "Request access" instead of opening.
+- **Users & Access.** Administration → Users & Access (`/users-access`): the owner grants, changes
+  and revokes access to this company in Purchases and reviews requests, with no redirect to Manage.
+  Administration → Access (Purchases permission profiles) is unchanged and still decides what a
+  person may *do* in Purchases.
+- **Discovery is not access.** Seeing a company in the directory never opens it; the server check
+  above is what decides.
+
 ## Layout
 
 ```

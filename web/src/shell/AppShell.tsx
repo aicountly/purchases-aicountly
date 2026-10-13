@@ -24,6 +24,7 @@ import {
   ShieldCheck,
   Sparkles,
   Truck,
+  UserCheck,
   BarChart3,
   FileSpreadsheet,
   X,
@@ -89,6 +90,9 @@ const NAV: NavEntry[] = [
 
   { group: 'Administration' },
   { to: '/access', label: 'Access', icon: KeyRound, permission: 'access.manage' },
+  // Company access from Manage's company registry. No permission: the owner administers it
+  // there, anyone else sees their own access and can ask for it.
+  { to: '/users-access', label: 'Users & Access', icon: UserCheck },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
   // Its own entry, not a child of Settings: the same choice this list already
   // makes for Receipts alongside Dashboard. Always visible, like Settings
