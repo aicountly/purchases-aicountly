@@ -49,7 +49,7 @@ export function ConnectEmbed() {
         fyId: current?.fy_id ?? null,
         boId: current?.bo_id ?? 0,
         // Advisor through the portal's SSO jump, with no token in the link itself.
-        advisorUrl: advisor ? buildAppLaunchUrl(advisor, { authToken: '' }) : undefined,
+        advisorUrl: advisor ? buildAppLaunchUrl(advisor) : undefined,
         labels: { button: 'Connect', openAria: 'Open Connect', closeAria: 'Close Connect', advisor: 'Advisor' },
         calling: true,
         onEvent: (name, detail) => {
