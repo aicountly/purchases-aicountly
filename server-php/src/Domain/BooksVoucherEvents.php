@@ -64,6 +64,20 @@ final class BooksVoucherEvents
             };
             Db::run('UPDATE purchase_books_event_inbox SET outcome = :o, reference = :r, reason = :why WHERE event_id = :id',
                 ['o' => $result['status'], 'r' => $result['reference'], 'why' => $result['reason'] ?? null, 'id' => $eventId]);
+            if ($result['status'] === 'ignored') {
+                // Nothing of ours changed, but Books told us something about this company: who sent
+                // what, and why it was set aside, belongs in the trail as well as in the inbox.
+                Audit::record(
+                    $bill !== null ? Context::of($cmpId, (int) $bill['fy_id'], (int) $bill['bo_id']) : Context::of($cmpId, 0, 0),
+                    $auth,
+                    'bill.books_event_ignored',
+                    $bill !== null ? 'bill_request' : 'books_voucher',
+                    $bill !== null ? (int) $bill['request_id'] : $vchTxnId,
+                    null,
+                    ['event_id' => $eventId, 'event_type' => $type, 'vch_txn_id' => $vchTxnId, 'revision' => $revision],
+                    (string) ($result['reason'] ?? ''),
+                );
+            }
 
             return $result;
         });
@@ -111,8 +125,12 @@ final class BooksVoucherEvents
             }
             PoProgress::recompute($poId, $cmpId, 'service:books');
         }
-        Audit::record(Context::of($cmpId, (int) $bill['fy_id'], (int) $bill['bo_id']), $auth, 'bill.cancelled_in_books', 'bill', $requestId,
-            ['status' => 'POSTED'], ['status' => 'CANCELLED', 'books_event_id' => $event['event_id'] ?? null], (string) ($event['reason'] ?? ''));
+        // In the event's transaction (fail-closed): a bill Books cancelled is never undone here without a trace.
+        Audit::material(Context::of($cmpId, (int) $bill['fy_id'], (int) $bill['bo_id']), $auth, 'bill.cancelled_in_books', 'bill_request', $requestId,
+            ['status' => 'POSTED'], [
+                'status' => 'CANCELLED', 'books_event_id' => $event['event_id'] ?? null, 'supplier_invoice_no' => $bill['supplier_invoice_no'] ?? null,
+                'books_voucher_no' => $event['vch_no'] ?? $bill['books_voucher_no'] ?? null,
+            ], (string) ($event['reason'] ?? ''));
 
         return ['status' => 'applied', 'reference' => $reference];
     }
@@ -135,8 +153,8 @@ final class BooksVoucherEvents
                 ? sprintf('The bill voucher %s was edited in Smart Books and its quantities changed (revision %d). Compare the PO and receipts with it.', (string) ($event['vch_no'] ?? ''), $revision)
                 : ($bill['last_error'] ?? null)],
         );
-        Audit::record(Context::of((int) $bill['cmp_id'], (int) $bill['fy_id'], (int) $bill['bo_id']), $auth, 'bill.revised_in_books', 'bill', $requestId,
-            null, ['revision' => $revision, 'quantities_changed' => $changed, 'after' => $event['after'] ?? null]);
+        Audit::record(Context::of((int) $bill['cmp_id'], (int) $bill['fy_id'], (int) $bill['bo_id']), $auth, 'bill.revised_in_books', 'bill_request', $requestId,
+            ['revision' => (int) ($bill['revision_in_books'] ?? 0)], ['revision' => $revision, 'quantities_changed' => $changed, 'after' => $event['after'] ?? null]);
 
         return ['status' => 'applied', 'reference' => 'purchases:bill:' . $requestId . ':revised:' . $revision];
     }

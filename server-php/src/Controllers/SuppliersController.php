@@ -253,6 +253,12 @@ final class SuppliersController extends Controller
                     'basis' => json_encode($scorecard['basis_summary']), 'by' => $auth->uuid,
                 ],
             );
+            // Stored is a change to the supplier's record (F497): the figures it was given, and for when.
+            Audit::record($ctx, $auth, 'supplier.scorecard_saved', 'supplier', (int) $supplierId, null, [
+                'period_start' => $from, 'period_end' => $to, 'overall_score' => $overall,
+                'on_time_delivery_pc' => $onTimePc, 'quality_rejection_pc' => $rejectionPc,
+                'fulfilment_pc' => $fulfilmentPc, 'claim_count' => $claims,
+            ]);
         }
 
         Http::data($scorecard);

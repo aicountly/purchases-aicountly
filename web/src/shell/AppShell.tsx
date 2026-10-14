@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ClipboardList,
   FileSearch,
+  History,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -93,6 +94,7 @@ const NAV: NavEntry[] = [
   // Company access from Manage's company registry. No permission: the owner administers it
   // there, anyone else sees their own access and can ask for it.
   { to: '/users-access', label: 'Users & Access', icon: UserCheck },
+  { to: '/audit-log', label: 'Audit trail', icon: History, permission: 'audit.view' },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
   // Its own entry, not a child of Settings: the same choice this list already
   // makes for Receipts alongside Dashboard. Always visible, like Settings

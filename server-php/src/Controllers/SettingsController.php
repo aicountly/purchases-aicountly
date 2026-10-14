@@ -247,22 +247,33 @@ final class SettingsController extends Controller
         if ($changes !== []) {
             $changes['updated_at'] = gmdate('Y-m-d H:i:s');
             $fresh = self::newSettingsRow($ctx->cmpId);
-            Db::run('INSERT INTO purchase_settings (cmp_id, receive_stock_at_grn) VALUES (:cmp, :grn) ON CONFLICT (cmp_id) DO NOTHING', ['cmp' => $ctx->cmpId, 'grn' => $fresh['receive_stock_at_grn'] ? 'true' : 'false']);
-            $before = Db::first('SELECT sod_policy, over_receipt_tolerance_pc, receive_stock_at_grn FROM purchase_settings WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]) ?? [];
-            $wasOn = in_array($before['receive_stock_at_grn'] ?? null, [true, 't', 1, '1', 'true'], true);
-            if (array_key_exists('receive_stock_at_grn', $changes) && $wasOn !== $changes['receive_stock_at_grn']) {
-                // E8-INV A11: how goods receipts move stock is shown with who last changed it.
-                $changes['receive_stock_at_grn_changed_at'] = gmdate('Y-m-d H:i:s');
-                $changes['receive_stock_at_grn_changed_by'] = $auth->displayName() !== '' ? $auth->displayName() : $auth->uuid;
-            } else {
-                unset($changes['receive_stock_at_grn']);
-            }
-            Db::update('purchase_settings', $changes, ['cmp_id' => $ctx->cmpId]);
-            // Controls, not preferences: who changed them, from what, to what.
-            $governed = array_intersect_key($changes, ['sod_policy' => true, 'over_receipt_tolerance_pc' => true, 'receive_stock_at_grn' => true]);
-            if ($governed !== []) {
-                \Aicountly\Api\Audit::record($ctx, $auth, 'settings.controls_changed', 'settings', $ctx->cmpId, array_intersect_key($before, $governed), $governed, (string) ($body['reason'] ?? ''));
-            }
+            // One transaction with its audit rows (fail-closed): a control changed with no record
+            // of who changed it is not a change this product makes.
+            Db::transaction(static function () use (&$changes, $ctx, $auth, $body, $fresh): void {
+                Db::run('INSERT INTO purchase_settings (cmp_id, receive_stock_at_grn) VALUES (:cmp, :grn) ON CONFLICT (cmp_id) DO NOTHING', ['cmp' => $ctx->cmpId, 'grn' => $fresh['receive_stock_at_grn'] ? 'true' : 'false']);
+                $before = Db::first('SELECT * FROM purchase_settings WHERE cmp_id = :cmp FOR UPDATE', ['cmp' => $ctx->cmpId]) ?? [];
+                $wasOn = in_array($before['receive_stock_at_grn'] ?? null, [true, 't', 1, '1', 'true'], true);
+                if (array_key_exists('receive_stock_at_grn', $changes) && $wasOn !== $changes['receive_stock_at_grn']) {
+                    // E8-INV A11: how goods receipts move stock is shown with who last changed it.
+                    $changes['receive_stock_at_grn_changed_at'] = gmdate('Y-m-d H:i:s');
+                    $changes['receive_stock_at_grn_changed_by'] = $auth->displayName() !== '' ? $auth->displayName() : $auth->uuid;
+                } else {
+                    unset($changes['receive_stock_at_grn']);
+                }
+                Db::update('purchase_settings', $changes, ['cmp_id' => $ctx->cmpId]);
+                // Controls, not preferences: who changed them, from what, to what.
+                $governed = array_intersect_key($changes, ['sod_policy' => true, 'over_receipt_tolerance_pc' => true, 'receive_stock_at_grn' => true]);
+                if ($governed !== []) {
+                    \Aicountly\Api\Audit::material($ctx, $auth, 'settings.controls_changed', 'settings', $ctx->cmpId, array_intersect_key($before, $governed), $governed, (string) ($body['reason'] ?? ''));
+                }
+                // Everything else a save changed — prefixes (the numbering series), approval
+                // thresholds, the profile — as its own row, only the fields that really changed.
+                $other = array_diff_key($changes, $governed, ['updated_at' => true, 'receive_stock_at_grn_changed_at' => true, 'receive_stock_at_grn_changed_by' => true]);
+                $old = array_intersect_key($before, $other);
+                if (\Aicountly\Api\Audit::changes($old, $other) !== []) {
+                    \Aicountly\Api\Audit::material($ctx, $auth, 'settings.updated', 'settings', $ctx->cmpId, $old, $other, (string) ($body['reason'] ?? ''));
+                }
+            });
         }
 
         self::show();
@@ -347,11 +358,11 @@ final class SettingsController extends Controller
 
         $existing = $policyId !== null
             ? Db::first(
-                'SELECT policy_id FROM purchase_match_policies WHERE policy_id = :id AND cmp_id = :cmp',
+                'SELECT * FROM purchase_match_policies WHERE policy_id = :id AND cmp_id = :cmp',
                 ['id' => $policyId, 'cmp' => $ctx->cmpId],
             )
             : Db::first(
-                'SELECT policy_id FROM purchase_match_policies WHERE cmp_id = :cmp AND policy_name = :name',
+                'SELECT * FROM purchase_match_policies WHERE cmp_id = :cmp AND policy_name = :name',
                 ['cmp' => $ctx->cmpId, 'name' => $name],
             );
 
@@ -369,20 +380,33 @@ final class SettingsController extends Controller
             Http::conflict('Another tolerance policy is already called "' . $name . '".', ['field' => 'policy_name']);
         }
 
-        Db::transaction(function () use ($existing, $values, $name, $ctx) {
+        Db::transaction(function () use ($existing, $values, $name, $ctx, $auth) {
             if ($values['is_default']) {
                 // Exactly one default, or the match engine picks arbitrarily.
                 Db::run('UPDATE purchase_match_policies SET is_default = FALSE WHERE cmp_id = :cmp', ['cmp' => $ctx->cmpId]);
             }
             if ($existing === null) {
-                Db::insert('purchase_match_policies', $values + ['cmp_id' => $ctx->cmpId, 'policy_name' => $name], 'policy_id');
+                $id = (int) Db::insert('purchase_match_policies', $values + ['cmp_id' => $ctx->cmpId, 'policy_name' => $name], 'policy_id');
             } else {
+                $id = (int) $existing['policy_id'];
                 Db::update(
                     'purchase_match_policies',
                     $values + ['policy_name' => $name],
-                    ['policy_id' => (int) $existing['policy_id']],
+                    ['policy_id' => $id],
                 );
             }
+            // The tolerances a bill is matched against decide what gets paid without a person
+            // looking: who changed them, from what, to what, recorded with the change.
+            $after = ['policy_name' => $name] + $values;
+            \Aicountly\Api\Audit::material(
+                $ctx,
+                $auth,
+                $existing === null ? 'settings.match_policy_created' : 'settings.match_policy_updated',
+                'match_policy',
+                $id,
+                $existing === null ? null : array_intersect_key($existing, $after),
+                $after,
+            );
         });
 
         self::matchPolicies();
@@ -404,17 +428,22 @@ final class SettingsController extends Controller
 
         $policyId = (int) $id;
         $existing = Db::first(
-            'SELECT policy_id FROM purchase_match_policies WHERE policy_id = :id AND cmp_id = :cmp',
+            'SELECT * FROM purchase_match_policies WHERE policy_id = :id AND cmp_id = :cmp',
             ['id' => $policyId, 'cmp' => $ctx->cmpId],
         );
         if ($existing === null) {
             Http::notFound('That match policy no longer exists.');
         }
 
-        Db::run('DELETE FROM purchase_match_policies WHERE policy_id = :id AND cmp_id = :cmp', [
-            'id'  => $policyId,
-            'cmp' => $ctx->cmpId,
-        ]);
+        Db::transaction(static function () use ($policyId, $existing, $ctx, $auth): void {
+            Db::run('DELETE FROM purchase_match_policies WHERE policy_id = :id AND cmp_id = :cmp', [
+                'id'  => $policyId,
+                'cmp' => $ctx->cmpId,
+            ]);
+            \Aicountly\Api\Audit::material($ctx, $auth, 'settings.match_policy_deleted', 'match_policy', $policyId, array_intersect_key($existing, array_flip([
+                'policy_name', 'qty_tolerance_pc', 'rate_tolerance_pc', 'value_tolerance_amt', 'freight_tolerance_amt', 'auto_match_below_amt', 'is_default',
+            ])), null);
+        });
 
         self::matchPolicies();
     }
