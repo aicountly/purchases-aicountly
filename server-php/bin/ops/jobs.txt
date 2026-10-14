@@ -3,3 +3,6 @@
 #! app: purchases
 # name            | schedule      | command (run from the api folder)
 command-monitor   | */5 * * * *   | {php} bin/command-monitor.php
+# Company lifecycle (lib/company-lifecycle, docs/COMPANY_LIFECYCLE.md): run the purges Manage queued and ack them.
+# Monitor purchases.company_lifecycle must be registered in Console's cron_monitors (migration 059 pattern).
+company-lifecycle | */5 * * * *   | {php} bin/ops/run-job.php --name=company-lifecycle --every=300 --monitor=purchases.company_lifecycle -- {php} lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php

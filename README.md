@@ -64,6 +64,14 @@ application. Purchases' catalog key is **`purchases`**.
 - **Discovery is not access.** Seeing a company in the directory never opens it; the server check
   above is what decides.
 
+## Company lifecycle (Manage)
+
+A lapsed Purchases subscription makes the company view/export-only here (writes answer `423
+COMPANY_RESTRICTED`, the app shows a read-only banner), and Manage later asks Purchases to purge it —
+purchase vouchers, goods receipts, returns, claims, the order chain they point at and the audit trail are
+retained by statute. Built on the AICOUNTLY receiver kit (`server-php/lib/company-lifecycle/`). See
+[docs/COMPANY_LIFECYCLE.md](docs/COMPANY_LIFECYCLE.md).
+
 ## Layout
 
 ```
