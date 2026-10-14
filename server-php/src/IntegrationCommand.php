@@ -22,9 +22,16 @@ namespace Aicountly\Api;
  *                  │                     or a server error after the request arrived: it may
  *                  │                     have acted. Retrying on the same key is safe and
  *                  │                     settles it; so does reconciling by our source identity
- *                  └──────▶ BLOCKED      a business refusal. Retrying will not help;
- *                                        something has to change, and a changed request is a
- *                                        new revision with a new key
+ *                  ├──────▶ BLOCKED      a business refusal. Retrying will not help;
+ *                  │                     something has to change, and a changed request is a
+ *                  │                     new revision with a new key
+ *                  ├──────▶ DEFERRED_RESTRICTED  the other product holds the company READ-ONLY
+ *                  │                     (423 COMPANY_RESTRICTED, Manage's company lifecycle).
+ *                  │                     Kept, not failed and not stale; bin/command-monitor.php
+ *                  │                     asks Manage at most hourly and makes it FAILED (said so)
+ *                  │                     once the company is renewed or its read-only date passed
+ *                  └──────▶ DROPPED_COMPANY_DELETED  the company was purged there / deleted in
+ *                                        Manage: never sent; an audit entry says so
  *
  * ONE ROW PER OPERATION. (company, command, entity, revision) is unique in the database,
  * and the row is created with INSERT … ON CONFLICT DO NOTHING, so two requests racing to
@@ -55,8 +62,13 @@ final class IntegrationCommand
     /** Withdrawn before it reached the other product: the document it carried was cancelled or superseded. */
     public const CANCELLED = 'CANCELLED';
 
+    /** The other product holds the company read-only (423 COMPANY_RESTRICTED): see RestrictedTarget. */
+    public const DEFERRED_RESTRICTED = 'DEFERRED_RESTRICTED';
+    /** The company's data in the other product is gone: never sent, audited. */
+    public const DROPPED_COMPANY_DELETED = 'DROPPED_COMPANY_DELETED';
+
     /** Statuses a document still has work on. */
-    public const OPEN = [self::PENDING, self::POSTING, self::FAILED, self::UNCERTAIN, self::BLOCKED];
+    public const OPEN = [self::PENDING, self::POSTING, self::FAILED, self::UNCERTAIN, self::BLOCKED, self::DEFERRED_RESTRICTED];
 
     public const TABLE = 'purchase_integration_commands';
 
@@ -141,7 +153,7 @@ final class IntegrationCommand
                     lease_expires_at = NOW() + make_interval(secs => :lease),
                     attempts = attempts + 1, last_attempt_at = NOW(), updated_at = NOW()
               WHERE command_id = :id
-                AND (status IN ('PENDING', 'FAILED', 'UNCERTAIN')
+                AND (status IN ('PENDING', 'FAILED', 'UNCERTAIN', 'DEFERRED_RESTRICTED')
                      OR (status = 'POSTING' AND (lease_expires_at IS NULL OR lease_expires_at < NOW())))
              RETURNING *",
             ['token' => $token, 'lease' => self::LEASE_SECONDS, 'id' => $commandId],
@@ -291,7 +303,7 @@ final class IntegrationCommand
         if ($command['status'] === self::COMPLETED) {
             return ['outcome' => 'already_completed', 'command' => $command, 'lease' => null, 'response' => null, 'message' => null];
         }
-        if ($command['status'] === self::BLOCKED) {
+        if ($command['status'] === self::BLOCKED || $command['status'] === self::DROPPED_COMPANY_DELETED) {
             return ['outcome' => 'already_blocked', 'command' => $command, 'lease' => null, 'response' => null, 'message' => (string) ($command['last_error'] ?? '')];
         }
         if ($command['status'] === self::CANCELLED) {
@@ -303,7 +315,7 @@ final class IntegrationCommand
             $current = $claim['command'];
             $outcome = match ($current['status'] ?? '') {
                 self::COMPLETED => 'already_completed',
-                self::BLOCKED   => 'already_blocked',
+                self::BLOCKED, self::DROPPED_COMPANY_DELETED => 'already_blocked',
                 self::CANCELLED => 'withdrawn',
                 default         => 'in_progress',
             };
@@ -315,6 +327,11 @@ final class IntegrationCommand
         $lease = (string) $row['lease_token'];
         $body = is_array($row['request_payload'] ?? null) ? $row['request_payload'] : [];
         $response = $send($body, (string) $row['idempotency_key']);
+        // The company is read-only in the other product (423 COMPANY_RESTRICTED): kept, not failed.
+        $restricted = self::settleRestricted($row, $lease, $response);
+        if ($restricted !== null) {
+            return ['outcome' => $restricted['outcome'], 'command' => $row, 'lease' => $lease, 'response' => $response, 'message' => $restricted['message'], 'restricted' => $restricted['restricted']];
+        }
         $outcome = self::classify($response);
         $message = $response['ok'] ? null : self::publicError((string) ($response['error'] ?? ('HTTP ' . $response['status'])), (int) $response['status']);
 
@@ -530,7 +547,7 @@ final class IntegrationCommand
             static fn (array $row) => self::decode($row),
             Db::all(
                 'SELECT ' . self::PUBLIC_COLUMNS . ' FROM ' . self::TABLE . "
-                  WHERE {$scope} AND status IN ('PENDING', 'POSTING', 'FAILED', 'UNCERTAIN', 'BLOCKED')
+                  WHERE {$scope} AND status IN ('PENDING', 'POSTING', 'FAILED', 'UNCERTAIN', 'BLOCKED', 'DEFERRED_RESTRICTED')
                     AND entity_type IN (" . implode(', ', $types) . ')
                   ORDER BY updated_at DESC LIMIT ' . max(1, min(500, $limit)),
                 $params,
@@ -563,6 +580,119 @@ final class IntegrationCommand
             $entityId,
             $revision,
         );
+    }
+
+    // ------------------------------------------------------------------ read-only target (423)
+
+    /**
+     * Record an attempt the other product refused because it holds the company read-only
+     * (423 COMPANY_RESTRICTED), under the attempt's lease: DEFERRED_RESTRICTED with the date — or,
+     * when the company's data there is gone (`lifecycle: purged`), DROPPED_COMPANY_DELETED with an
+     * audit entry. Null for any other answer. The caller treats 'failed' as retryable (with the
+     * sentence the person should read) and 'blocked' as refused.
+     *
+     * @param array<string, mixed> $row the claimed command
+     * @param array{ok:bool, status:int, body:?array, error:?string} $response
+     * @return array{outcome: 'failed'|'blocked', message: string, restricted: array{restricted_until: ?string, lifecycle: string, message: string}}|null
+     */
+    public static function settleRestricted(array $row, string $lease, array $response): ?array
+    {
+        $restricted = RestrictedTarget::refusal((int) $response['status'], $response['body'] ?? null);
+        if ($restricted === null) {
+            return null;
+        }
+        $commandId = (int) $row['command_id'];
+        $service = (string) ($row['target_service'] ?? '');
+        $message = RestrictedTarget::userMessage($service, $restricted['restricted_until'], $restricted['lifecycle']);
+        if (RestrictedTarget::isGone($restricted)) {
+            self::settle($commandId, $lease, self::DROPPED_COMPANY_DELETED, ['last_error' => self::trimError($message), 'last_status_code' => 423]);
+            self::auditDrop($row, $message);
+
+            return ['outcome' => 'blocked', 'message' => $message, 'restricted' => $restricted];
+        }
+        $until = $restricted['restricted_until'];
+        self::settle($commandId, $lease, self::DEFERRED_RESTRICTED, [
+            'last_error' => self::trimError($message), 'last_status_code' => 423, 'restricted_until' => $until,
+            'restriction_check_at' => gmdate('Y-m-d H:i:s', RestrictedTarget::nextCheckAt($until, time())),
+        ]);
+        error_log(sprintf('[commands] %s is read-only for company %d until %s; command %d kept (deferred_restricted)', $service, (int) $row['cmp_id'], $until ?? 'renewal', $commandId));
+
+        return ['outcome' => 'failed', 'message' => $message, 'restricted' => $restricted];
+    }
+
+    /** @param array<string, mixed> $command */
+    private static function auditDrop(array $command, string $reason): void
+    {
+        Audit::recordSystem(
+            (int) $command['cmp_id'], (int) ($command['fy_id'] ?? 0), (int) ($command['bo_id'] ?? 0), 'system:commands',
+            'integration_command.dropped_company_deleted', (string) $command['entity_type'], (int) $command['entity_id'],
+            ['status' => (string) ($command['status'] ?? ''), 'command_type' => (string) $command['command_type'], 'target' => (string) $command['target_service']],
+            ['status' => self::DROPPED_COMPANY_DELETED, 'command_id' => (int) $command['command_id']],
+            $reason,
+        );
+    }
+
+    /**
+     * The commands waiting on a read-only company whose look is due — at most hourly per company
+     * and product: Manage is asked, and they are made sendable again (FAILED, with a sentence
+     * saying the company was renewed), left waiting, or dropped with an audit entry. Run by
+     * bin/command-monitor.php. Never throws.
+     *
+     * @param (callable(int, string): array<string, mixed>)|null $manage test seam for RestrictedTarget::manageStatus
+     * @return array{companies:int, ready:int, waiting:int, dropped:int}
+     */
+    public static function reviewRestricted(int $limit = 50, ?callable $manage = null): array
+    {
+        $out = ['companies' => 0, 'ready' => 0, 'waiting' => 0, 'dropped' => 0];
+        $manage ??= static fn (int $cmpId, string $service): array => RestrictedTarget::manageStatus($cmpId, $service);
+        try {
+            $due = Db::all(
+                'SELECT cmp_id, target_service, MAX(restricted_until) AS restricted_until FROM ' . self::TABLE . "
+                  WHERE status = 'DEFERRED_RESTRICTED' AND (restriction_check_at IS NULL OR restriction_check_at <= NOW())
+                  GROUP BY cmp_id, target_service ORDER BY cmp_id LIMIT " . max(1, $limit),
+            );
+        } catch (\Throwable $e) {
+            error_log('[commands] deferred commands unreadable: ' . $e->getMessage());
+
+            return $out;
+        }
+        $now = time();
+        foreach ($due as $company) {
+            $out['companies']++;
+            $cmpId = (int) $company['cmp_id'];
+            $service = (string) $company['target_service'];
+            try {
+                $decision = RestrictedTarget::decide($manage($cmpId, $service), $company['restricted_until'] !== null ? (string) $company['restricted_until'] : null, $now);
+                $name = $service === 'books' ? 'Smart Books' : ucfirst($service);
+                if ($decision['action'] === 'resume') {
+                    $out['ready'] += Db::run(
+                        'UPDATE ' . self::TABLE . " SET status = 'FAILED', last_error = :e, restriction_check_at = NULL, updated_at = NOW()
+                          WHERE cmp_id = :cmp AND target_service = :svc AND status = 'DEFERRED_RESTRICTED'",
+                        ['e' => self::trimError('The company is no longer read-only in ' . $name . ' (' . $decision['reason'] . '): press Retry to send this now.'), 'cmp' => $cmpId, 'svc' => $service],
+                    )->rowCount();
+                } elseif ($decision['action'] === 'drop') {
+                    $rows = Db::all(
+                        'UPDATE ' . self::TABLE . " SET status = 'DROPPED_COMPANY_DELETED', last_error = :e, updated_at = NOW()
+                          WHERE cmp_id = :cmp AND target_service = :svc AND status = 'DEFERRED_RESTRICTED' RETURNING *",
+                        ['e' => self::trimError('Not sent to ' . $name . ': ' . $decision['reason'] . '.'), 'cmp' => $cmpId, 'svc' => $service],
+                    );
+                    foreach ($rows as $row) {
+                        self::auditDrop($row + ['status' => self::DEFERRED_RESTRICTED], 'Not sent to ' . $name . ': ' . $decision['reason'] . '.');
+                        $out['dropped']++;
+                    }
+                } else {
+                    $out['waiting'] += Db::run(
+                        'UPDATE ' . self::TABLE . " SET restricted_until = :until, restriction_check_at = :next
+                          WHERE cmp_id = :cmp AND target_service = :svc AND status = 'DEFERRED_RESTRICTED'",
+                        ['until' => $decision['restricted_until'], 'next' => gmdate('Y-m-d H:i:s', (int) $decision['next_check_at']), 'cmp' => $cmpId, 'svc' => $service],
+                    )->rowCount();
+                }
+            } catch (\Throwable $e) {
+                error_log('[commands] deferred commands of company ' . $cmpId . ' not reviewed: ' . $e->getMessage());
+            }
+        }
+
+        return $out;
     }
 
     /** @param array<string, mixed> $values */

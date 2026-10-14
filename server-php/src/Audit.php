@@ -55,6 +55,37 @@ final class Audit
         }
     }
 
+    /**
+     * An entry made by this product itself, with no person and no request — the command monitor
+     * dropping a command whose target company is gone (IntegrationCommand::drop()).
+     *
+     * @param array<string, mixed>|null $before
+     * @param array<string, mixed>|null $after
+     */
+    public static function recordSystem(int $cmpId, int $fyId, int $boId, string $actor, string $action, string $entityType, int|string|null $entityId, ?array $before, ?array $after, string $reason): void
+    {
+        try {
+            Db::insert(self::TABLE, [
+                'cmp_id'       => $cmpId,
+                'fy_id'        => $fyId,
+                'bo_id'        => $boId,
+                'actor_uuid'   => $actor,
+                'actor_kind'   => 'system',
+                'source_app'   => Env::get('APP_PRODUCT_KEY', 'purchases'),
+                'action'       => $action,
+                'entity_type'  => $entityType,
+                'entity_id'    => $entityId === null ? null : (string) $entityId,
+                'before_state' => $before,
+                'after_state'  => $after,
+                'reason'       => $reason !== '' ? $reason : null,
+                'ip_address'   => null,
+                'created_at'   => gmdate('Y-m-d H:i:s'),
+            ], 'audit_id');
+        } catch (\Throwable $e) {
+            error_log('[audit] failed to record ' . $action . ' on ' . $entityType . ': ' . $e->getMessage());
+        }
+    }
+
     private static function clientIp(): ?string
     {
         $candidates = [$_SERVER['HTTP_X_FORWARDED_FOR'] ?? '', $_SERVER['REMOTE_ADDR'] ?? ''];

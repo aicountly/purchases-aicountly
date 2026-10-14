@@ -40,6 +40,9 @@ $env = static fn (string $k): string => Env::get($k);
 \aic_ops_heartbeat($env, $monitor, $runId, 'started', $started, null);
 
 try {
+    // Commands kept because Books / Inventory hold the company read-only (company lifecycle): ask
+    // Manage about each such company at most hourly, and make them sendable again on renewal.
+    $restricted = IntegrationCommand::reviewRestricted();
     $commands = OpsStatus::commands();
     if (!($commands['readable'] ?? false)) {
         throw new \RuntimeException('the command table could not be read');
@@ -53,6 +56,7 @@ try {
         ['s' => OpsStatus::staleAfterSeconds()],
     );
     $report = [
+        'restricted' => $restricted,
         'open'      => $commands['open'],
         'stale'     => $commands['stale'],
         'oldest_open_age_seconds' => $commands['oldest_open_age_seconds'],

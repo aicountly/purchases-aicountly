@@ -61,10 +61,29 @@ if (!empty($control['path']) && str_contains($path, (string) $control['path']) &
     // `message` lets a test answer with the receiver's own words (Books' refusal of a key it
     // cannot store, say), so what Purchase records is what the real refusal would leave.
     $forcedMessage = (string) ($control['message'] ?? 'Forced failure for test');
-    echo json_encode([
+    // {"body": {...}} answers exactly that body — e.g. Books' / Inventory's 423 COMPANY_RESTRICTED.
+    echo json_encode(is_array($control['body'] ?? null) ? $control['body'] : [
         'error'   => ['code' => (string) ($control['code'] ?? 'stub_forced'), 'message' => $forcedMessage],
         'message' => $forcedMessage,
     ]);
+    exit;
+}
+
+// Manage's GET internal/company-status (MANAGE_PRODUCT_SERVICE_KEY): a company's lifecycle for one
+// product, from stub-lifecycle.json {"<cmp>": {"status": "active", "lifecycle": "restricted", …}}.
+if (str_contains($path, '/internal/company-status')) {
+    if (($headers['authorization'] ?? '') !== 'Bearer test-manage-product-key') {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit;
+    }
+    $lifecycleFile = sys_get_temp_dir() . '/stub-lifecycle.json';
+    $lifecycle = is_file($lifecycleFile) ? (json_decode((string) file_get_contents($lifecycleFile), true) ?: []) : [];
+    $out = [];
+    foreach (array_filter(array_map('intval', explode(',', (string) ($_GET['ids'] ?? '')))) as $id) {
+        $out[$id] = (is_array($lifecycle[(string) $id] ?? null) ? $lifecycle[(string) $id] : []) + ['status' => 'active', 'lifecycle' => 'active', 'restricted_until' => null];
+    }
+    echo json_encode(['success' => true, 'data' => ['companies' => $out, 'app' => (string) ($_GET['app'] ?? '')]]);
     exit;
 }
 if ($failAfter) {
@@ -541,6 +560,12 @@ if (str_contains($path, '/companyinfo')) {
         $company += ['is_creator' => false, 'ownership' => 'shared', 'access_type' => (int) $role];
     }
     // 'silent' adds nothing: a Manage that names no role at all.
+    // Company lifecycle (tests/company_lifecycle.php): stub-manage-lifecycle.json {"<cmp_id>": {lifecycle,
+    // restricted_until}} is what Manage says about the company's subscription to this app.
+    $lifecycle = json_decode((string) @file_get_contents(sys_get_temp_dir() . '/stub-manage-lifecycle.json'), true);
+    if (is_array($lifecycle) && is_array($lifecycle[(string) $cmpId] ?? null)) {
+        $company = $lifecycle[(string) $cmpId] + $company;
+    }
     echo json_encode(['success' => '1', 'data' => $company]);
     exit;
 }

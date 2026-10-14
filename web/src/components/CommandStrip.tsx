@@ -17,6 +17,11 @@ import { Button, Notice, StatusBadge } from '../ui'
  *   BLOCKED    it was reached and refused. Retrying unchanged would be refused the
  *              same way, so no Retry is offered; the document has to change.
  *   CANCELLED  withdrawn before it reached the other product. Not shown.
+ *   DEFERRED_RESTRICTED  the other product holds the company read-only (its subscription
+ *              there lapsed). Kept, not failed: Retry sends it once the company is renewed (the
+ *              monitor turns it back into FAILED, saying so, when Manage reports the renewal).
+ *   DROPPED_COMPANY_DELETED  the company's data there is gone; never sent, recorded in the
+ *              audit trail. No action.
  *   POSTING    being sent; once its lease has run out the attempt died, and Reconcile and
  *              Retry are offered as for UNCERTAIN.
  */
@@ -42,7 +47,7 @@ export function CommandStrip({
       {unresolved.map((command) => (
         <Notice
           key={command.command_id}
-          tone={command.status === 'BLOCKED' || command.status === 'FAILED' ? 'danger' : 'warning'}
+          tone={command.status === 'BLOCKED' || command.status === 'FAILED' ? 'danger' : command.status === 'DROPPED_COMPANY_DELETED' ? 'info' : 'warning'}
           title={describe(command)}
           action={
             <div style={{ display: 'flex', gap: '0.4rem' }}>
@@ -51,7 +56,7 @@ export function CommandStrip({
                   Reconcile
                 </Button>
               )}
-              {(command.status === 'FAILED' || command.status === 'UNCERTAIN' || leaseExpired(command)) && onRetry && (
+              {(command.status === 'FAILED' || command.status === 'UNCERTAIN' || command.status === 'DEFERRED_RESTRICTED' || leaseExpired(command)) && onRetry && (
                 <Button tone="secondary" disabled={busy} onClick={() => onRetry(command)}>
                   Retry
                 </Button>

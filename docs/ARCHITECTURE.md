@@ -171,8 +171,25 @@ User presses Save
             response lost       → UNCERTAIN, Reconcile or Retry on the SAME key
             5xx / unreachable   → FAILED, retryable on the SAME key
             4xx                 → BLOCKED, retrying will not help
+            423 COMPANY_RESTRICTED → DEFERRED_RESTRICTED (see below)
             cancelled meanwhile → CANCELLED (withdraw() is atomic with the cancel)
 ```
+
+**A read-only target company** (AICOUNTLY Manage's company lifecycle: the company's subscription to
+Smart Books or Inventory lapsed — read-only there for 45 days, then purged). Books and Inventory
+answer `423 {code: COMPANY_RESTRICTED, message, restricted_until, lifecycle}`; that is *deferred,
+not failed*. `IntegrationCommand::attempt()` / `settleRestricted()` keep the command as
+**DEFERRED_RESTRICTED** with `restricted_until` (never BLOCKED, never counted stale — `OpsStatus::CLOSED`),
+and the person reads "The target company in Smart Books is read-only until 28 Nov 2026; this is kept
+and will be sent when it is renewed there — press Retry once it is." (HTTP 423 `company_restricted`,
+`retryable: true`). `bin/command-monitor.php` asks Manage (`internal/company-status?ids=&app=books|inventory`,
+`MANAGE_PRODUCT_SERVICE_KEY`) about a deferred company at most hourly: still read-only → waits;
+renewed or `restricted_until` passed → FAILED with a sentence saying so, and Retry sends it on its
+original key; deleted in Manage, or the product answering `lifecycle: purged` →
+**DROPPED_COMPANY_DELETED** with a `purchase_audit_log` entry (`integration_command.dropped_company_deleted`).
+Purchase does not send it on its own after renewal: Books takes a voucher only on a person's session
+(see "Why there is no reconciliation cron"). The command strip shows "Waiting for renewal" (with
+Retry) and "Dropped (company deleted)". Migration 024.
 
 No lock is held across a network call; the lease stops two attempts running at once.
 

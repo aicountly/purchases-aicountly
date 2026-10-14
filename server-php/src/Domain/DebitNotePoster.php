@@ -90,6 +90,10 @@ final class DebitNotePoster
         if ($onFailure !== null && $attempt['outcome'] !== 'in_progress') {
             $onFailure($refused ? 'BLOCKED' : ($attempt['outcome'] === 'uncertain' ? 'UNCERTAIN' : 'FAILED'), $message);
         }
+        if (isset($attempt['restricted']) && !$refused) {
+            // Smart Books holds the company read-only: kept (DEFERRED_RESTRICTED); Retry after renewal.
+            Http::error(423, 'company_restricted', $message, ['retryable' => true, 'restricted_until' => $attempt['restricted']['restricted_until'], 'outcome' => $attempt['outcome']]);
+        }
         Http::error(
             $refused ? 409 : ($attempt['outcome'] === 'in_progress' ? 409 : 502),
             match (true) {

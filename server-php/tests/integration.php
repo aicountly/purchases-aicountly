@@ -3343,6 +3343,9 @@ require __DIR__ . '/insights_contract.php';
 // E8-BK-POST A16: Books' voucher cancel / edit events.
 require __DIR__ . '/books_voucher_events.php';
 
+// Manage's company lifecycle: a read-only Smart Books / Inventory company (deferred, not failed).
+require __DIR__ . '/company_restricted.php';
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

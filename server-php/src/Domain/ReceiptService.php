@@ -499,6 +499,15 @@ final class ReceiptService
             return $this->orderView($poId, $requestId);
         }
 
+        // Inventory holds the company read-only (company lifecycle): kept as DEFERRED_RESTRICTED
+        // (or dropped, its data there gone), and the person is told until when.
+        $restricted = IntegrationCommand::settleRestricted($claim['command'], $lease, $response);
+        if ($restricted !== null) {
+            $this->markReceipt($requestId, $restricted['outcome'] === 'blocked' ? 'BLOCKED' : 'FAILED', $restricted['message']);
+            Http::error($restricted['outcome'] === 'blocked' ? 409 : 423, $restricted['outcome'] === 'blocked' ? 'inventory_refused' : 'company_restricted', $restricted['message'], [
+                'request_id' => $requestId, 'retryable' => $restricted['outcome'] !== 'blocked', 'restricted_until' => $restricted['restricted']['restricted_until'],
+            ]);
+        }
         $message = (string) ($response['error'] ?? 'Inventory did not accept the receipt.');
         $status = (int) $response['status'];
         match ($outcome) {

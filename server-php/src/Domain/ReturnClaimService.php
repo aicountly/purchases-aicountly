@@ -1030,6 +1030,10 @@ final class ReturnClaimService
     {
         $message = (string) ($attempt['message'] ?? $service . ' did not accept ' . $what . '.');
         $refused = in_array($attempt['outcome'], ['blocked', 'already_blocked', 'withdrawn'], true);
+        if (isset($attempt['restricted']) && !$refused) {
+            // The company is read-only there: kept (DEFERRED_RESTRICTED); Retry after renewal.
+            Http::error(423, 'company_restricted', $message, ['retryable' => true, 'restricted_until' => $attempt['restricted']['restricted_until']]);
+        }
         Http::error(
             $refused || $attempt['outcome'] === 'in_progress' ? 409 : 502,
             match (true) {
