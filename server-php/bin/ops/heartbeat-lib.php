@@ -14,6 +14,11 @@ declare(strict_types=1);
  * The key is CONSOLE_CRON_MONITOR_KEY, else CONSOLE_SERVICE_KEY (both accepted by Console's CronMonitorKey).
  * UNCONFIGURED MEANS INERT: no key, no HTTP — a laptop must never hold production's monitor green.
  * NEVER BREAKS THE JOB: every failure is swallowed (logged once), 5 s budget per POST.
+ *
+ * SENT WITH cURL. This used PHP's URL stream wrapper (file_get_contents), which needs
+ * allow_url_fopen; production's PHP has it off, so every heartbeat failed with "HTTP 0" and the
+ * monitors sat OVERDUE while the jobs ran. The stream wrapper is only the fallback for a PHP
+ * built without cURL.
  */
 
 /**
@@ -41,22 +46,57 @@ function aic_ops_heartbeat(callable $env, string $monitor, string $runId, string
             'counts'      => $counts === [] ? null : array_slice($counts, 0, 50, true),
         ], static fn ($v) => $v !== null);
         $json = (string) json_encode($body, JSON_UNESCAPED_SLASHES);
-        $ctx = stream_context_create(['http' => [
-            'method'        => 'POST',
-            'header'        => "Content-Type: application/json\r\nAccept: application/json\r\nX-Console-Cron-Key: {$key}\r\n",
-            'content'       => $json,
-            'timeout'       => 5,
-            'ignore_errors' => true,
-        ]]);
-        $resp = @file_get_contents($base . '/portal/cron-heartbeat', false, $ctx);
+        $url = $base . '/portal/cron-heartbeat';
+        $headers = ['Content-Type: application/json', 'Accept: application/json', 'X-Console-Cron-Key: ' . $key];
+        $resp = false;
         $status = 0;
-        foreach ($http_response_header ?? [] as $h) {
-            if (preg_match('#^HTTP/\S+\s+(\d{3})#', $h, $m) === 1) {
-                $status = (int) $m[1];
+        $why = '';
+        if (function_exists('curl_init')) {
+            $ch = curl_init($url);
+            if ($ch !== false) {
+                $options = [
+                    CURLOPT_POST           => true,
+                    CURLOPT_POSTFIELDS     => $json,
+                    CURLOPT_HTTPHEADER     => $headers,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_CONNECTTIMEOUT => 3,
+                    CURLOPT_TIMEOUT        => 5,
+                    CURLOPT_NOSIGNAL       => true,
+                    CURLOPT_FOLLOWLOCATION => false,
+                ];
+                if (defined('CURLOPT_PROTOCOLS_STR')) {
+                    $options[CURLOPT_PROTOCOLS_STR] = 'http,https';
+                } else {
+                    $options[CURLOPT_PROTOCOLS] = CURLPROTO_HTTP | CURLPROTO_HTTPS;
+                }
+                curl_setopt_array($ch, $options);
+                $resp = curl_exec($ch);
+                $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+                if ($status === 0) {
+                    $why = ', curl error ' . curl_errno($ch);
+                }
+                curl_close($ch);
+            }
+        } else {
+            $ctx = stream_context_create(['http' => [
+                'method'        => 'POST',
+                'header'        => implode("\r\n", $headers) . "\r\n",
+                'content'       => $json,
+                'timeout'       => 5,
+                'ignore_errors' => true,
+            ]]);
+            $resp = @file_get_contents($url, false, $ctx);
+            foreach ($http_response_header ?? [] as $h) {
+                if (preg_match('#^HTTP/\S+\s+(\d{3})#', $h, $m) === 1) {
+                    $status = (int) $m[1];
+                }
+            }
+            if ($status === 0) {
+                $why = ini_get('allow_url_fopen') ? ', no answer' : ', no cURL and allow_url_fopen is off';
             }
         }
         if ($status < 200 || $status >= 300) {
-            error_log('[heartbeat] Console did not accept ' . $monitor . ' ' . $outcome . ' (HTTP ' . $status . ')');
+            error_log('[heartbeat] Console did not accept ' . $monitor . ' ' . $outcome . ' (HTTP ' . $status . $why . ')');
 
             return false;
         }
