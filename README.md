@@ -69,7 +69,7 @@ application. Purchases' catalog key is **`purchases`**.
 A lapsed Purchases subscription makes the company view/export-only here (writes answer `423
 COMPANY_RESTRICTED` — Books' voucher events too, which Books defers; the app shows a read-only banner), and
 Manage later asks Purchases to purge it — purchase vouchers, goods receipts, returns, claims and the audit trail
-are retained by statute for 8 years (then expired daily, archived first), with only the PO / quote / RFQ /
+are retained by statute for 9 years (then expired daily, archived first), with only the PO / quote / RFQ /
 requisition chain they reference. Built on the AICOUNTLY receiver kit 1.1 (`server-php/lib/company-lifecycle/`). See
 [docs/COMPANY_LIFECYCLE.md](docs/COMPANY_LIFECYCLE.md).
 

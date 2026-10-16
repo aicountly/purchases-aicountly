@@ -13,8 +13,8 @@ declare(strict_types=1);
 // the goods received against it, purchase returns and the debit / credit notes settled on supplier claims.
 $inwardSupplies = 'CGST Act 2017 s.35-36 and CGST Rules 56-58: accounts and records of inward supplies (purchase '
     . 'invoices, goods received, debit and credit notes, reverse-charge details) kept 72 months from the due date '
-    . 'of the annual return for the year; Income-tax Act 1961 s.44AA with Rule 6F: books and documents kept 8 years; '
-    . 'Companies Act 2013 s.128(1),(5): books of account and the vouchers behind them kept 8 years';
+    . 'of the annual return for the year; Income-tax Act 1961 s.44AA with Rule 6F: books and documents kept 9 years; '
+    . 'Companies Act 2013 s.128(1),(5): books of account and the vouchers behind them kept 9 years';
 // kit 1.1: the procurement chain the records above point at — purchase order (and its lines) -> the quote,
 // RFQ and requisition (and their lines) it came from. 1.0 kept these tables whole for every company (deleting
 // a row a retained record points at would rewrite it, or cascade into it); now only the rows a retained
@@ -23,13 +23,13 @@ $inwardSupplies = 'CGST Act 2017 s.35-36 and CGST Rules 56-58: accounts and reco
 $chain = static fn (string $what): string => $what . ' referenced by the retained purchase bills, goods receipts, returns or '
     . 'claims (directly or through the order -> quote -> RFQ -> requisition chain): the order is the voucher behind the '
     . 'purchase entry (Companies Act 2013 s.128(1)); kept as long as those records (CGST Act 2017 s.36: 72 months; '
-    . 'Companies Act 2013 s.128(5): 8 years), then removed by --expire-retained';
+    . 'Companies Act 2013 s.128(5): eight financial years (9 years from the document date)), then removed by --expire-retained';
 
-// Retention periods (kit 1.1, `bin/worker.php --expire-retained`, daily): 8 years from the record's date.
+// Retention periods (kit 1.1, `bin/worker.php --expire-retained`, daily): 9 years from the record's date.
 // CGST Act s.36 runs 72 months from the due date of the annual return for the year — 31 December after the
-// financial year, at most 21 months after a document dated 1 April — so 72 + 21 = 93 months < 96: "8 years
+// financial year, at most 21 months after a document dated 1 April — so 72 + 21 = 93 months < 96: "9 years
 // from the document's date" covers it, and Income-tax Rule 6F (6 years from the end of the assessment
-// year), with one approximation; Companies Act s.128(5) is read as the same 8 years (docs: open question).
+// year), with one approximation; Companies Act s.128(5) means up to ~9 years from a document date (owner decision 2026-10-16: 9).
 // Bills and goods receipts run from created_at (booked on or after the supplier's invoice / delivery date);
 // returns and claims from retention_anchor_at (migration 027: the latest of the record and of every return
 // line / claim resolution recorded against it), so a child recorded later is never deleted with its parent
@@ -108,19 +108,19 @@ return [
     'company_retain' => [
         // The purchase voucher as Purchases asked Books to post it: supplier invoice number / date, GSTIN,
         // reverse charge, the lines and their tax.
-        ['table' => 'purchase_bill_requests', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'created_at'],
+        ['table' => 'purchase_bill_requests', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 9, 'retain_from' => 'created_at'],
         // Goods received (GRN) against an order.
-        ['table' => 'purchase_receipt_requests', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'created_at'],
+        ['table' => 'purchase_receipt_requests', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 9, 'retain_from' => 'created_at'],
         // Purchase returns (the debit note raised in Books), and supplier claims with the debit / credit
         // notes settled on them (amount, tax category, HSN/SAC).
-        ['table' => 'purchase_return_lines', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'created_at'],
-        ['table' => 'purchase_returns', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'retention_anchor_at'],
-        ['table' => 'purchase_claim_resolutions', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'created_at'],
-        ['table' => 'purchase_claims', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'retention_anchor_at'],
+        ['table' => 'purchase_return_lines', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 9, 'retain_from' => 'created_at'],
+        ['table' => 'purchase_returns', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 9, 'retain_from' => 'retention_anchor_at'],
+        ['table' => 'purchase_claim_resolutions', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 9, 'retain_from' => 'created_at'],
+        ['table' => 'purchase_claims', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 9, 'retain_from' => 'retention_anchor_at'],
         // Append-only audit trail of every change to the records above (its triggers refuse DELETE except to the
         // purge worker's session, migration 027).
-        ['table' => 'purchase_audit_log', 'key' => 'cmp_id', 'reason' => 'Companies Act 2013 s.128(5) and Rule 3(1) of the Companies (Accounts) Rules 2014: the audit trail of the books of account kept 8 years',
-            'retain_years' => 8, 'retain_from' => 'created_at'],
+        ['table' => 'purchase_audit_log', 'key' => 'cmp_id', 'reason' => 'Companies Act 2013 s.128(5) and Rule 3(1) of the Companies (Accounts) Rules 2014: the audit trail of the books of account kept 9 years',
+            'retain_years' => 9, 'retain_from' => 'created_at'],
     ],
 
     // Deleted on account_purge_requested: the person's own data. Purchases keeps nothing outside a company;

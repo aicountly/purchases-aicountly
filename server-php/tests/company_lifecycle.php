@@ -111,11 +111,11 @@ lcCheck('no purchase voucher, goods receipt, return or claim table is purged (th
     }
 });
 
-lcCheck('kit 1.1: every retained table has 8 years; the PO -> quote / RFQ / requisition chain is kept only when referenced', function () {
+lcCheck('kit 1.1: every retained table has 9 years; the PO -> quote / RFQ / requisition chain is kept only when referenced', function () {
     $m = PurgeManifest::load(LC_MANIFEST);
     lcSame([], $m->warnings(), 'manifest warnings');
     foreach ($m->retained('company') as $r) {
-        lcTrue(($r['retain_years'] ?? null) === 8 && in_array($r['retain_from'] ?? '', ['created_at', 'retention_anchor_at'], true), $r['table'] . ': 8 years');
+        lcTrue(($r['retain_years'] ?? null) === 9 && in_array($r['retain_from'] ?? '', ['created_at', 'retention_anchor_at'], true), $r['table'] . ': 9 years');
     }
     $modes = [];
     foreach ($m->tables('company') as $t) {
@@ -393,13 +393,13 @@ try {
         lcSame(1, (int) Db::scalar('SELECT COUNT(*) FROM ' . $archive . '.purchase_rfqs WHERE rfq_id = :r', ['r' => $rfqIdle]), 'archived first');
         lcTrue(in_array('public.purchase_orders', $acks[0]['body']['retained'], true), 'retained names the kept orders');
 
-        // kit 1.1 retention expiry: nothing within 8 years; after, the bill and the audit rows go, then the chain.
+        // kit 1.1 retention expiry: nothing within 9 years; after, the bill and the audit rows go, then the chain.
         $expiry = static fn (int $now) => Kit::fromEnv('purchases', Db::connect(), LC_MANIFEST, static fn (string $n): ?string => ['LIFECYCLE_WEBHOOK_SECRET' => LC_SECRET, 'MANAGE_API_URL' => 'https://manage.example.test'][$n] ?? null, [], [
             'clock' => static fn (): int => $now, 'http' => static fn (): array => ['status' => 200, 'body' => '{}', 'error' => null],
         ])->worker()->expireRetained();
         $today = $expiry(time());
-        lcSame([0, []], [$today['expired_rows'], $today['errors']], 'nothing expires within 8 years');
-        $later = $expiry((int) strtotime('+8 years +1 day'));
+        lcSame([0, []], [$today['expired_rows'], $today['errors']], 'nothing expires within 9 years');
+        $later = $expiry((int) strtotime('+9 years +1 day'));
         lcSame([], $later['errors'], 'expiry errors');
         lcSame([0, 0, 0, 0, 0, 0, 0, 0], [$live('purchase_bill_requests', 'request_id', $bill), $live('purchase_orders', 'po_id', $po), $live('purchase_order_lines', 'line_id', $poLine),
             $live('purchase_quotes', 'quote_id', $quote), $live('purchase_rfqs', 'rfq_id', $rfq), $live('purchase_rfq_lines', 'line_id', $rfqLine), $live('purchase_requisitions', 'requisition_id', $req),

@@ -13,7 +13,7 @@ require_once __DIR__ . '/../src/Autoload.php';
 \Aicountly\Api\Env::load(__DIR__ . '/../.env');
 
 // This session is the purge worker: purchase_audit_log's append-only trigger lets it delete, with
-// --expire-retained (kit 1.1), the audit trail whose 8 years have run out (migration 027). Only this CLI
+// --expire-retained (kit 1.1), the audit trail whose 9 years have run out (migration 027). Only this CLI
 // bootstrap sets it; the web API never does.
 \Aicountly\Api\Db::connect()->exec("SET aicountly.lifecycle_purge = 'on'");
 

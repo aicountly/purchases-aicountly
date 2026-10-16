@@ -68,11 +68,11 @@ deletes them, checks the counts, reads back after commit, marks the company `pur
 
 | Table | What | Basis | Kept until (kit 1.1 `--expire-retained`) |
 |---|---|---|---|
-| `purchase_bill_requests` | the purchase voucher as asked of Books: supplier invoice no./date, GSTIN, reverse charge, lines and tax | CGST Act s.35-36 + Rules 56-58 (72 months from the annual-return due date); Income-tax Act s.44AA + Rule 6F; Companies Act s.128(5) — 8 years | 8 years from `created_at` (booked on or after the supplier's invoice date) |
-| `purchase_receipt_requests` | goods received (GRN) against an order | same | 8 years from `created_at` |
-| `purchase_returns`, `purchase_return_lines` | purchase returns (the debit note raised in Books) | same | 8 years from `retention_anchor_at` (migration 027) / `created_at` |
-| `purchase_claims`, `purchase_claim_resolutions` | supplier claims and the debit / credit notes settled on them (amount, tax category, HSN/SAC) | same | 8 years from `retention_anchor_at` (migration 027) / `created_at` |
-| `purchase_audit_log` | append-only audit trail | Companies Act s.128(5) + Rule 3(1), Companies (Accounts) Rules — 8 years | 8 years from `created_at` (the worker's session may delete it: migration 027) |
+| `purchase_bill_requests` | the purchase voucher as asked of Books: supplier invoice no./date, GSTIN, reverse charge, lines and tax | CGST Act s.35-36 + Rules 56-58 (72 months from the annual-return due date); Income-tax Act s.44AA + Rule 6F; Companies Act s.128(5) — eight financial years (9 years from the document date) | 9 years from `created_at` (booked on or after the supplier's invoice date) |
+| `purchase_receipt_requests` | goods received (GRN) against an order | same | 9 years from `created_at` |
+| `purchase_returns`, `purchase_return_lines` | purchase returns (the debit note raised in Books) | same | 9 years from `retention_anchor_at` (migration 027) / `created_at` |
+| `purchase_claims`, `purchase_claim_resolutions` | supplier claims and the debit / credit notes settled on them (amount, tax category, HSN/SAC) | same | 9 years from `retention_anchor_at` (migration 027) / `created_at` |
+| `purchase_audit_log` | append-only audit trail | Companies Act s.128(5) + Rule 3(1), Companies (Accounts) Rules — 9 years | 9 years from `created_at` (the worker's session may delete it: migration 027) |
 
 **Kept only while referenced** (kit 1.1 `retain_referenced`; 1.0 kept these tables whole for every company):
 the procurement chain. A row a retained bill / goods receipt / return / claim still points at — directly or
@@ -86,13 +86,13 @@ records expire, the rows nothing references any more go too (`no_longer_referenc
 | `purchase_rfqs`, `purchase_rfq_lines` | a kept PO or quote came from the RFQ |
 | `purchase_requisitions`, `purchase_requisition_lines` | a kept PO / PO line / RFQ line came from it |
 
-**Retention periods** (kit 1.1). 8 years from the record's own date. The statutes run from later dates: CGST
+**Retention periods** (kit 1.1). 9 years from the record's own date. The statutes run from later dates: CGST
 Act s.36 keeps accounts 72 months from the due date of the annual return for the year — 31 December after the
 financial year, at most 21 months after a document dated 1 April, so 72 + 21 = 93 months, inside 96; Income-tax
-Rule 6F is 6 years from the end of the assessment year (shorter still). "8 years from the document's date" is
+Rule 6F is 6 years from the end of the assessment year (shorter still). "9 years from the document's date" is
 therefore one approximation that covers both; Companies Act s.128(5) ("eight financial years immediately
-preceding") is read as the same 8 years from the document date — open question for the finance owner: if it is
-read as 8 *financial years after* the year of the document, raise `retain_years` to 9.
+preceding") can mean up to ~9 years from a document date: owner decision (2026-10-16) — statutory financial
+records are kept **9 years** (`retain_years: 9`); GST s.36 needs at most ~93 months.
 
 Returns and claims run from `retention_anchor_at` (migration 027, kept by triggers: the latest of the record and
 of every return line / claim resolution recorded against it) so a child recorded later is never deleted with its
@@ -130,7 +130,7 @@ company-lifecycle | */5 * * * *   | {php} bin/ops/run-job.php --name=company-lif
 company-lifecycle-expiry | 37 3 * * * | {php} bin/ops/run-job.php --name=company-lifecycle-expiry --every=86400 --monitor=purchases.company_lifecycle_expiry -- {php} lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --expire-retained
 ```
 
-The expiry (kit 1.1, daily) archives and deletes the retained rows of purged companies whose 8 years have run
+The expiry (kit 1.1, daily) archives and deletes the retained rows of purged companies whose 9 years have run
 out, then the orders / quotes / RFQs / requisitions nothing references any more, and records each table in
 `aic_lifecycle_expiries`; Manage is not told. A company that renewed (state `active`) is never expired. Purchases
 has no other expiry sweep, so each table has one owner. Purchases records no legal holds, so the kit's
