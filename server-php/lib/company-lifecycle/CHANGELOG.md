@@ -9,8 +9,10 @@ file runs unchanged); `schema-1.1.1.sql` is optional. What changes is retention 
 Added
 * **Retention groups** — a retained row with a period (`company_retain` / `user_retain`, or a
   `retain_where` row) is the root of a group: itself and every row that references it through foreign
-  keys, recursively, whatever the ON DELETE action, tables without a company column included (found
-  with `pg_constraint`), down to the next root: a retained row with its own period inside a group is
+  keys, recursively — CASCADE, NO ACTION and RESTRICT always (deleting the root deletes them or is
+  refused), SET NULL / SET DEFAULT only into tables an `expires_with` names (otherwise the row merely
+  points back — an actor, a representative — and the database nulls its link); tables without a
+  company column included (found with `pg_constraint`), down to the next root: a retained row with its own period inside a group is
   contained — it must be due for the group to go, and it expires on its own (a container waits for its
   last child, never the other way round). Groups that share a row wait for each other.
   `--expire-retained` deletes a group only when **all** of it is due — its root past its own period;
@@ -30,7 +32,10 @@ Added
   table named there needs no period of its own and no longer warns (a period of its own would let it
   expire alone, before its parent). `{table, from: 'signed_at'}` in the list: a member row also holds
   its group until its own date + the root's period (the group runs from its latest record) without
-  becoming a root of its own.
+  becoming a root of its own; `{table, column: 'engagement_id'}` makes a table that points at the root
+  by a column without a foreign key part of the group as if it had one; `not_before_root: true` makes
+  the rows of a retained table with its own period that belong to the group wait for it (an audit
+  trail whose firm-level rows keep their own period).
 * `expiry_session_settings: {'aicountly.lifecycle_purge': 'on'}` — custom settings `SET LOCAL` inside the
   expiry transaction only, so append-only / immutable triggers let the worker delete expired rows.
 * `hooks['expiry_after']` (Kit option) — `fn (string $scope, string $target, array $result, PurgeEngine $engine): ?string`,

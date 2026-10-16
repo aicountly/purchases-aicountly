@@ -159,12 +159,15 @@ Inventory, Pay, Sales, Purchases, POS, Billing and FR already follow. In the SPA
        retained entry — `--expire-retained` deletes the row when the period has run out. Missing → a
        warning, never a refusal (the row is then kept for ever).
      - 1.1.1: a retained table with a period may have children (rows that reference it by foreign key,
-       with or without a company column, any ON DELETE action): they expire **with** it as one group
+       with or without a company column; CASCADE / NO ACTION / RESTRICT, and SET NULL into tables `expires_with` names): they expire **with** it as one group
        (§4), once every member with its own period is due too. `--check-manifest` names them (`expiry_groups`, apart from the warnings) once per
        table. Optional `expires_with: ['working_papers', …]` lists the tables you expect in the group
        (refused when the foreign keys do not reach one; a retained table named there needs no period of
        its own — it expires with the root — and does not warn; `['table' => 't', 'from' => 'signed_at']`
-       also makes each of its rows hold the group until its own date + the root's period); `expiry_session_settings:
+       also makes each of its rows hold the group until its own date + the root's period;
+       `['table' => 't', 'column' => 'engagement_id']` takes a table that points at the root without a
+       foreign key into the group; `'not_before_root' => true` keeps a retained table's rows that belong
+       to the group from expiring before it, its other rows keeping their own period); `expiry_session_settings:
        ['aicountly.lifecycle_purge' => 'on']` (top level) is `SET LOCAL` in the expiry transaction so
        append-only triggers let the worker delete.
      - `mode: 'retain_referenced'` + `referenced_by` on a `*_tables` entry — for a chain the law pins:
@@ -322,8 +325,9 @@ at or before now are archived (scrubbed) and deleted — then the `retain_refere
 references any more — and each table is recorded in `aic_lifecycle_expiries`. Manage is told nothing
 (the company / account is already gone there). A company that renewed (state `active`) is never expired.
 1.1.1 **retention groups**: each retained row with a period is the root of a group — itself and every
-row that references it through foreign keys, recursively (any ON DELETE action; tables without a
-company column included) — down to the next root: a retained row with its own period inside a group is
+row that references it through foreign keys, recursively (CASCADE, NO ACTION, RESTRICT; SET NULL / SET
+DEFAULT only into tables an `expires_with` names — otherwise the database nulls the link and the row
+stays; tables without a company column included) — down to the next root: a retained row with its own period inside a group is
 *contained*: it must be due for the group to go, but expires on its own (a workspace waits for its last
 statement; a statement does not wait for its workspace). Groups that share a row wait for each other. A
 group expires only when all of it is due: its root is past its own period (members without a period

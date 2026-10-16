@@ -70,8 +70,9 @@ namespace Aicountly\Lifecycle;
  * Since 1.1.1 (optional; a 1.0 / 1.1 manifest validates and behaves as before):
  *
  *   retention groups a retained entry with a period may have children — rows of any table that
- *                    reference its rows by foreign key (CASCADE, SET NULL, SET DEFAULT, NO ACTION or
- *                    RESTRICT), tables without a company column included. They expire with it, as one
+ *                    reference its rows by foreign key (CASCADE, NO ACTION or RESTRICT; SET NULL / SET
+ *                    DEFAULT only into tables an expires_with names), tables without a company column
+ *                    included. They expire with it, as one
  *                    group (PurgeEngine::expire()); no longer a refusal. PurgeEngine::warnings() names them
  *                    once per root table.
  *   expires_with     on a retained entry with a period (or a retain_where entry with one):
@@ -79,7 +80,12 @@ namespace Aicountly\Lifecycle;
  *                    expire with its rows; {table: 'sign_offs', from: 'signed_at'}: a member row of that
  *                    table also holds the group until its own `from` + the root's period has passed (the
  *                    group runs from the latest record in it, without making the member a root that could
- *                    expire on its own). Refused (PurgeEngine::problems()) when one is not reachable from it through
+ *                    expire on its own); {table, column: 'engagement_id', parent_column?}: the table points
+ *                    at this one by that column WITHOUT a foreign key — its rows join the group as if it
+ *                    had one (parent_column defaults to the single-column primary key);
+ *                    not_before_root: true — rows of a retained table with its own period that belong to
+ *                    the group do not expire before it (they wait for the root; the table's other rows
+ *                    keep their own period: an audit trail with engagement and firm-level rows). Refused (PurgeEngine::problems()) when one is not reachable from it through
  *                    foreign keys: its rows would be left behind, kept for ever. A retained entry named
  *                    there needs no period of its own (no "missing period" warning): it expires with
  *                    the root's groups.
@@ -571,18 +577,28 @@ final class PurgeManifest
         }
         $out = [];
         $from = [];
+        $refs = [];
+        $whole = [];
         foreach ($list as $t) {
             $col = null;
+            $ref = null;
+            $nb = false;
             if (is_array($t)) {
                 $col = $t['from'] ?? null;
+                $nb = !empty($t['not_before_root']);
+                if (isset($t['column'])) {
+                    $ref = [$t['column'], $t['parent_column'] ?? null];
+                }
+                $bad = ($col !== null && !self::ident($col)) || ($ref !== null && (!self::ident($ref[0]) || ($ref[1] !== null && !self::ident($ref[1]))))
+                    || ($col === null && $ref === null && !$nb);
                 $t = isset($t['schema']) && is_string($t['schema']) && is_string($t['table'] ?? null) ? $t['schema'] . '.' . $t['table'] : ($t['table'] ?? null);
-                if (!self::ident($col)) {
+                if ($bad) {
                     $t = null;
                 }
             }
             $q = is_string($t) ? (self::ident($t) ? self::qualify($t, $schema) : self::tableName($t)) : null;
             if ($q === null || str_contains($q, '.aic_lifecycle_')) {
-                $problems[] = "{$where}.expires_with: " . json_encode($t) . ' must be a table name ([schema.]table) or {table, from: date column}.';
+                $problems[] = "{$where}.expires_with: " . json_encode($t) . ' must be a table name ([schema.]table) or {table, from?: date column, column?: reference column, parent_column?}.';
 
                 return null;
             }
@@ -590,9 +606,16 @@ final class PurgeManifest
             if ($col !== null) {
                 $from[$q] = $col;
             }
+            if ($ref !== null) {
+                $refs[$q] = $ref;
+            }
+            if ($nb) {
+                $whole[$q] = true;
+            }
         }
 
-        return ['expires_with' => array_keys($out)] + ($from !== [] ? ['expires_with_from' => $from] : []);
+        return ['expires_with' => array_keys($out)] + ($from !== [] ? ['expires_with_from' => $from] : []) + ($refs !== [] ? ['expires_with_refs' => $refs] : [])
+            + ($whole !== [] ? ['expires_with_not_before_root' => $whole] : []);
     }
 
     /** retain_where: one condition, no statement separators, placeholders or comments. */
