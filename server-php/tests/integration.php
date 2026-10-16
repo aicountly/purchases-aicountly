@@ -3346,6 +3346,9 @@ require __DIR__ . '/books_voucher_events.php';
 // Manage's company lifecycle: a read-only Smart Books / Inventory company (deferred, not failed).
 require __DIR__ . '/company_restricted.php';
 
+// The audit trail: writer, fail-closed material rows, coverage and the read API.
+require __DIR__ . '/audit_trail.php';
+
 echo "\n" . str_repeat('-', 60) . "\n";
 echo "{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

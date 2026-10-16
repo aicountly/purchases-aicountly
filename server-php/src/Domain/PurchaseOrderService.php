@@ -192,7 +192,7 @@ final class PurchaseOrderService
         // Segregation of duties, as the company's stated policy (SegregationOfDuties).
         SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) $po['created_by'], 'purchase order', 'purchase_order', $poId, $note);
 
-        Db::transaction(function () use ($poId, $approved, $note) {
+        Db::transaction(function () use ($poId, $approved, $note, $action, $po) {
             Db::update('purchase_orders', [
                 'status'      => $approved ? 'APPROVED' : 'DRAFT',
                 'approved_by' => $approved ? $this->auth->uuid : null,
@@ -209,11 +209,17 @@ final class PurchaseOrderService
                     'cmp' => $this->ctx->cmpId, 'id' => $poId,
                 ],
             );
-        });
 
-        Audit::record($this->ctx, $this->auth, 'po.' . $action, 'purchase_order', $poId, ['status' => 'APPROVAL_PENDING'], [
-            'status' => $approved ? 'APPROVED' : 'DRAFT',
-        ], $note ?? '');
+            // In the same transaction (fail-closed): an approval with no record of who gave it
+            // does not happen.
+            Audit::material($this->ctx, $this->auth, 'po.' . $action, 'purchase_order', $poId, [
+                'status' => 'APPROVAL_PENDING', 'po_no' => $po['po_no'] ?? null,
+                'supplier' => $po['supplier_name_snapshot'] ?? null, 'total_amount' => $po['total_amount'] ?? null,
+            ], [
+                'status' => $approved ? 'APPROVED' : 'DRAFT', 'po_no' => $po['po_no'] ?? null,
+                'supplier' => $po['supplier_name_snapshot'] ?? null, 'total_amount' => $po['total_amount'] ?? null,
+            ], $note ?? '');
+        });
 
         return $this->find($poId);
     }
@@ -288,6 +294,9 @@ final class PurchaseOrderService
                 'document_fingerprint' => $fingerprint, 'occurred_on' => gmdate('Y-m-d'), 'recorded_by' => $this->auth->uuid,
             ], 'communication_id');
         }
+        Audit::record($this->ctx, $this->auth, 'po.document_downloaded', 'purchase_order', $poId, null, [
+            'po_no' => $po['po_no'], 'version_no' => $po['version_no'] ?? null, 'fingerprint' => $fingerprint,
+        ]);
 
         return ['pdf' => $pdf, 'fingerprint' => $fingerprint, 'file_name' => preg_replace('/[^A-Za-z0-9._-]+/', '-', (string) $po['po_no']) . '.pdf'];
     }
@@ -474,10 +483,10 @@ final class PurchaseOrderService
                 ['by' => $this->auth->uuid, 'cmp' => $this->ctx->cmpId, 'po' => $poId],
             );
 
+            Audit::material($this->ctx, $this->auth, 'po.cancelled', 'purchase_order', $poId, ['status' => (string) $po['status']], ['status' => 'CANCELLED'], $reason);
+
             return (string) $po['status'];
         });
-
-        Audit::record($this->ctx, $this->auth, 'po.cancelled', 'purchase_order', $poId, ['status' => $before], ['status' => 'CANCELLED'], $reason);
 
         return $this->find($poId);
     }
@@ -793,7 +802,7 @@ final class PurchaseOrderService
         }
         SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) $amendment['requested_by'], 'amendment', 'purchase_order', $poId, $note);
 
-        Db::transaction(function () use ($poId, $amendmentId, $approved, $note): void {
+        Db::transaction(function () use ($poId, $amendmentId, $approved, $note, $amendment): void {
             $locked = PoProgress::lock($poId, $this->ctx->cmpId);
             $amendment = Db::first('SELECT * FROM purchase_po_amendments WHERE amendment_id = :id AND cmp_id = :cmp FOR UPDATE', ['id' => $amendmentId, 'cmp' => $this->ctx->cmpId]);
             if ($locked === null || $amendment['status'] !== 'PENDING_APPROVAL' || (int) ($locked['amendment_pending_id'] ?? 0) !== $amendmentId) {
@@ -823,9 +832,12 @@ final class PurchaseOrderService
                   WHERE cmp_id = :cmp AND entity_type = 'purchase_order' AND entity_id = :po AND amendment_id = :aid AND status = 'PENDING'",
                 ['status' => $approved ? 'APPROVED' : 'REJECTED', 'by' => $this->auth->uuid, 'note' => $note, 'cmp' => $this->ctx->cmpId, 'po' => $poId, 'aid' => $amendmentId],
             );
-        });
 
-        Audit::record($this->ctx, $this->auth, 'po.amendment_' . ($approved ? 'approved' : 'rejected'), 'purchase_order', $poId, null, ['amendment_id' => $amendmentId], $note ?? '');
+            Audit::material($this->ctx, $this->auth, 'po.amendment_' . ($approved ? 'approved' : 'rejected'), 'purchase_order', $poId,
+                ['amendment_status' => 'PENDING_APPROVAL'],
+                ['amendment_status' => $approved ? 'APPLIED' : 'REJECTED', 'amendment_id' => $amendmentId, 'to_version' => $amendment['to_version'] ?? null],
+                $note ?? '');
+        });
 
         return $this->find($poId);
     }

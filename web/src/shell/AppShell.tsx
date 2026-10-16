@@ -8,9 +8,11 @@ import {
   ChevronDown,
   ClipboardList,
   FileSearch,
+  History,
   KeyRound,
   LayoutDashboard,
   LogOut,
+  UserCog,
   MapPin,
   Menu,
   PackageCheck,
@@ -32,9 +34,11 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
+import { manageProfileUrl } from '../services/appLauncher'
 import { ConnectEmbed } from '../components/ConnectEmbed'
 import { usePurchases } from '../context/PurchasesContext'
 import { AccessNotice } from './AccessNotice'
+import { CompanyIdTag } from '../components/CompanyIdTag'
 import { useScopeLabels } from './useScopeLabels'
 import './app-shell.css'
 import { CompanyReadOnlyBanner } from '../lifecycle/CompanyReadOnlyBanner'
@@ -94,6 +98,7 @@ const NAV: NavEntry[] = [
   // Company access from Manage's company registry. No permission: the owner administers it
   // there, anyone else sees their own access and can ask for it.
   { to: '/users-access', label: 'Users & Access', icon: UserCheck },
+  { to: '/audit-log', label: 'Audit trail', icon: History, permission: 'audit.view' },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
   // Its own entry, not a child of Settings: the same choice this list already
   // makes for Receipts alongside Dashboard. Always visible, like Settings
@@ -234,7 +239,21 @@ export function AppShell() {
             </span>
             <span className="app-shell__user-name" title={session?.display_name ?? undefined}>
               {session?.display_name ?? 'Signed in'}
+              {session?.kind === 'user' && session.uuid && (
+                <small className="app-shell__cust-id" title="Your AICOUNTLY customer ID">
+                  Cust ID: {session.uuid}
+                </small>
+              )}
             </span>
+            <button
+              type="button"
+              className="app-shell__signout"
+              onClick={() => window.open(manageProfileUrl(), '_blank', 'noopener,noreferrer')}
+              aria-label="Manage profile (opens in a new tab)"
+              title="Manage profile"
+            >
+              <UserCog size={15} aria-hidden />
+            </button>
             <button type="button" className="app-shell__signout" onClick={signOut} aria-label="Log out">
               <LogOut size={15} aria-hidden />
             </button>
@@ -267,6 +286,7 @@ export function AppShell() {
                 <Building2 size={14} aria-hidden />
               </span>
               <span>{labels.company ?? (scope ? `Company ${scope.cmp_id}` : 'Choose a company')}</span>
+              {labels.company && <CompanyIdTag id={scope?.cmp_id} />}
               <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
             </button>
 

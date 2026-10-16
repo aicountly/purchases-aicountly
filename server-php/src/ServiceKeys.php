@@ -38,13 +38,14 @@ final class ServiceKeys
     /**
      * Never held by a product key, whatever SERVICE_KEY_PERMISSIONS lists.
      *
-     * Administration (who may do what, the company's settings); approvals and the other
+     * Administration (who may do what, the company's settings, the audit trail with its
+     * addresses and browsers); approvals and the other
      * decisions this product's segregation of duties gives a person — a key acts for an actor it
      * merely names (X-Actor-Uuid), so "not your own order" cannot hold for it; and everything that
      * posts to Books, which takes vouchers only on a person's session.
      */
     public const NEVER = [
-        'access.manage', 'settings.manage',
+        'access.manage', 'settings.manage', 'audit.view', 'audit.export',
         'requisition.approve', 'po.approve', 'po.amend', 'po.cancel', 'po.close', 'price.override',
         'rfq.award', 'receipt.over_tolerance', 'match.resolve',
         'bill.post', 'return.approve', 'return.financial_adjustment', 'claim.settle', 'supplier.approve',

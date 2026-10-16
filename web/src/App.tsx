@@ -55,6 +55,9 @@ const Access = lazy(() => import('./pages/access'))
 /** Users & Access (company access, Manage's registry): an administration screen, loaded on demand like Access. */
 const UsersAccess = lazy(() => import('./pages/UsersAccess'))
 
+/** The audit trail: an administration screen, loaded on demand like Access. */
+const AuditLog = lazy(() => import('./pages/AuditLog'))
+
 function PageViews() {
   const location = useLocation()
   useEffect(() => {
@@ -232,6 +235,17 @@ export default function App() {
                 <RequireScope>
                   <Suspense fallback={<p style={{ color: 'var(--muted)' }}>Opening…</p>}>
                     <UsersAccess />
+                  </Suspense>
+                </RequireScope>
+              }
+            />
+
+            <Route
+              path="audit-log"
+              element={
+                <RequireScope>
+                  <Suspense fallback={<p style={{ color: 'var(--muted)' }}>Opening…</p>}>
+                    <AuditLog />
                   </Suspense>
                 </RequireScope>
               }

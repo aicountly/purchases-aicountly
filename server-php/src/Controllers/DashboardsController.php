@@ -78,6 +78,11 @@ final class DashboardsController extends Controller
 
         $payload = self::dashboard($view, $auth, $ctx)->build();
         $format = strtolower((string) (Http::param('format') ?? 'csv'));
+        // Business figures leaving the product as a file: who took which report, for which period.
+        \Aicountly\Api\Audit::record($ctx, $auth, 'report.exported', 'report', $view, null, [
+            'label' => self::TITLES[$view] ?? $view, 'format' => $format === 'pdf' ? 'pdf' : 'csv',
+            'from' => $payload['period']['from'] ?? null, 'to' => $payload['period']['to'] ?? null,
+        ]);
         $stem = 'purchases-' . $view . '-' . ($payload['period']['from'] ?? 'from') . '-to-' . ($payload['period']['to'] ?? 'to');
 
         if ($format === 'pdf') {

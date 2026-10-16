@@ -387,11 +387,8 @@ final class BillService
                 );
         }
 
+        // 'bill.posted' is written by finalise(), in the transaction that marks the bill posted.
         $this->verifyWithBooks($requestId);
-
-        Audit::record($this->ctx, $this->auth, 'bill.posted', 'bill_request', $requestId, null, [
-            'books_voucher_id' => $this->find($requestId)['books_voucher_id'] ?? null,
-        ]);
 
         return $this->find($requestId);
     }
@@ -545,9 +542,12 @@ final class BillService
             if ($bill['po_id'] !== null) {
                 PoProgress::recompute((int) $bill['po_id'], $this->ctx->cmpId, $this->auth->uuid);
             }
-        });
 
-        Audit::record($this->ctx, $this->auth, 'bill.cancelled', 'bill_request', $requestId, null, ['status' => 'CANCELLED'], $reason);
+            Audit::material($this->ctx, $this->auth, 'bill.cancelled', 'bill_request', $requestId, ['status' => (string) $bill['status']], [
+                'status' => 'CANCELLED', 'supplier_invoice_no' => $bill['supplier_invoice_no'],
+                'amount' => self::linesTotal(Db::jsonColumn($bill['requested_lines'])),
+            ], $reason);
+        });
 
         return $this->find($requestId);
     }
@@ -843,7 +843,33 @@ final class BillService
             } else {
                 IntegrationCommand::completeByReconcile($commandId, $reference);
             }
+
+            // Fail-closed, with the posting itself: Books already holds the voucher, and if this
+            // row cannot be written the bill stays unposted here and the next Post settles it from
+            // the same idempotent command — never a posted bill nobody can trace.
+            Audit::material($this->ctx, $this->auth, 'bill.posted', 'bill_request', $requestId, [
+                'status' => (string) $bill['status'],
+            ], [
+                'status'              => 'POSTED',
+                'supplier_invoice_no' => $bill['supplier_invoice_no'],
+                'books_voucher_id'    => self::id($reference['books_voucher_id'] ?? null),
+                'books_voucher_no'    => self::text((string) ($reference['books_voucher_no'] ?? '')),
+                'amount'              => self::linesTotal(Db::jsonColumn($bill['requested_lines'])),
+                'revision'            => (int) $bill['revision'],
+                'resolved_by'         => $resolvedBy,
+            ]);
         });
+    }
+
+    /** @param list<array<string, mixed>> $lines */
+    private static function linesTotal(array $lines): float
+    {
+        $total = 0.0;
+        foreach ($lines as $line) {
+            $total += (float) ($line['amount'] ?? 0);
+        }
+
+        return round($total, 2);
     }
 
     /**
@@ -879,6 +905,11 @@ final class BillService
         }
 
         Db::update('purchase_bill_requests', ['posting_check' => $verification], ['request_id' => $requestId, 'cmp_id' => $this->ctx->cmpId]);
+        // The finding is recorded on the bill; who looked, and what they were told, is recorded here.
+        Audit::record($this->ctx, $this->auth, 'bill.verified', 'bill_request', $requestId, null, [
+            'verified' => $verification['verified'], 'problems' => count($verification['problems']),
+            'books_voucher_no' => $bill['books_voucher_no'] ?? null,
+        ]);
 
         return $verification;
     }
@@ -1067,12 +1098,14 @@ final class BillService
                 'updated_at' => self::now(),
             ], ['request_id' => $requestId, 'cmp_id' => $this->ctx->cmpId]);
 
+            // Accepting a variance is a decision to pay more than was agreed: recorded with it.
+            Audit::material($this->ctx, $this->auth, 'match.' . $action, 'match_exception', $exceptionId, ['status' => 'OPEN', 'bill_status' => (string) $locked['status']], [
+                'status' => $action === 'accept' ? 'ACCEPTED' : 'REJECTED', 'bill_status' => $status,
+                'bill_request_id' => $requestId, 'supplier_invoice_no' => $locked['supplier_invoice_no'],
+            ], $note);
+
             return $status;
         });
-
-        Audit::record($this->ctx, $this->auth, 'match.' . $action, 'match_exception', $exceptionId, ['status' => 'OPEN'], [
-            'status' => $action === 'accept' ? 'ACCEPTED' : 'REJECTED', 'bill_status' => $status,
-        ], $note);
 
         return $this->find($requestId);
     }
@@ -1102,7 +1135,14 @@ final class BillService
             }, ['status' => $bill['status']]);
         }
 
-        return $this->matchAgain($requestId);
+        $result = $this->matchAgain($requestId);
+        Audit::record($this->ctx, $this->auth, 'bill.rematched', 'bill_request', $requestId, ['status' => (string) $bill['status']], [
+            'status'   => (string) ($result['status'] ?? ''),
+            'verdict'  => $result['match']['verdict'] ?? null,
+            'match_id' => isset($result['match']['match_id']) ? (int) $result['match']['match_id'] : null,
+        ]);
+
+        return $result;
     }
 
     /** Match the bill as it now stands and set its status from the stored result. */

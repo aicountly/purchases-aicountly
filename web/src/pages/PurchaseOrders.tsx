@@ -13,6 +13,7 @@ import { ItemPicker, SupplierPicker } from '../components/LivePicker'
 import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
+import { RecordHistory } from '../components/AuditDetail'
 import * as decimal from '../utils/decimal'
 import { localToday } from '../utils/localDate'
 
@@ -529,6 +530,8 @@ export function PurchaseOrderDetail() {
           />
         </Card>
       </div>
+
+      <RecordHistory entityType="purchase_order" entityId={po.po_id} />
     </div>
   )
 }

@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 // Purchases purge manifest for the AICOUNTLY company-lifecycle kit (lib/company-lifecycle, README § Manifest
-// review). Drafted with bin/discover-manifest.php from the migrated schema (001–025), then reviewed line by
+// review). Drafted with bin/discover-manifest.php from the migrated schema (001–023 and 025–026), then reviewed line by
 // line — docs/COMPANY_LIFECYCLE.md § "What a purge deletes and keeps" explains each decision.
 //
 // Change it in the SAME commit as any migration that adds a table with cmp_id or user_uuid: strict mode
@@ -31,7 +31,7 @@ $chain = static fn (string $what): string => $what . ' referenced by the retaine
 // from the document's date" covers it, and Income-tax Rule 6F (6 years from the end of the assessment
 // year), with one approximation; Companies Act s.128(5) means up to ~9 years from a document date (owner decision 2026-10-16: 9).
 // Bills and goods receipts run from created_at (booked on or after the supplier's invoice / delivery date);
-// returns and claims from retention_anchor_at (migration 027: the latest of the record and of every return
+// returns and claims from retention_anchor_at (migration 028: the latest of the record and of every return
 // line / claim resolution recorded against it), so a child recorded later is never deleted with its parent
 // by ON DELETE CASCADE.
 
@@ -118,7 +118,7 @@ return [
         ['table' => 'purchase_claim_resolutions', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 9, 'retain_from' => 'created_at'],
         ['table' => 'purchase_claims', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 9, 'retain_from' => 'retention_anchor_at'],
         // Append-only audit trail of every change to the records above (its triggers refuse DELETE except to the
-        // purge worker's session, migration 027).
+        // purge worker's session, migration 028).
         ['table' => 'purchase_audit_log', 'key' => 'cmp_id', 'reason' => 'Companies Act 2013 s.128(5) and Rule 3(1) of the Companies (Accounts) Rules 2014: the audit trail of the books of account kept 9 years',
             'retain_years' => 9, 'retain_from' => 'created_at'],
     ],

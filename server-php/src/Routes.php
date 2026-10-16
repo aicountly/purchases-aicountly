@@ -6,6 +6,7 @@ namespace Aicountly\Api;
 
 use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\AnalyticsController;
+use Aicountly\Api\Controllers\AuditController;
 use Aicountly\Api\Controllers\BillsController;
 use Aicountly\Api\Controllers\BooksEventsController;
 use Aicountly\Api\Controllers\CatalogController;
@@ -67,6 +68,12 @@ final class Routes
         // The access trail, read back out of the append-only audit log this
         // product already writes. Read-only: nothing new is stored for it.
         $router->get('v1/access/activity', [AccessController::class, 'activity']);
+
+        // The whole audit trail (audit.view), its CSV (audit.export) and one record's history.
+        // Read-only: the rows are what every write in this product has recorded.
+        $router->get('v1/audit-log', [AuditController::class, 'index']);
+        $router->get('v1/audit-log/export', [AuditController::class, 'export']);
+        $router->get('v1/audit-log/entity/{type}/{id}', [AuditController::class, 'entity']);
 
         // Read-through to the products that own the data. Pass-throughs:
         // nothing they return is stored.

@@ -68,6 +68,8 @@ final class Permissions
             'settings.manage' => 'Change Purchases settings',
             'access.manage'   => 'Manage Purchases permission profiles',
             'reports.view'    => 'View procurement reports',
+            'audit.view'      => 'View the audit trail',
+            'audit.export'    => 'Export the audit trail',
         ],
     ];
 

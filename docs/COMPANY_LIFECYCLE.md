@@ -10,9 +10,9 @@ Manage's side: `manage-aicountly/docs/company-lifecycle/README.md`.
 | Piece | Where |
 |---|---|
 | Kit (copy, don't edit — fix it in Manage and copy again) | `server-php/lib/company-lifecycle/` |
-| Tables `aic_lifecycle_events / _state / _jobs / _acks` (the kit's `schema.sql`, verbatim) | `server-php/database/migrations/025_aic_company_lifecycle.sql` |
-| Kit 1.1: `aic_lifecycle_expiries`, job status `held` (the kit's `schema-1.1.sql`, verbatim) | `server-php/database/migrations/026_aic_company_lifecycle_1_1.sql` |
-| Kit 1.1: the purge worker may delete audit rows (`aicountly.lifecycle_purge`); `retention_anchor_at` on returns / claims (+ triggers) | `server-php/database/migrations/027_purchase_lifecycle_retention.sql` |
+| Tables `aic_lifecycle_events / _state / _jobs / _acks` (the kit's `schema.sql`, verbatim) | `server-php/database/migrations/026_aic_company_lifecycle.sql` |
+| Kit 1.1: `aic_lifecycle_expiries`, job status `held` (the kit's `schema-1.1.sql`, verbatim) | `server-php/database/migrations/027_aic_company_lifecycle_1_1.sql` |
+| Kit 1.1: the purge worker may delete audit rows (`aicountly.lifecycle_purge`); `retention_anchor_at` on returns / claims (+ triggers) | `server-php/database/migrations/028_purchase_lifecycle_retention.sql` |
 | Adapter: route, write gate, machine gate (kit 1.1), companyinfo sync, Kit on Purchases' own connection | `server-php/src/CompanyLifecycle.php` |
 | Receiver route `POST /api/internal/manage/company-lifecycle` | `server-php/src/Routes.php` (no session, no company check: the HMAC is its only credential) |
 | Write gate + companyinfo sync | `server-php/src/Context.php` (`assertAllowed()` after Manage confirmed access; `askManage()` syncs); `Controllers/ManageController::companyInfo` (sync) |
@@ -70,9 +70,9 @@ deletes them, checks the counts, reads back after commit, marks the company `pur
 |---|---|---|---|
 | `purchase_bill_requests` | the purchase voucher as asked of Books: supplier invoice no./date, GSTIN, reverse charge, lines and tax | CGST Act s.35-36 + Rules 56-58 (72 months from the annual-return due date); Income-tax Act s.44AA + Rule 6F; Companies Act s.128(5) — eight financial years (9 years from the document date) | 9 years from `created_at` (booked on or after the supplier's invoice date) |
 | `purchase_receipt_requests` | goods received (GRN) against an order | same | 9 years from `created_at` |
-| `purchase_returns`, `purchase_return_lines` | purchase returns (the debit note raised in Books) | same | 9 years from `retention_anchor_at` (migration 027) / `created_at` |
-| `purchase_claims`, `purchase_claim_resolutions` | supplier claims and the debit / credit notes settled on them (amount, tax category, HSN/SAC) | same | 9 years from `retention_anchor_at` (migration 027) / `created_at` |
-| `purchase_audit_log` | append-only audit trail | Companies Act s.128(5) + Rule 3(1), Companies (Accounts) Rules — 9 years | 9 years from `created_at` (the worker's session may delete it: migration 027) |
+| `purchase_returns`, `purchase_return_lines` | purchase returns (the debit note raised in Books) | same | 9 years from `retention_anchor_at` (migration 028) / `created_at` |
+| `purchase_claims`, `purchase_claim_resolutions` | supplier claims and the debit / credit notes settled on them (amount, tax category, HSN/SAC) | same | 9 years from `retention_anchor_at` (migration 028) / `created_at` |
+| `purchase_audit_log` | append-only audit trail | Companies Act s.128(5) + Rule 3(1), Companies (Accounts) Rules — 9 years | 9 years from `created_at` (the worker's session may delete it: migration 028) |
 
 **Kept only while referenced** (kit 1.1 `retain_referenced`; 1.0 kept these tables whole for every company):
 the procurement chain. A row a retained bill / goods receipt / return / claim still points at — directly or
@@ -94,7 +94,7 @@ therefore one approximation that covers both; Companies Act s.128(5) ("eight fin
 preceding") can mean up to ~9 years from a document date: owner decision (2026-10-16) — statutory financial
 records are kept **9 years** (`retain_years: 9`); GST s.36 needs at most ~93 months.
 
-Returns and claims run from `retention_anchor_at` (migration 027, kept by triggers: the latest of the record and
+Returns and claims run from `retention_anchor_at` (migration 028, kept by triggers: the latest of the record and
 of every return line / claim resolution recorded against it) so a child recorded later is never deleted with its
 parent by `ON DELETE CASCADE`, unarchived and inside its own period. The worker's session
 (`config/lifecycle-kit.php`, CLI only) sets `aicountly.lifecycle_purge = on`, which lets `purchase_audit_log`'s

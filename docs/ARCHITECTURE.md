@@ -157,6 +157,35 @@ a requisition or a purchase order may also decide it is the company's stated pol
 Accepting a match variance costs the company money, so it requires a written
 reason and is recorded against the bill.
 
+## The audit trail
+
+One append-only table, `purchase_audit_log` (migrations 003 and 024), written only
+through `src/Audit.php`. BEFORE UPDATE / BEFORE DELETE triggers refuse any change to
+a row; TRUNCATE (row triggers do not fire on it) is what `tests/reset.php` uses and
+nothing in production runs it. Each row holds the actor (portal uuid, or the calling
+product for a service key), the action (`po.approve`, `access.profile_assigned`…),
+the record and its number at the time (`entity_label`), a one-line `summary`, the
+before/after snapshots, `changes` as `[{field, label, old, new}]`, a `severity`
+(`info` / `material` / `security`), and the request id, IP address and browser.
+Secret-looking fields (password, token, otp, api_key…) are never written.
+
+- `Audit::material()` is fail-closed and runs inside the business transaction:
+  PO and requisition approve/reject, PO cancel, amendment decisions, bill posting
+  (in `finalise`, with the bill marked POSTED), bill cancel, match-exception
+  decisions, Books' voucher cancellation events, settings and match-policy changes,
+  and every access change. If the row cannot be written, the change is not made.
+- `Audit::record()` is best-effort for everything else; inside a transaction it uses
+  a savepoint so a failed audit insert cannot abort the caller's work.
+
+Read back, company-scoped: `GET v1/audit-log` (filters `from`, `to`, `action` —
+`po.*` for a prefix —, `entity_type`, `entity_id`, `entity_label`, `actor_uuid`,
+`severity`, `q`; `limit`/`offset`, `meta.total`) and
+`GET v1/audit-log/entity/{type}/{id}` need `audit.view`; `GET v1/audit-log/export`
+(CSV, formula-safe, at most 5,000 rows with `X-Export-Truncated` and a closing
+`PARTIAL` line) needs `audit.export` and is itself recorded. A product key never
+holds either. The screen is Administration → Audit trail (`/audit-log`); purchase
+order and bill screens show the record's History to holders of `audit.view`.
+
 ## How a write to another product works
 
 ```
@@ -189,7 +218,7 @@ original key; deleted in Manage, or the product answering `lifecycle: purged` �
 **DROPPED_COMPANY_DELETED** with a `purchase_audit_log` entry (`integration_command.dropped_company_deleted`).
 Purchase does not send it on its own after renewal: Books takes a voucher only on a person's session
 (see "Why there is no reconciliation cron"). The command strip shows "Waiting for renewal" (with
-Retry) and "Dropped (company deleted)". Migration 024.
+Retry) and "Dropped (company deleted)". Migration 025.
 
 No lock is held across a network call; the lease stops two attempts running at once.
 

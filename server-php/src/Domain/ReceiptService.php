@@ -253,6 +253,10 @@ final class ReceiptService
                 . ($receipt['last_error'] ?? '') . ' Cancel it and record the delivery afresh once the cause is fixed.');
         }
 
+        Audit::record($this->ctx, $this->auth, 'receipt.retried', 'receipt_request', $requestId, ['status' => (string) $receipt['status']], [
+            'po_id' => (int) $receipt['po_id'],
+        ]);
+
         return $this->dispatch($requestId);
     }
 
@@ -301,6 +305,9 @@ final class ReceiptService
             Db::update('purchase_receipt_requests', [
                 'status' => 'FAILED', 'last_error' => 'Inventory has no record of this receipt. Retry will send it.', 'updated_at' => self::now(),
             ], ['request_id' => $requestId, 'cmp_id' => $this->ctx->cmpId]);
+            Audit::record($this->ctx, $this->auth, 'receipt.reconciled', 'receipt_request', $requestId, ['status' => (string) $receipt['status']], [
+                'status' => 'FAILED', 'outcome' => 'not_in_inventory', 'po_id' => (int) $receipt['po_id'],
+            ]);
 
             return $this->orderView((int) $receipt['po_id'], $requestId);
         }
