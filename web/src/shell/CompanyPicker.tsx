@@ -4,6 +4,7 @@ import { Button, Field, Notice, Select } from '../ui'
 import { fetchAllCompanies, fetchCompanyInfo } from '../services/manage'
 import type { CompanyInfo, CompanyOption } from '../services/manage'
 import { usePurchases } from '../context/PurchasesContext'
+import { companyIdSuffix } from '../components/CompanyIdTag'
 
 /**
  * Which company, branch and financial year this product is working in.
@@ -167,6 +168,7 @@ export function CompanyPicker() {
               {companies.map((c) => (
                 <option key={c.cmpId} value={c.cmpId}>
                   {c.name}
+                  {companyIdSuffix(c.cmpId)}
                   {c.ownership === 'shared' ? ' (shared)' : ''}
                 </option>
               ))}

@@ -35,6 +35,7 @@ import { AppLauncher } from '../components/AppLauncher'
 import { ConnectEmbed } from '../components/ConnectEmbed'
 import { usePurchases } from '../context/PurchasesContext'
 import { AccessNotice } from './AccessNotice'
+import { CompanyIdTag } from '../components/CompanyIdTag'
 import { useScopeLabels } from './useScopeLabels'
 import './app-shell.css'
 
@@ -266,6 +267,7 @@ export function AppShell() {
                 <Building2 size={14} aria-hidden />
               </span>
               <span>{labels.company ?? (scope ? `Company ${scope.cmp_id}` : 'Choose a company')}</span>
+              {labels.company && <CompanyIdTag id={scope?.cmp_id} />}
               <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
             </button>
 

@@ -292,6 +292,7 @@
   min-width: 0;
 }
 
+.app-shell__pill .company-id-tag { flex-shrink: 0; overflow: visible; color: var(--shell-muted); }
 .app-shell__pill--quiet { font-weight: 500; color: var(--shell-ink); }
 .app-shell__pill svg { color: var(--shell-muted); flex-shrink: 0; }
 .app-shell__pill .app-shell__pill-caret { color: var(--shell-faint); }

@@ -85,6 +85,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* Tabular figures everywhere money or quantity appears: a column of amounts
    that does not line up is a column somebody has to read twice. */
+/* "ID: 123" beside a company name, so similarly named companies can be told apart. */
+.company-id-tag {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .num {
   font-variant-numeric: tabular-nums;
   text-align: right;
