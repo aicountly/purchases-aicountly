@@ -118,7 +118,7 @@ final class SourcingService
      */
     public function inviteSupplier(int $rfqId, int $supplierAccountId): void
     {
-        $rfq = Db::first('SELECT rfq_id, status FROM purchase_rfqs WHERE rfq_id = :id AND cmp_id = :cmp', ['id' => $rfqId, 'cmp' => $this->ctx->cmpId]);
+        $rfq = Db::first('SELECT rfq_id, rfq_no, status FROM purchase_rfqs WHERE rfq_id = :id AND cmp_id = :cmp', ['id' => $rfqId, 'cmp' => $this->ctx->cmpId]);
         if ($rfq === null) {
             Http::notFound('That RFQ does not exist.');
         }
@@ -126,17 +126,22 @@ final class SourcingService
             Http::conflict('This RFQ is ' . strtolower((string) $rfq['status']) . '; nobody else can be asked on it.');
         }
         $name = (new MasterCheck($this->ctx, $this->auth))->supplierName($supplierAccountId);
-        $this->recordInvitation($rfqId, $supplierAccountId, $name);
+        if ($this->recordInvitation($rfqId, $supplierAccountId, $name)) {
+            Audit::record($this->ctx, $this->auth, 'rfq.supplier_invited', 'rfq', $rfqId, null, [
+                'rfq_no' => $rfq['rfq_no'] ?? null, 'supplier_account_id' => $supplierAccountId, 'supplier' => $name,
+            ]);
+        }
     }
 
-    private function recordInvitation(int $rfqId, int $supplierAccountId, ?string $name): void
+    /** @return bool whether a new invitation was recorded (false: the supplier was already asked) */
+    private function recordInvitation(int $rfqId, int $supplierAccountId, ?string $name): bool
     {
         $existing = Db::first(
             'SELECT invitation_id FROM purchase_rfq_invitations WHERE rfq_id = :rfq AND supplier_account_id = :supplier',
             ['rfq' => $rfqId, 'supplier' => $supplierAccountId],
         );
         if ($existing !== null) {
-            return;
+            return false;
         }
 
         Db::insert('purchase_rfq_invitations', [
@@ -146,6 +151,8 @@ final class SourcingService
             'supplier_name_snapshot' => $name,
             'status'                 => 'INVITED',
         ], 'invitation_id');
+
+        return true;
     }
 
     public function issueRfq(int $rfqId): array

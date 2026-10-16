@@ -426,24 +426,34 @@ final class AccessController extends Controller
             'updated_at'   => gmdate('Y-m-d H:i:s'),
         ];
 
-        if ($existing === null) {
-            $profileId = (int) Db::insert(Permissions::TABLE_PROFILES, $values + [
-                'cmp_id'     => $ctx->cmpId,
-                'created_by' => $auth->uuid,
-            ], 'profile_id');
-        } else {
-            Db::update(Permissions::TABLE_PROFILES, $values, ['profile_id' => $profileId]);
-        }
+        // The change and its audit row commit together (fail-closed): an access change nobody
+        // can trace is the one thing this screen must never make.
+        $profileId = Db::transaction(static function () use ($existing, $values, $profileId, $ctx, $auth, $name, $permissions): int {
+            if ($existing === null) {
+                $profileId = (int) Db::insert(Permissions::TABLE_PROFILES, $values + [
+                    'cmp_id'     => $ctx->cmpId,
+                    'created_by' => $auth->uuid,
+                ], 'profile_id');
+            } else {
+                Db::update(Permissions::TABLE_PROFILES, $values, ['profile_id' => $profileId]);
+            }
 
-        Audit::record(
-            $ctx,
-            $auth,
-            $existing === null ? 'access.profile_created' : 'access.profile_updated',
-            'permission_profile',
-            $profileId,
-            $existing === null ? null : ['permissions' => Db::jsonColumn($existing['permissions'])],
-            ['profile_name' => $name, 'permissions' => array_values($permissions)],
-        );
+            Audit::material(
+                $ctx,
+                $auth,
+                $existing === null ? 'access.profile_created' : 'access.profile_updated',
+                'permission_profile',
+                $profileId,
+                $existing === null ? null : [
+                    'profile_name' => $existing['profile_name'],
+                    'permissions'  => Db::jsonColumn($existing['permissions']),
+                    'is_active'    => in_array($existing['is_active'], [true, 't', 1, '1'], true),
+                ],
+                ['profile_name' => $name, 'permissions' => array_values($permissions), 'is_active' => $values['is_active']],
+            );
+
+            return $profileId;
+        });
 
         // Somebody may have just edited their own profile.
         Permissions::forget();
@@ -487,12 +497,14 @@ final class AccessController extends Controller
             );
         }
 
-        Db::run('DELETE FROM ' . Permissions::TABLE_PROFILES . ' WHERE profile_id = :id', ['id' => (int) $id]);
+        Db::transaction(static function () use ($id, $profile, $ctx, $auth): void {
+            Db::run('DELETE FROM ' . Permissions::TABLE_PROFILES . ' WHERE profile_id = :id', ['id' => (int) $id]);
 
-        Audit::record($ctx, $auth, 'access.profile_deleted', 'permission_profile', (int) $id, [
-            'profile_name' => $profile['profile_name'],
-            'permissions'  => Db::jsonColumn($profile['permissions']),
-        ], null);
+            Audit::material($ctx, $auth, 'access.profile_deleted', 'permission_profile', (int) $id, [
+                'profile_name' => $profile['profile_name'],
+                'permissions'  => Db::jsonColumn($profile['permissions']),
+            ], null);
+        });
 
         Permissions::forget();
         Http::data(['deleted' => true, 'profile_id' => (int) $id]);
@@ -527,19 +539,23 @@ final class AccessController extends Controller
                 continue;
             }
 
-            $profileId = (int) Db::insert(Permissions::TABLE_PROFILES, [
-                'cmp_id'       => $ctx->cmpId,
-                'profile_name' => $starter['name'],
-                'description'  => $starter['description'],
-                'permissions'  => json_encode($permissions),
-                'system_key'   => $key,
-                'is_active'    => true,
-                'created_by'   => $auth->uuid,
-            ], 'profile_id');
+            $profileId = Db::transaction(static function () use ($ctx, $auth, $starter, $permissions, $key): int {
+                $profileId = (int) Db::insert(Permissions::TABLE_PROFILES, [
+                    'cmp_id'       => $ctx->cmpId,
+                    'profile_name' => $starter['name'],
+                    'description'  => $starter['description'],
+                    'permissions'  => json_encode($permissions),
+                    'system_key'   => $key,
+                    'is_active'    => true,
+                    'created_by'   => $auth->uuid,
+                ], 'profile_id');
 
-            Audit::record($ctx, $auth, 'access.profile_created', 'permission_profile', $profileId, null, [
-                'profile_name' => $starter['name'], 'permissions' => $permissions, 'source' => 'bootstrap',
-            ]);
+                Audit::material($ctx, $auth, 'access.profile_created', 'permission_profile', $profileId, null, [
+                    'profile_name' => $starter['name'], 'permissions' => $permissions, 'source' => 'bootstrap',
+                ]);
+
+                return $profileId;
+            });
 
             $created[] = ['profile_id' => $profileId, 'profile_name' => $starter['name'], 'permissions' => $permissions];
         }
@@ -593,32 +609,36 @@ final class AccessController extends Controller
             'updated_at'   => gmdate('Y-m-d H:i:s'),
         ];
 
-        if ($existing === null) {
-            $assignmentId = (int) Db::insert(Permissions::TABLE_ASSIGNMENTS, $fields + [
-                'cmp_id'     => $ctx->cmpId,
-                'user_uuid'  => $uuid,
-                'profile_id' => $profileId,
-            ], 'assignment_id');
-        } else {
-            $assignmentId = (int) $existing['assignment_id'];
-            Db::update(Permissions::TABLE_ASSIGNMENTS, $fields, ['assignment_id' => $assignmentId]);
-        }
+        $assignmentId = Db::transaction(static function () use ($existing, $fields, $ctx, $auth, $uuid, $profileId, $profile): int {
+            if ($existing === null) {
+                $assignmentId = (int) Db::insert(Permissions::TABLE_ASSIGNMENTS, $fields + [
+                    'cmp_id'     => $ctx->cmpId,
+                    'user_uuid'  => $uuid,
+                    'profile_id' => $profileId,
+                ], 'assignment_id');
+            } else {
+                $assignmentId = (int) $existing['assignment_id'];
+                Db::update(Permissions::TABLE_ASSIGNMENTS, $fields, ['assignment_id' => $assignmentId]);
+            }
 
-        // A label is a note about a person, so it is applied to every grant they
-        // hold rather than only the one just made.
-        if ($fields['member_label'] !== null) {
-            Db::run(
-                'UPDATE ' . Permissions::TABLE_ASSIGNMENTS . '
-                 SET member_label = :label WHERE cmp_id = :cmp AND user_uuid = :uuid',
-                ['label' => $fields['member_label'], 'cmp' => $ctx->cmpId, 'uuid' => $uuid],
-            );
-        }
+            // A label is a note about a person, so it is applied to every grant they
+            // hold rather than only the one just made.
+            if ($fields['member_label'] !== null) {
+                Db::run(
+                    'UPDATE ' . Permissions::TABLE_ASSIGNMENTS . '
+                     SET member_label = :label WHERE cmp_id = :cmp AND user_uuid = :uuid',
+                    ['label' => $fields['member_label'], 'cmp' => $ctx->cmpId, 'uuid' => $uuid],
+                );
+            }
 
-        Audit::record($ctx, $auth, 'access.profile_assigned', 'permission_assignment', $assignmentId, null, [
-            'user_uuid'    => $uuid,
-            'profile_id'   => $profileId,
-            'profile_name' => $profile['profile_name'],
-        ], (string) ($fields['note'] ?? ''));
+            Audit::material($ctx, $auth, 'access.profile_assigned', 'permission_assignment', $assignmentId, null, [
+                'user_uuid'    => $uuid,
+                'profile_id'   => $profileId,
+                'profile_name' => $profile['profile_name'],
+            ], (string) ($fields['note'] ?? ''));
+
+            return $assignmentId;
+        });
 
         Permissions::forget();
         Http::data(['assignment_id' => $assignmentId, 'user_uuid' => $uuid, 'profile_id' => $profileId]);
@@ -642,12 +662,14 @@ final class AccessController extends Controller
 
         self::assertNotLockingSelfOut($assignment, $ctx, $auth);
 
-        Db::run('DELETE FROM ' . Permissions::TABLE_ASSIGNMENTS . ' WHERE assignment_id = :id', ['id' => (int) $id]);
+        Db::transaction(static function () use ($id, $assignment, $ctx, $auth): void {
+            Db::run('DELETE FROM ' . Permissions::TABLE_ASSIGNMENTS . ' WHERE assignment_id = :id', ['id' => (int) $id]);
 
-        Audit::record($ctx, $auth, 'access.profile_unassigned', 'permission_assignment', (int) $id, [
-            'user_uuid'    => $assignment['user_uuid'],
-            'profile_name' => $assignment['profile_name'],
-        ], null);
+            Audit::material($ctx, $auth, 'access.profile_unassigned', 'permission_assignment', (int) $id, [
+                'user_uuid'    => $assignment['user_uuid'],
+                'profile_name' => $assignment['profile_name'],
+            ], null);
+        });
 
         Permissions::forget();
         Http::data(['deleted' => true, 'assignment_id' => (int) $id]);

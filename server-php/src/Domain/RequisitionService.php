@@ -192,7 +192,7 @@ final class RequisitionService
         // The owner's exception is the company's stated policy, and needs a reason.
         SegregationOfDuties::assertMayDecide($this->ctx, $this->auth, (string) $requisition['requester_uuid'], 'requisition', 'requisition', $requisitionId, $note);
 
-        Db::transaction(function () use ($requisitionId, $approved, $note) {
+        Db::transaction(function () use ($requisitionId, $approved, $note, $action, $requisition) {
             Db::update('purchase_requisitions', [
                 'status'      => $approved ? 'APPROVED' : 'REJECTED',
                 'approved_by' => $approved ? $this->auth->uuid : null,
@@ -213,11 +213,14 @@ final class RequisitionService
                     'id'     => $requisitionId,
                 ],
             );
-        });
 
-        Audit::record($this->ctx, $this->auth, 'requisition.' . $action, 'requisition', $requisitionId, ['status' => 'APPROVAL_PENDING'], [
-            'status' => $approved ? 'APPROVED' : 'REJECTED',
-        ], $note ?? '');
+            // In the same transaction (fail-closed): the decision and who took it commit together.
+            Audit::material($this->ctx, $this->auth, 'requisition.' . $action, 'requisition', $requisitionId, [
+                'status' => 'APPROVAL_PENDING', 'requisition_no' => $requisition['requisition_no'] ?? null,
+            ], [
+                'status' => $approved ? 'APPROVED' : 'REJECTED', 'requisition_no' => $requisition['requisition_no'] ?? null,
+            ], $note ?? '');
+        });
 
         return $this->find($requisitionId);
     }
