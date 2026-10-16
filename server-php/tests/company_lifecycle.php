@@ -75,7 +75,7 @@ function lcUuid(): string
 
 function lcReset(): void
 {
-    Db::connect()->exec('TRUNCATE aic_lifecycle_acks, aic_lifecycle_jobs, aic_lifecycle_events, aic_lifecycle_state RESTART IDENTITY');
+    Db::connect()->exec('TRUNCATE aic_lifecycle_acks, aic_lifecycle_jobs, aic_lifecycle_events, aic_lifecycle_state, aic_lifecycle_expiries RESTART IDENTITY');
     @unlink(sys_get_temp_dir() . '/stub-manage-lifecycle.json');
 }
 
@@ -106,9 +106,25 @@ lcCheck('no purchase voucher, goods receipt, return or claim table is purged (th
     $m = PurgeManifest::load(LC_MANIFEST);
     $purged = array_column($m->tables('company'), 'table');
     $retained = array_column($m->retained('company'), 'table');
-    foreach (['purchase_bill_requests', 'purchase_receipt_requests', 'purchase_returns', 'purchase_return_lines', 'purchase_claims', 'purchase_claim_resolutions', 'purchase_orders', 'purchase_order_lines', 'purchase_audit_log'] as $t) {
+    foreach (['purchase_bill_requests', 'purchase_receipt_requests', 'purchase_returns', 'purchase_return_lines', 'purchase_claims', 'purchase_claim_resolutions', 'purchase_audit_log'] as $t) {
         lcTrue(in_array($t, $retained, true) && !in_array($t, $purged, true), $t . ' is retained');
     }
+});
+
+lcCheck('kit 1.1: every retained table has 8 years; the PO -> quote / RFQ / requisition chain is kept only when referenced', function () {
+    $m = PurgeManifest::load(LC_MANIFEST);
+    lcSame([], $m->warnings(), 'manifest warnings');
+    foreach ($m->retained('company') as $r) {
+        lcTrue(($r['retain_years'] ?? null) === 8 && in_array($r['retain_from'] ?? '', ['created_at', 'retention_anchor_at'], true), $r['table'] . ': 8 years');
+    }
+    $modes = [];
+    foreach ($m->tables('company') as $t) {
+        $modes[$t['table']] = $t['mode'] ?? 'purge';
+    }
+    foreach (['purchase_orders', 'purchase_order_lines', 'purchase_quotes', 'purchase_quote_lines', 'purchase_rfqs', 'purchase_rfq_lines', 'purchase_requisitions', 'purchase_requisition_lines'] as $t) {
+        lcSame('retain_referenced', $modes[$t] ?? null, $t . ' mode');
+    }
+    lcSame([], CompanyLifecycle::LIFECYCLE_MACHINE_ALLOW, 'no machine write passes a read-only company (Purchases receives no money-moved / provider webhook or Manage callback)');
 });
 
 // --- the allow-list ---------------------------------------------------------------------------------
@@ -266,6 +282,37 @@ try {
         lcTrue(lcPersonWrite()[0] !== 423, 'writes again');
     });
 
+    lcCheck('kit 1.1 machine writes: Books\' voucher event answers 423 in a read-only company (Books defers it); renewed, it passes', function () {
+        $books = static function (): array {
+            $eventId = 'lc-' . bin2hex(random_bytes(6));
+            $raw = (string) json_encode(['event_id' => $eventId, 'cmp_id' => LC_CMP, 'vch_txn_id' => 987654, 'event_type' => 'voucher.cancelled']);
+            $t = time();
+
+            return lcHttp('POST', 'v1/integration/books/voucher-events', $raw, [
+                'Content-Type: application/json', 'X-Service-Key: test-books-service-key-0001', 'X-Books-Event-Id: ' . $eventId,
+                'X-Books-Signature: t=' . $t . ',v1=' . hash_hmac('sha256', $t . '.' . $raw, Env::get('BOOKS_EVENTS_SIGNING_SECRET')),
+            ]);
+        };
+        sleep(1);   // a newer occurred_at than the events above
+        lcSame(202, lcEvent(lcCompanyEvent('company_restricted', LC_CMP, 0, ['restricted_until' => gmdate('Y-m-d\TH:i:s\Z', time() + 45 * 86400)]))[0], 'restricted');
+        try {
+            $inbox = static fn (): int => (int) Db::scalar('SELECT COUNT(*) FROM purchase_books_event_inbox WHERE cmp_id = :c', ['c' => LC_CMP]);
+            $before = $inbox();
+            [$status, $json] = $books();
+            lcSame([423, 'COMPANY_RESTRICTED'], [$status, $json['code'] ?? null], 'Books POST v1/integration/books/voucher-events');
+            lcTrue(is_string($json['restricted_until'] ?? null) && ($json['lifecycle'] ?? null) === 'restricted', 'restricted_until and lifecycle for Books\' deferral');
+            lcSame($before, $inbox(), 'nothing applied');
+            $guard = CompanyLifecycle::kit()->guard(CompanyLifecycle::LIFECYCLE_ALLOW, CompanyLifecycle::LIFECYCLE_MACHINE_ALLOW);
+            lcSame(null, $guard->checkMachine(LC_CMP, 'POST', '/api/internal/manage/company-lifecycle'), 'Manage\'s own event always passes');
+            lcSame(423, $guard->checkMachine(LC_CMP, 'POST', '/api/v1/purchase-orders')[0] ?? null, 'any other service-key write is refused');
+            lcSame(null, $guard->checkMachine(LC_CMP, 'GET', '/api/v1/purchase-orders'), 'a machine read passes');
+        } finally {
+            sleep(1);
+            lcEvent(lcCompanyEvent('company_unrestricted', LC_CMP, 0));
+        }
+        lcTrue($books()[0] !== 423, 'renewed: Books\' event is taken again');
+    });
+
     lcCheck('Manage companyinfo is the source of truth: restricted there → 423 here, active → lifted', function () {
         $until = gmdate('Y-m-d\TH:i:s\Z', time() + 10 * 86400);
         file_put_contents(sys_get_temp_dir() . '/stub-manage-lifecycle.json', json_encode([(string) LC_CMP => ['lifecycle' => 'restricted', 'restricted_until' => $until]]));
@@ -284,6 +331,26 @@ try {
         Db::run('INSERT INTO purchase_settings (cmp_id) VALUES (:c)', ['c' => $c]);
         Db::run("INSERT INTO purchase_match_policies (cmp_id, policy_name) VALUES (:c, 'Lifecycle test')", ['c' => $c]);
         Db::run("INSERT INTO purchase_audit_log (cmp_id, fy_id, actor_uuid, actor_kind, source_app, action, entity_type) VALUES (:c, 6, 'user-owner', 'person', 'purchases', 'settings.updated', 'settings')", ['c' => $c]);
+
+        // kit 1.1 chain: requisition -> RFQ -> quote -> PO a bill was booked against (kept), and a requisition,
+        // an RFQ with its quote, and a PO nothing retained points at (purged).
+        Db::connect()->exec("SET aicountly.lifecycle_purge = 'on'");     // what config/lifecycle-kit.php does for the worker
+        foreach (['purchase_bill_requests', 'purchase_order_lines', 'purchase_orders', 'purchase_quote_lines', 'purchase_quotes', 'purchase_rfq_lines', 'purchase_rfqs', 'purchase_requisition_lines', 'purchase_requisitions'] as $t) {
+            Db::run('DELETE FROM ' . $t . ' WHERE cmp_id = :c', ['c' => $c]);
+        }
+        $id = static fn (string $sql, array $p = []): int => (int) Db::scalar($sql, ['c' => $c] + $p);
+        $req = $id("INSERT INTO purchase_requisitions (cmp_id, fy_id, requisition_no, requisition_date, requester_uuid) VALUES (:c, 6, 'LC-R1', CURRENT_DATE, 'user-owner') RETURNING requisition_id");
+        $reqIdle = $id("INSERT INTO purchase_requisitions (cmp_id, fy_id, requisition_no, requisition_date, requester_uuid) VALUES (:c, 6, 'LC-R2', CURRENT_DATE, 'user-owner') RETURNING requisition_id");
+        $rfq = $id("INSERT INTO purchase_rfqs (cmp_id, fy_id, rfq_no, rfq_date, created_by) VALUES (:c, 6, 'LC-RFQ1', CURRENT_DATE, 'user-owner') RETURNING rfq_id");
+        $rfqLine = $id('INSERT INTO purchase_rfq_lines (cmp_id, rfq_id, line_no) VALUES (:c, :r, 1) RETURNING line_id', ['r' => $rfq]);
+        $rfqIdle = $id("INSERT INTO purchase_rfqs (cmp_id, fy_id, rfq_no, rfq_date, created_by) VALUES (:c, 6, 'LC-RFQ2', CURRENT_DATE, 'user-owner') RETURNING rfq_id");
+        $quote = $id('INSERT INTO purchase_quotes (cmp_id, rfq_id, supplier_account_id) VALUES (:c, :r, 601) RETURNING quote_id', ['r' => $rfq]);
+        $quoteIdle = $id('INSERT INTO purchase_quotes (cmp_id, rfq_id, supplier_account_id) VALUES (:c, :r, 601) RETURNING quote_id', ['r' => $rfqIdle]);
+        $po = $id("INSERT INTO purchase_orders (cmp_id, fy_id, po_no, po_date, supplier_account_id, created_by, requisition_id, rfq_id, quote_id) VALUES (:c, 6, 'LC-PO1', CURRENT_DATE, 601, 'user-owner', :r, :f, :q) RETURNING po_id",
+            ['r' => $req, 'f' => $rfq, 'q' => $quote]);
+        $poLine = $id('INSERT INTO purchase_order_lines (cmp_id, po_id, line_no) VALUES (:c, :p, 1) RETURNING line_id', ['p' => $po]);
+        $poIdle = $id("INSERT INTO purchase_orders (cmp_id, fy_id, po_no, po_date, supplier_account_id, created_by) VALUES (:c, 6, 'LC-PO2', CURRENT_DATE, 601, 'user-owner') RETURNING po_id");
+        $bill = $id("INSERT INTO purchase_bill_requests (cmp_id, fy_id, supplier_account_id, requested_by, po_id) VALUES (:c, 6, 601, 'user-owner', :p) RETURNING request_id", ['p' => $po]);
 
         $auditBefore = (int) Db::scalar('SELECT COUNT(*) FROM purchase_audit_log WHERE cmp_id = :c', ['c' => $c]);
         $event = lcCompanyEvent('company_purge_requested', $c);
@@ -316,7 +383,33 @@ try {
         lcTrue(in_array('public.purchase_audit_log', $acks[0]['body']['retained'], true), 'retained names purchase_audit_log: ' . json_encode($acks[0]['body']['retained']));
         lcSame(423, lcPersonWrite($c)[0], 'a purged company stays read-only');
 
+        // kit 1.1 row-level retention: the chain the retained bill points at stays, the rest goes.
+        $live = static fn (string $t, string $col, int $v): int => (int) Db::scalar('SELECT COUNT(*) FROM ' . $t . ' WHERE ' . $col . ' = :v', ['v' => $v]);
+        lcSame([1, 1, 1, 1, 1, 1, 1], [$live('purchase_bill_requests', 'request_id', $bill), $live('purchase_orders', 'po_id', $po), $live('purchase_order_lines', 'line_id', $poLine),
+            $live('purchase_quotes', 'quote_id', $quote), $live('purchase_rfqs', 'rfq_id', $rfq), $live('purchase_rfq_lines', 'line_id', $rfqLine), $live('purchase_requisitions', 'requisition_id', $req)],
+            'bill, its PO (with lines), quote, RFQ (with lines) and requisition are kept');
+        lcSame([0, 0, 0, 0], [$live('purchase_orders', 'po_id', $poIdle), $live('purchase_quotes', 'quote_id', $quoteIdle), $live('purchase_rfqs', 'rfq_id', $rfqIdle), $live('purchase_requisitions', 'requisition_id', $reqIdle)],
+            'the unreferenced PO, quote, RFQ and requisition are purged');
+        lcSame(1, (int) Db::scalar('SELECT COUNT(*) FROM ' . $archive . '.purchase_rfqs WHERE rfq_id = :r', ['r' => $rfqIdle]), 'archived first');
+        lcTrue(in_array('public.purchase_orders', $acks[0]['body']['retained'], true), 'retained names the kept orders');
+
+        // kit 1.1 retention expiry: nothing within 8 years; after, the bill and the audit rows go, then the chain.
+        $expiry = static fn (int $now) => Kit::fromEnv('purchases', Db::connect(), LC_MANIFEST, static fn (string $n): ?string => ['LIFECYCLE_WEBHOOK_SECRET' => LC_SECRET, 'MANAGE_API_URL' => 'https://manage.example.test'][$n] ?? null, [], [
+            'clock' => static fn (): int => $now, 'http' => static fn (): array => ['status' => 200, 'body' => '{}', 'error' => null],
+        ])->worker()->expireRetained();
+        $today = $expiry(time());
+        lcSame([0, []], [$today['expired_rows'], $today['errors']], 'nothing expires within 8 years');
+        $later = $expiry((int) strtotime('+8 years +1 day'));
+        lcSame([], $later['errors'], 'expiry errors');
+        lcSame([0, 0, 0, 0, 0, 0, 0, 0], [$live('purchase_bill_requests', 'request_id', $bill), $live('purchase_orders', 'po_id', $po), $live('purchase_order_lines', 'line_id', $poLine),
+            $live('purchase_quotes', 'quote_id', $quote), $live('purchase_rfqs', 'rfq_id', $rfq), $live('purchase_rfq_lines', 'line_id', $rfqLine), $live('purchase_requisitions', 'requisition_id', $req),
+            (int) Db::scalar('SELECT COUNT(*) FROM purchase_audit_log WHERE cmp_id = :c', ['c' => $c])], 'all gone after the period');
+        $expiredArchive = (string) Db::scalar('SELECT archive_name FROM aic_lifecycle_expiries WHERE target_cmp_id = :c ORDER BY id DESC LIMIT 1', ['c' => $c]);
+        lcSame(1, (int) Db::scalar('SELECT COUNT(*) FROM ' . $expiredArchive . '.purchase_bill_requests'), 'expired rows are archived first');
+
         Db::connect()->exec('DROP SCHEMA ' . $archive . ' CASCADE');
+        Db::connect()->exec('DROP SCHEMA ' . $expiredArchive . ' CASCADE');
+        Db::connect()->exec('RESET aicountly.lifecycle_purge');
         Db::run('DELETE FROM purchase_settings WHERE cmp_id = :c', ['c' => $c]);
         Db::connect()->exec('TRUNCATE purchase_audit_log');
     });

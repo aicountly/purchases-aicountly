@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aicountly\Api\Controllers;
 
 use Aicountly\Api\Auth;
+use Aicountly\Api\CompanyLifecycle;
 use Aicountly\Api\Domain\BooksVoucherEvents;
 use Aicountly\Api\Http;
 use Aicountly\Api\Support\BooksEventSignature;
@@ -53,6 +54,9 @@ final class BooksEventsController extends Controller
         // Company scope is not configured per deployment (owner decision 2026-10-12): the key acts
         // for any company (cmp_id > 0, checked above).
 
+        // Kit 1.1: nothing is applied to a company read-only in Purchases — 423 COMPANY_RESTRICTED, and Books'
+        // source-event outbox keeps the event (deferred_restricted) until the company is renewed.
+        CompanyLifecycle::enforceMachine($cmpId);
         Http::data(BooksVoucherEvents::apply($event, $auth));
     }
 }

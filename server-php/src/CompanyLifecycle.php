@@ -18,8 +18,11 @@ use Aicountly\Lifecycle\Kit;
  *   sync()      Manage companyinfo (data.lifecycle / data.restricted_until) is the source of truth;
  *               wherever Purchases reads it the stored state is corrected.
  *
- * Product backends calling with a service key are not refused here (as in the reference receivers):
- * Books' signed voucher events only report what Books already did to a Purchases bill.
+ *   enforceMachine()  kit 1.1 machine gating: product backends calling with a service key — Books' signed
+ *               voucher events (POST v1/integration/books/voucher-events), any other service-key write —
+ *               are refused with the same 423 COMPANY_RESTRICTED once their key / signature and the company
+ *               were verified. Their senders defer the item (Books' source-event outbox keeps the event as
+ *               deferred_restricted) and send it again on renewal.
  */
 final class CompanyLifecycle
 {
@@ -40,6 +43,17 @@ final class CompanyLifecycle
         'POST /api/v1/import/preview',
         'POST /api/v1/import/reconcile-statement',
     ];
+
+    /**
+     * Machine writes (kit 1.1 checkMachine: another product's service key or signature, no person) that pass
+     * whatever the company's state. Only money that already moved, telephony / provider webhooks that cannot
+     * be replayed, and Manage-signed callbacks belong here; Purchases receives none of them (Books' voucher events are deferred by Books' source-event outbox).
+     * Every other machine write into a read-only company answers 423 COMPANY_RESTRICTED and its sender
+     * defers it (DeferredSend). tests/company_lifecycle.php fails when an entry stops matching a route.
+     *
+     * @var list<string>
+     */
+    public const LIFECYCLE_MACHINE_ALLOW = [];
 
     private static ?Kit $kit = null;
 
@@ -92,6 +106,30 @@ final class CompanyLifecycle
         } catch (\Throwable $e) {
             // A fault reading the state must not turn into "your subscription ended" (the kit's own rule).
             error_log('[purchases] company lifecycle state unreadable for cmp=' . $cmpId . ': ' . $e->getMessage());
+
+            return;
+        }
+        if ($refusal !== null) {
+            Http::json($refusal[0], $refusal[1]);
+        }
+    }
+
+    /**
+     * The machine-caller gate (kit 1.1): after the caller's key / signature and the company were verified
+     * (so a caller who may not act there still gets 401/403), a write into a restricted / purge_pending /
+     * purged company answers 423 COMPANY_RESTRICTED — with restricted_until and lifecycle, which the
+     * sender's DeferredSend reads to keep the item and send it again on renewal. Reads always pass.
+     */
+    public static function enforceMachine(int $cmpId): void
+    {
+        $method = Http::method();
+        if (in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+            return;
+        }
+        try {
+            $refusal = self::kit()->guard(self::LIFECYCLE_ALLOW, self::LIFECYCLE_MACHINE_ALLOW)->checkMachine($cmpId, $method, self::requestPath());
+        } catch (\Throwable $e) {
+            error_log('[purchases] company lifecycle state unreadable for cmp=' . $cmpId . ' (machine write): ' . $e->getMessage());
 
             return;
         }

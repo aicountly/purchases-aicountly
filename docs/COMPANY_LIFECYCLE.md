@@ -11,12 +11,14 @@ Manage's side: `manage-aicountly/docs/company-lifecycle/README.md`.
 |---|---|
 | Kit (copy, don't edit — fix it in Manage and copy again) | `server-php/lib/company-lifecycle/` |
 | Tables `aic_lifecycle_events / _state / _jobs / _acks` (the kit's `schema.sql`, verbatim) | `server-php/database/migrations/025_aic_company_lifecycle.sql` |
-| Adapter: route, write gate, companyinfo sync, Kit on Purchases' own connection | `server-php/src/CompanyLifecycle.php` |
+| Kit 1.1: `aic_lifecycle_expiries`, job status `held` (the kit's `schema-1.1.sql`, verbatim) | `server-php/database/migrations/026_aic_company_lifecycle_1_1.sql` |
+| Kit 1.1: the purge worker may delete audit rows (`aicountly.lifecycle_purge`); `retention_anchor_at` on returns / claims (+ triggers) | `server-php/database/migrations/027_purchase_lifecycle_retention.sql` |
+| Adapter: route, write gate, machine gate (kit 1.1), companyinfo sync, Kit on Purchases' own connection | `server-php/src/CompanyLifecycle.php` |
 | Receiver route `POST /api/internal/manage/company-lifecycle` | `server-php/src/Routes.php` (no session, no company check: the HMAC is its only credential) |
 | Write gate + companyinfo sync | `server-php/src/Context.php` (`assertAllowed()` after Manage confirmed access; `askManage()` syncs); `Controllers/ManageController::companyInfo` (sync) |
 | Reviewed purge manifest | `server-php/config/lifecycle-manifest.php` |
 | Worker bootstrap (Purchases' PDO: DB name/user from Console) | `server-php/config/lifecycle-kit.php` |
-| Cron | `server-php/bin/ops/jobs.txt` → `company-lifecycle` (through `bin/ops/run-job.php`, monitor `purchases.company_lifecycle`) |
+| Cron | `server-php/bin/ops/jobs.txt` → `company-lifecycle` (through `bin/ops/run-job.php`, monitor `purchases.company_lifecycle`) and, kit 1.1, the daily `company-lifecycle-expiry` (monitor `purchases.company_lifecycle_expiry`) |
 | Browser | `web/src/lifecycle/` — read-only banner + 423 toast (`services/api.ts`, `services/manage.ts`, `shell/AppShell.tsx`) |
 | Tests | `server-php/tests/company_lifecycle.php` (run by `tests/run.sh`), `web/src/lifecycle/companyLifecycle.test.ts` |
 
@@ -40,7 +42,14 @@ Manage's side: `manage-aicountly/docs/company-lifecycle/README.md`.
   | `POST /api/v1/import/reconcile-statement` | compares a supplier statement with the bills recorded, writes nothing |
 
   The test fails when an entry stops matching a route. Exports (`GET …/export`) are GETs. Purchases has no per-person UI-state write.
-* **Machine callers**: a product's service key (Books' signed voucher events, Insights' reads) is not refused: Books' events report what Books already did to a Purchases bill (as in the reference receivers).
+* **Machine callers** (kit 1.1 `checkMachine`, `CompanyLifecycle::enforceMachine()`): a product backend's
+  write into a read-only company answers the same **423 `COMPANY_RESTRICTED`** (with `restricted_until` and
+  `lifecycle`) once its key / signature and the company were verified — Books' signed voucher events
+  (`POST v1/integration/books/voucher-events`) and any other service-key write (`Context::assertAllowed()`;
+  Insights only reads). Reads pass. **Senders defer, never fail** (kit `DeferredSend`): Books' source-event
+  outbox keeps the event as `deferred_restricted` and sends it again on renewal.
+  `CompanyLifecycle::LIFECYCLE_MACHINE_ALLOW` is empty: Purchases receives no money-moved / telephony /
+  provider webhook and no Manage-signed callback (Manage's own lifecycle event is always allowed by the kit).
 * **companyinfo is the source of truth**: `lifecycle` / `restricted_until` on Manage's companyinfo (read on
   every fresh access check and by the company picker) are written through, so a missed event is corrected.
 * **Browser**: the shell shows a read-only banner (from companyinfo, or the first 423) and a toast with the
@@ -55,18 +64,43 @@ deletes them, checks the counts, reads back after commit, marks the company `pur
 (`purged | nothing_to_purge | failed`, `retained[]`). Strict mode refuses to purge while a table with
 `cmp_id` (company scope) or `user_uuid` (person scope) is missing from the manifest — a migration adding one must update the manifest in the same commit.
 
-**Retained** (counted, reported to Manage, never copied or deleted), each with its legal reason in the manifest:
+**Retained** (counted, reported to Manage, never copied or deleted while their period runs), each with its legal reason in the manifest:
 
-| Table | What | Basis |
-|---|---|---|
-| `purchase_bill_requests` | the purchase voucher as asked of Books: supplier invoice no./date, GSTIN, reverse charge, lines and tax | CGST Act s.35-36 + Rules 56-58 (72 months from the annual-return due date); Income-tax Act s.44AA + Rule 6F; Companies Act s.128(5) — 8 years |
-| `purchase_receipt_requests` | goods received (GRN) against an order | same |
-| `purchase_returns`, `purchase_return_lines` | purchase returns (the debit note raised in Books) | same |
-| `purchase_claims`, `purchase_claim_resolutions` | supplier claims and the debit / credit notes settled on them (amount, tax category, HSN/SAC) | same |
-| `purchase_orders`, `purchase_order_lines`, `purchase_quotes`, `purchase_quote_lines`, `purchase_rfqs`, `purchase_rfq_lines`, `purchase_requisitions`, `purchase_requisition_lines` | **minimal chain** the records above reference by foreign key (bill / GRN / return → PO → its quote / RFQ / requisition) | the PO is the voucher behind the purchase entry (Companies Act s.128(1)); kept only as long as those records |
-| `purchase_audit_log` | append-only audit trail (its triggers refuse DELETE) | Companies Act s.128(5) + Rule 3(1), Companies (Accounts) Rules — 8 years |
+| Table | What | Basis | Kept until (kit 1.1 `--expire-retained`) |
+|---|---|---|---|
+| `purchase_bill_requests` | the purchase voucher as asked of Books: supplier invoice no./date, GSTIN, reverse charge, lines and tax | CGST Act s.35-36 + Rules 56-58 (72 months from the annual-return due date); Income-tax Act s.44AA + Rule 6F; Companies Act s.128(5) — 8 years | 8 years from `created_at` (booked on or after the supplier's invoice date) |
+| `purchase_receipt_requests` | goods received (GRN) against an order | same | 8 years from `created_at` |
+| `purchase_returns`, `purchase_return_lines` | purchase returns (the debit note raised in Books) | same | 8 years from `retention_anchor_at` (migration 027) / `created_at` |
+| `purchase_claims`, `purchase_claim_resolutions` | supplier claims and the debit / credit notes settled on them (amount, tax category, HSN/SAC) | same | 8 years from `retention_anchor_at` (migration 027) / `created_at` |
+| `purchase_audit_log` | append-only audit trail | Companies Act s.128(5) + Rule 3(1), Companies (Accounts) Rules — 8 years | 8 years from `created_at` (the worker's session may delete it: migration 027) |
 
-Why the whole procurement chain: the engine keeps or deletes whole tables per company, and the retained bills / GRNs / returns point at `purchase_orders` (`ON DELETE SET NULL` / `CASCADE`), which in turn points at quotes, RFQs and requisitions — deleting any link would rewrite or cascade into a retained record, which the engine refuses. The supplier master itself lives in Books.
+**Kept only while referenced** (kit 1.1 `retain_referenced`; 1.0 kept these tables whole for every company):
+the procurement chain. A row a retained bill / goods receipt / return / claim still points at — directly or
+through the chain — stays; every other row of the company is purged (archived first); once the retained
+records expire, the rows nothing references any more go too (`no_longer_referenced`).
+
+| Table | Kept when |
+|---|---|
+| `purchase_orders`, `purchase_order_lines` | a bill, goods receipt, return or claim names the PO (its lines stay with it; a return line names its PO line; superseded versions stay with the kept version) |
+| `purchase_quotes`, `purchase_quote_lines` | a kept PO came from the quote (its lines stay with it) |
+| `purchase_rfqs`, `purchase_rfq_lines` | a kept PO or quote came from the RFQ |
+| `purchase_requisitions`, `purchase_requisition_lines` | a kept PO / PO line / RFQ line came from it |
+
+**Retention periods** (kit 1.1). 8 years from the record's own date. The statutes run from later dates: CGST
+Act s.36 keeps accounts 72 months from the due date of the annual return for the year — 31 December after the
+financial year, at most 21 months after a document dated 1 April, so 72 + 21 = 93 months, inside 96; Income-tax
+Rule 6F is 6 years from the end of the assessment year (shorter still). "8 years from the document's date" is
+therefore one approximation that covers both; Companies Act s.128(5) ("eight financial years immediately
+preceding") is read as the same 8 years from the document date — open question for the finance owner: if it is
+read as 8 *financial years after* the year of the document, raise `retain_years` to 9.
+
+Returns and claims run from `retention_anchor_at` (migration 027, kept by triggers: the latest of the record and
+of every return line / claim resolution recorded against it) so a child recorded later is never deleted with its
+parent by `ON DELETE CASCADE`, unarchived and inside its own period. The worker's session
+(`config/lifecycle-kit.php`, CLI only) sets `aicountly.lifecycle_purge = on`, which lets `purchase_audit_log`'s
+append-only trigger accept its DELETEs; the web API never sets it.
+
+**Scrub**: none — Purchases holds no raw provider payload, card, bank or UPI number.
 
 **Purged** (archived first): rate agreements, approval rules and requests, bid awards and RFQ invitations (supplier portal token hashes), three-way-match results / exceptions / policies, Books' event inbox, the command queue, delivery schedules, PO amendments and the sent/acknowledged log, supplier qualification profiles and scorecards, roles and role assignments, settings, saved views.
 
@@ -85,15 +119,24 @@ php lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --
 php lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --list-archives
 php lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --drop-archives-older-than=90 --confirm
 php lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --restore=<archive schema> --confirm
+php lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --check-manifest          # kit 1.1: refusals + warnings, exit 1 on a refusal
+php lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --expire-retained=dry-run # kit 1.1: what the daily expiry would delete
 ```
 
 Cron (`bin/ops/jobs.txt`, installed by the deploy):
 
 ```
 company-lifecycle | */5 * * * *   | {php} bin/ops/run-job.php --name=company-lifecycle --every=300 --monitor=purchases.company_lifecycle -- {php} lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php
+company-lifecycle-expiry | 37 3 * * * | {php} bin/ops/run-job.php --name=company-lifecycle-expiry --every=86400 --monitor=purchases.company_lifecycle_expiry -- {php} lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --expire-retained
 ```
 
-Register monitor `purchases.company_lifecycle` in Console's `cron_monitors`; `bin/ops/release.conf` protects `writable/ops/` (the job's heartbeat).
+The expiry (kit 1.1, daily) archives and deletes the retained rows of purged companies whose 8 years have run
+out, then the orders / quotes / RFQs / requisitions nothing references any more, and records each table in
+`aic_lifecycle_expiries`; Manage is not told. A company that renewed (state `active`) is never expired. Purchases
+has no other expiry sweep, so each table has one owner. Purchases records no legal holds, so the kit's
+`legal_hold` option is not set (a purge is never `held`).
+
+Register monitors `purchases.company_lifecycle` and `purchases.company_lifecycle_expiry` in Console's `cron_monitors`; `bin/ops/release.conf` protects `writable/ops/` (the job's heartbeat).
 
 The archive schemas hold personal data: drop them after the archive window (90 days). The worker's
 database user needs `CREATE` on the database (it creates the archive schemas).

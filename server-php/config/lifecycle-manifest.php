@@ -15,13 +15,25 @@ $inwardSupplies = 'CGST Act 2017 s.35-36 and CGST Rules 56-58: accounts and reco
     . 'invoices, goods received, debit and credit notes, reverse-charge details) kept 72 months from the due date '
     . 'of the annual return for the year; Income-tax Act 1961 s.44AA with Rule 6F: books and documents kept 8 years; '
     . 'Companies Act 2013 s.128(1),(5): books of account and the vouchers behind them kept 8 years';
-// The procurement chain the records above point at by foreign key (bill / goods receipt / return → purchase
-// order → its lines → the quote, RFQ and requisition it came from). The engine keeps or deletes whole tables
-// per company, and deleting these would rewrite (SET NULL) or cascade into the retained records.
-$chainForRecords = 'Minimal records the retained purchase bills, goods receipts and returns reference by foreign key '
-    . '(purchase order and lines, and the quote / RFQ / requisition each order came from): the order is the voucher '
-    . 'behind the purchase entry (Companies Act 2013 s.128(1): books of account with the vouchers relevant to an entry). '
-    . 'Kept only as long as those records (CGST Act 2017 s.36: 72 months; Companies Act 2013 s.128(5): 8 years)';
+// kit 1.1: the procurement chain the records above point at — purchase order (and its lines) -> the quote,
+// RFQ and requisition (and their lines) it came from. 1.0 kept these tables whole for every company (deleting
+// a row a retained record points at would rewrite it, or cascade into it); now only the rows a retained
+// bill / goods receipt / return / claim still references — directly or through the chain — are kept, and
+// every other row of the company is purged (archived first).
+$chain = static fn (string $what): string => $what . ' referenced by the retained purchase bills, goods receipts, returns or '
+    . 'claims (directly or through the order -> quote -> RFQ -> requisition chain): the order is the voucher behind the '
+    . 'purchase entry (Companies Act 2013 s.128(1)); kept as long as those records (CGST Act 2017 s.36: 72 months; '
+    . 'Companies Act 2013 s.128(5): 8 years), then removed by --expire-retained';
+
+// Retention periods (kit 1.1, `bin/worker.php --expire-retained`, daily): 8 years from the record's date.
+// CGST Act s.36 runs 72 months from the due date of the annual return for the year — 31 December after the
+// financial year, at most 21 months after a document dated 1 April — so 72 + 21 = 93 months < 96: "8 years
+// from the document's date" covers it, and Income-tax Rule 6F (6 years from the end of the assessment
+// year), with one approximation; Companies Act s.128(5) is read as the same 8 years (docs: open question).
+// Bills and goods receipts run from created_at (booked on or after the supplier's invoice / delivery date);
+// returns and claims from retention_anchor_at (migration 027: the latest of the record and of every return
+// line / claim resolution recorded against it), so a child recorded later is never deleted with its parent
+// by ON DELETE CASCADE.
 
 return [
     'app_key' => 'purchases',
@@ -62,32 +74,53 @@ return [
         ['table' => 'purchase_permission_profiles', 'key' => 'cmp_id'],
         ['table' => 'purchase_settings', 'key' => 'cmp_id'],
         ['table' => 'purchase_user_preferences', 'key' => 'cmp_id'],
+
+        // kit 1.1 row-level retention — the chain the retained records point at, children before parents. A kept
+        // document keeps its lines (the {table: <header>, column: <id>} reference follows the header to them).
+        ['table' => 'purchase_order_lines', 'key' => 'cmp_id', 'mode' => 'retain_referenced',
+            'referenced_by' => ['purchase_return_lines', ['table' => 'purchase_orders', 'column' => 'po_id', 'parent_column' => 'po_id']],
+            'reason' => $chain('Lines of the purchase orders')],
+        ['table' => 'purchase_orders', 'key' => 'cmp_id', 'mode' => 'retain_referenced',
+            'referenced_by' => ['purchase_bill_requests', 'purchase_receipt_requests', 'purchase_returns', 'purchase_claims', 'purchase_orders'],
+            'reason' => $chain('Purchase orders (and the versions they superseded)')],
+        ['table' => 'purchase_quote_lines', 'key' => 'cmp_id', 'mode' => 'retain_referenced',
+            'referenced_by' => ['purchase_order_lines', ['table' => 'purchase_quotes', 'column' => 'quote_id', 'parent_column' => 'quote_id']],
+            'reason' => $chain('Lines of the supplier quotes')],
+        ['table' => 'purchase_quotes', 'key' => 'cmp_id', 'mode' => 'retain_referenced',
+            'referenced_by' => ['purchase_orders'],
+            'reason' => $chain('Supplier quotes')],
+        ['table' => 'purchase_rfq_lines', 'key' => 'cmp_id', 'mode' => 'retain_referenced',
+            'referenced_by' => ['purchase_quote_lines', ['table' => 'purchase_rfqs', 'column' => 'rfq_id', 'parent_column' => 'rfq_id']],
+            'reason' => $chain('Lines of the RFQs')],
+        ['table' => 'purchase_rfqs', 'key' => 'cmp_id', 'mode' => 'retain_referenced',
+            'referenced_by' => ['purchase_orders', 'purchase_quotes'],
+            'reason' => $chain('RFQs')],
+        ['table' => 'purchase_requisition_lines', 'key' => 'cmp_id', 'mode' => 'retain_referenced',
+            'referenced_by' => ['purchase_order_lines', 'purchase_rfq_lines', ['table' => 'purchase_requisitions', 'column' => 'requisition_id', 'parent_column' => 'requisition_id']],
+            'reason' => $chain('Lines of the requisitions')],
+        ['table' => 'purchase_requisitions', 'key' => 'cmp_id', 'mode' => 'retain_referenced',
+            'referenced_by' => ['purchase_orders'],
+            'reason' => $chain('Purchase requisitions')],
     ],
 
-    // Kept on a company purge because a statute requires it (counted, never copied or deleted).
+    // Kept on a company purge because a statute requires it (counted, never copied or deleted while their period
+    // runs). Children before parents: --expire-retained deletes in this order.
     'company_retain' => [
         // The purchase voucher as Purchases asked Books to post it: supplier invoice number / date, GSTIN,
         // reverse charge, the lines and their tax.
-        ['table' => 'purchase_bill_requests', 'key' => 'cmp_id', 'reason' => $inwardSupplies],
+        ['table' => 'purchase_bill_requests', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'created_at'],
         // Goods received (GRN) against an order.
-        ['table' => 'purchase_receipt_requests', 'key' => 'cmp_id', 'reason' => $inwardSupplies],
+        ['table' => 'purchase_receipt_requests', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'created_at'],
         // Purchase returns (the debit note raised in Books), and supplier claims with the debit / credit
         // notes settled on them (amount, tax category, HSN/SAC).
-        ['table' => 'purchase_returns', 'key' => 'cmp_id', 'reason' => $inwardSupplies],
-        ['table' => 'purchase_return_lines', 'key' => 'cmp_id', 'reason' => $inwardSupplies],
-        ['table' => 'purchase_claims', 'key' => 'cmp_id', 'reason' => $inwardSupplies],
-        ['table' => 'purchase_claim_resolutions', 'key' => 'cmp_id', 'reason' => $inwardSupplies],
-        // The chain those records point at.
-        ['table' => 'purchase_orders', 'key' => 'cmp_id', 'reason' => $chainForRecords],
-        ['table' => 'purchase_order_lines', 'key' => 'cmp_id', 'reason' => $chainForRecords],
-        ['table' => 'purchase_quotes', 'key' => 'cmp_id', 'reason' => $chainForRecords],
-        ['table' => 'purchase_quote_lines', 'key' => 'cmp_id', 'reason' => $chainForRecords],
-        ['table' => 'purchase_rfqs', 'key' => 'cmp_id', 'reason' => $chainForRecords],
-        ['table' => 'purchase_rfq_lines', 'key' => 'cmp_id', 'reason' => $chainForRecords],
-        ['table' => 'purchase_requisitions', 'key' => 'cmp_id', 'reason' => $chainForRecords],
-        ['table' => 'purchase_requisition_lines', 'key' => 'cmp_id', 'reason' => $chainForRecords],
-        // Append-only audit trail of every change to the records above (its triggers refuse DELETE).
-        ['table' => 'purchase_audit_log', 'key' => 'cmp_id', 'reason' => 'Companies Act 2013 s.128(5) and Rule 3(1) of the Companies (Accounts) Rules 2014: the audit trail of the books of account kept 8 years'],
+        ['table' => 'purchase_return_lines', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'created_at'],
+        ['table' => 'purchase_returns', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'retention_anchor_at'],
+        ['table' => 'purchase_claim_resolutions', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'created_at'],
+        ['table' => 'purchase_claims', 'key' => 'cmp_id', 'reason' => $inwardSupplies, 'retain_years' => 8, 'retain_from' => 'retention_anchor_at'],
+        // Append-only audit trail of every change to the records above (its triggers refuse DELETE except to the
+        // purge worker's session, migration 027).
+        ['table' => 'purchase_audit_log', 'key' => 'cmp_id', 'reason' => 'Companies Act 2013 s.128(5) and Rule 3(1) of the Companies (Accounts) Rules 2014: the audit trail of the books of account kept 8 years',
+            'retain_years' => 8, 'retain_from' => 'created_at'],
     ],
 
     // Deleted on account_purge_requested: the person's own data. Purchases keeps nothing outside a company;

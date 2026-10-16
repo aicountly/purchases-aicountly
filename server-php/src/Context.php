@@ -91,6 +91,9 @@ final class Context
             if (!ServiceKeys::allowsCompany($auth->sourceApp, $this->cmpId)) {
                 Http::forbidden('A service key must name a company (cmp_id).');
             }
+            // Kit 1.1 machine gating (docs/COMPANY_LIFECYCLE.md): a product's write into a read-only company
+            // answers 423 COMPANY_RESTRICTED; its sender defers it.
+            CompanyLifecycle::enforceMachine($this->cmpId);
 
             return;
         }
