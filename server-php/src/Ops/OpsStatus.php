@@ -23,8 +23,12 @@ final class OpsStatus
     public const COMMANDS_TABLE = 'purchase_integration_commands';
     public const HEARTBEATS_TABLE = 'purchases_ops_heartbeats';
     public const MONITOR = 'command-monitor';
-    /** Statuses that are finished, one way or another; everything else is still open. */
-    public const CLOSED = ['COMPLETED', 'CANCELLED', 'SUPERSEDED', 'DUPLICATE'];
+    /**
+     * Statuses that are finished, one way or another — or, DEFERRED_RESTRICTED, kept on purpose
+     * while the other product holds the company read-only (reviewed hourly by the monitor, never
+     * "stale"); everything else is still open.
+     */
+    public const CLOSED = ['COMPLETED', 'CANCELLED', 'SUPERSEDED', 'DUPLICATE', 'DEFERRED_RESTRICTED', 'DROPPED_COMPANY_DELETED'];
     /** Settings the cross-app journeys need (presence only). */
     public const REQUIRED_CONFIG = ['INVENTORY_SERVICE_KEY', 'BOOKS_SERVICE_KEY', 'PULSE_SERVICE_KEY'];
 

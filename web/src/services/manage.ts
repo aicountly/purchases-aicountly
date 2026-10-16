@@ -15,6 +15,7 @@
 import { api } from './api'
 import { companyListTotal, extractCompanyRows, parseCompanyInfo, parseCompanyRow } from '../company/manageShapes'
 import type { CompanyInfo, CompanyOption } from '../company/manageShapes'
+import { noteCompanyInfo } from '../lifecycle/companyLifecycle'
 
 /**
  * A company row plus what Manage says about opening it IN PURCHASES.
@@ -84,6 +85,8 @@ export async function fetchAllCompanies(signal?: AbortSignal): Promise<CompanyLi
 /** One company, with its financial years and branches — Manage returns all three together. */
 export async function fetchCompanyInfo(cmpId: number, signal?: AbortSignal): Promise<CompanyInfo> {
   const body = await api.unscoped<unknown>('v1/manage/companyinfo', { comp_id: cmpId }, signal)
+  // Manage's lifecycle for the company in Purchases (restricted / purge_pending → the read-only banner).
+  noteCompanyInfo(cmpId, body)
   return parseCompanyInfo(body)
 }
 

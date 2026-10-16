@@ -183,6 +183,63 @@ final class Audit
     }
 
     /**
+     * An entry made by this product itself, with no person and no request — the command monitor
+     * dropping a command whose target company is gone (IntegrationCommand::drop()). Best-effort like
+     * record(): logged and swallowed on failure, under a SAVEPOINT inside a transaction.
+     *
+     * @param array<string, mixed>|null $before
+     * @param array<string, mixed>|null $after
+     */
+    public static function recordSystem(int $cmpId, int $fyId, int $boId, string $actor, string $action, string $entityType, int|string|null $entityId, ?array $before, ?array $after, string $reason): void
+    {
+        $pdo = null;
+        $savepoint = false;
+        try {
+            $pdo = Db::connect();
+            if ($pdo->inTransaction()) {
+                $pdo->exec('SAVEPOINT purchase_audit_system');
+                $savepoint = true;
+            }
+            $before = self::scrub($before);
+            $after = self::scrub($after);
+            $id = $entityId === null ? null : (string) $entityId;
+            $changes = self::changes($before, $after);
+            Db::insert(self::TABLE, [
+                'cmp_id'       => $cmpId,
+                'fy_id'        => $fyId,
+                'bo_id'        => $boId,
+                'actor_uuid'   => $actor,
+                'actor_kind'   => 'system',
+                'source_app'   => Env::get('APP_PRODUCT_KEY', 'purchases'),
+                'action'       => $action,
+                'entity_type'  => $entityType,
+                'entity_id'    => $id,
+                'summary'      => self::summarise($action, $entityType, $id, null),
+                'before_state' => $before,
+                'after_state'  => $after,
+                'changes'      => $changes === [] ? null : $changes,
+                'reason'       => $reason !== '' ? $reason : null,
+                'severity'     => self::severityOf($action, false),
+                'ip_address'   => null,
+                'created_at'   => gmdate('Y-m-d H:i:s'),
+            ], 'audit_id');
+            if ($savepoint) {
+                $pdo->exec('RELEASE SAVEPOINT purchase_audit_system');
+            }
+        } catch (\Throwable $e) {
+            if ($savepoint && $pdo !== null) {
+                try {
+                    $pdo->exec('ROLLBACK TO SAVEPOINT purchase_audit_system');
+                    $pdo->exec('RELEASE SAVEPOINT purchase_audit_system');
+                } catch (\Throwable) {
+                    // The transaction was already beyond saving; the caller's own next statement will say so.
+                }
+            }
+            error_log('[audit] failed to record ' . $action . ' on ' . $entityType . ': ' . $e->getMessage());
+        }
+    }
+
+    /**
      * Field-by-field difference between two snapshots: [{field, label, old, new}], unchanged
      * fields and secrets left out. A field only one side has counts as changed (old or new null).
      *

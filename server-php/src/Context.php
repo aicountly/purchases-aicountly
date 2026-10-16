@@ -91,6 +91,9 @@ final class Context
             if (!ServiceKeys::allowsCompany($auth->sourceApp, $this->cmpId)) {
                 Http::forbidden('A service key must name a company (cmp_id).');
             }
+            // Kit 1.1 machine gating (docs/COMPANY_LIFECYCLE.md): a product's write into a read-only company
+            // answers 423 COMPANY_RESTRICTED; its sender defers it.
+            CompanyLifecycle::enforceMachine($this->cmpId);
 
             return;
         }
@@ -138,6 +141,10 @@ final class Context
         // Re-noted on every call, not only the first: the memo saves the round trip, not the
         // answer, and a later request path without the role would look like a stranger.
         $auth->noteCompanyAccess($this->cmpId, self::$answers[$key]['access']);
+
+        // Read-only after a lapsed subscription (docs/COMPANY_LIFECYCLE.md): only here, after Manage confirmed
+        // access, so a caller who may not open the company still gets 403; a write then answers 423.
+        CompanyLifecycle::enforce($this->cmpId);
     }
 
     /**
@@ -214,6 +221,10 @@ final class Context
                 implode(',', array_slice(array_keys($company), 0, 20)),
             ));
         }
+
+        // Manage's companyinfo is the source of truth for the company's lifecycle here (restricted /
+        // purge_pending / active): a missed event is corrected on the next fresh answer.
+        CompanyLifecycle::sync($this->cmpId, $company);
 
         return ['company' => $company, 'access' => $accessType];
     }

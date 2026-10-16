@@ -177,7 +177,10 @@ for ($i = 0; $i < 60; $i++) {
     usleep(200000);
 }
 
-$routes = routes();
+// Manage's signed company-lifecycle events (docs/COMPANY_LIFECYCLE.md) take no session and no company: the
+// HMAC is the only credential. Checked on their own below rather than as a session route.
+const MANAGE_SIGNED = ['POST internal/manage/company-lifecycle'];
+$routes = array_values(array_filter(routes(), static fn (array $r): bool => !in_array($r[0] . ' ' . $r[1], MANAGE_SIGNED, true)));
 $owner = ['Authorization' => 'Bearer stub-ses-key.role-1.as-user-owner'];
 $noSeat = ['Authorization' => 'Bearer stub-ses-key.role-3.as-user-noseat'];
 $stranger = ['Authorization' => 'Bearer stub-ses-key.role-none.as-user-stranger'];
@@ -193,6 +196,16 @@ check('the front controller answers, and every route is registered once', functi
     $keys = array_map(static fn ($r) => $r[0] . ' ' . $r[1], $routes);
     if (count($keys) < 100) {
         throw new \RuntimeException('only ' . count($keys) . ' routes registered');
+    }
+});
+
+check('Manage\'s signed lifecycle route: no signature is never accepted, whatever session rides along', function () use ($api, $owner) {
+    foreach ([[], $owner] as $who) {
+        $r = call('POST', $api . '/internal/manage/company-lifecycle', $who, ['event_id' => '6f1c3c5e-8d8e-4c55-9a3e-0e4b7f6b2a10', 'event' => 'company_restricted', 'cmp_id' => 88, 'app_key' => 'purchases', 'occurred_at' => gmdate('c')]);
+        // 401 bad signature, or 503 while LIFECYCLE_WEBHOOK_SECRET is unset here — never a 2xx.
+        if (!in_array($r['status'], [401, 503], true)) {
+            throw new \RuntimeException('unsigned lifecycle event -> ' . $r['status'] . ' ' . $r['raw']);
+        }
     }
 });
 

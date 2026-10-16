@@ -194,7 +194,7 @@ export interface IntegrationCommand {
    * request on the same key (it cannot act twice), Reconcile only asks. CANCELLED: withdrawn
    * before it reached the other product (its document was cancelled or revised).
    */
-  status: 'PENDING' | 'POSTING' | 'COMPLETED' | 'FAILED' | 'UNCERTAIN' | 'BLOCKED' | 'CANCELLED'
+  status: 'PENDING' | 'POSTING' | 'COMPLETED' | 'FAILED' | 'UNCERTAIN' | 'BLOCKED' | 'CANCELLED' | 'DEFERRED_RESTRICTED' | 'DROPPED_COMPANY_DELETED'
   entity_type: string
   entity_id: number
   revision: number

@@ -15,6 +15,7 @@
 import { getApiBaseUrl } from '../config'
 import { AuthError, ensureSesKey, redirectToPortalSso } from '../auth/portal'
 import { clearAllTokens } from '../auth/tokens'
+import { noteApiRefusal } from '../lifecycle/companyLifecycle'
 
 export interface CompanyScope {
   cmp_id: number
@@ -152,6 +153,8 @@ async function send<T>(path: string, options: RequestOptions, sesKey: string): P
   }
 
   if (!response.ok) {
+    // 423 COMPANY_RESTRICTED: the company is view/export-only (lapsed subscription) — banner + toast.
+    noteApiRefusal(response.status, parsed, scoped ? (scope?.cmp_id ?? null) : null)
     const envelope = parsed as
       | { error?: { code?: string; message?: string; details?: Record<string, unknown> }; message?: string }
       | null

@@ -229,7 +229,15 @@ abstract class ApiClient
         }
         if (!$result['ok']) {
             $result['error'] = is_array($decoded) ? self::errorMessage($decoded, $status) : 'HTTP ' . $status;
-            $this->log('error', $path, $status, $ms, null);
+            // The company is read-only in that product (Manage's company lifecycle): deferred, not
+            // failed. The caller shows this product's sentence; IntegrationCommand::attempt() keeps
+            // the command as DEFERRED_RESTRICTED (RestrictedTarget).
+            $restricted = \Aicountly\Api\RestrictedTarget::refusal($status, $decoded);
+            if ($restricted !== null) {
+                $result['restricted'] = $restricted;
+                $result['error'] = \Aicountly\Api\RestrictedTarget::userMessage($this->service(), $restricted['restricted_until'], $restricted['lifecycle']);
+            }
+            $this->log($restricted !== null ? 'restricted' : 'error', $path, $status, $ms, null);
         }
 
         if ($method === 'GET') {

@@ -95,6 +95,9 @@ done
 # Both suites always run; the script fails if either did.
 status=0
 PURCHASES_E2E_BASE="http://127.0.0.1:$API_PORT" BOOKS_EVENTS_SIGNING_SECRET_FOR_TESTS=test-books-events-secret-0123456789 php "$ROOT/tests/integration.php" || status=$?
+# Company lifecycle (docs/COMPANY_LIFECYCLE.md): the reviewed purge manifest on this migrated schema, the
+# allow-list, Manage's signed events, the 423 write gate and the purge worker's signed ack.
+php "$ROOT/tests/company_lifecycle.php" || status=$?
 php "$ROOT/tests/ai_gateway.php" || status=$?
 # E8-ID: environment from configuration only (never Host), unreadable 2xx = outcome unknown.
 php "$ROOT/tests/environment.php" || status=$?

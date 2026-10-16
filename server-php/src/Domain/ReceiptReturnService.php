@@ -313,6 +313,10 @@ final class ReceiptReturnService
 
             default:
                 $this->note($requestId, (string) $attempt['message']);
+                if (isset($attempt['restricted'])) {
+                    // Inventory holds the company read-only: kept (DEFERRED_RESTRICTED); Retry after renewal.
+                    Http::error(423, 'company_restricted', (string) $attempt['message'], ['request_id' => $requestId, 'retryable' => true, 'restricted_until' => $attempt['restricted']['restricted_until']]);
+                }
                 Http::error(502, 'inventory_unavailable', 'Could not reach Inventory for the return. Nothing has changed — press Retry, or withdraw the return.', ['request_id' => $requestId, 'retryable' => true, 'detail' => $attempt['message']]);
         }
 

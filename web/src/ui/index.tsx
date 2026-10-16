@@ -207,6 +207,16 @@ const STATUS_TONES: Record<string, 'neutral' | 'info' | 'warning' | 'success' | 
   NOT_BILLED: 'neutral',
   RETURNING: 'warning',
   REVERSED: 'neutral',
+  // Kept while Books / Inventory hold the company read-only (company lifecycle), and dropped once
+  // the company's data there is gone.
+  DEFERRED_RESTRICTED: 'warning',
+  DROPPED_COMPANY_DELETED: 'neutral',
+}
+
+/** Statuses whose words are not their token. */
+const STATUS_LABELS: Record<string, string> = {
+  DEFERRED_RESTRICTED: 'WAITING FOR RENEWAL',
+  DROPPED_COMPANY_DELETED: 'DROPPED (COMPANY DELETED)',
 }
 
 export function StatusBadge({ status }: { status: string }) {
@@ -234,7 +244,7 @@ export function StatusBadge({ status }: { status: string }) {
         whiteSpace: 'nowrap',
       }}
     >
-      {status.replace(/_/g, ' ')}
+      {STATUS_LABELS[status] ?? status.replace(/_/g, ' ')}
     </span>
   )
 }

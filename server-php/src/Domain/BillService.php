@@ -369,6 +369,11 @@ final class BillService
 
             default:
                 $this->markBill($requestId, 'FAILED', (string) $attempt['message']);
+                if (isset($attempt['restricted'])) {
+                    // Smart Books holds the company read-only: the bill is kept (its command is
+                    // DEFERRED_RESTRICTED) and Retry posts it once the company is renewed there.
+                    Http::error(423, 'company_restricted', (string) $attempt['message'], ['request_id' => $requestId, 'retryable' => true, 'restricted_until' => $attempt['restricted']['restricted_until']]);
+                }
                 $status = (int) ($attempt['response']['status'] ?? 0);
                 Http::error(
                     502,

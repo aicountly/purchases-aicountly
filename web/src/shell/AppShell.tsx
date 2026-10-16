@@ -41,6 +41,7 @@ import { AccessNotice } from './AccessNotice'
 import { CompanyIdTag } from '../components/CompanyIdTag'
 import { useScopeLabels } from './useScopeLabels'
 import './app-shell.css'
+import { CompanyReadOnlyBanner } from '../lifecycle/CompanyReadOnlyBanner'
 
 /**
  * Navigation, in six named sections.
@@ -337,6 +338,7 @@ export function AppShell() {
 
         <main className="app-shell__content">
           <AccessNotice />
+          <CompanyReadOnlyBanner cmpId={scope?.cmp_id} />
           <Outlet />
         </main>
         {/* Aicountly Connect draws its own launcher, in its own shadow root; nothing of it

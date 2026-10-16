@@ -65,7 +65,14 @@ final class ManageController
             Http::validationFailed('Which company?', ['field' => 'comp_id']);
         }
 
-        self::relay((new ManageClient())->withSession($auth->sesKey())->companyInfo($cmpId));
+        $result = (new ManageClient())->withSession($auth->sesKey())->companyInfo($cmpId);
+        // Manage's lifecycle for this company (restricted / purge_pending) corrects what Purchases has stored.
+        $data = is_array($result['body'] ?? null) ? ($result['body']['data'] ?? null) : null;
+        if (($result['ok'] ?? false) && is_array($data) && (int) ($data['cmp_id'] ?? $data['comp_id'] ?? $data['id'] ?? 0) === $cmpId) {
+            \Aicountly\Api\CompanyLifecycle::sync($cmpId, $data);
+        }
+
+        self::relay($result);
     }
 
     /**

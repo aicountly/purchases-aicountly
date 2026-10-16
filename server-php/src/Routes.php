@@ -33,6 +33,10 @@ final class Routes
 {
     public static function register(Router $router): void
     {
+        // Manage's company lifecycle events (docs/COMPANY_LIFECYCLE.md): restricted / unrestricted / purge.
+        // Outside every session and company check — Manage's HMAC signature is its only credential.
+        $router->post('internal/manage/company-lifecycle', [CompanyLifecycle::class, 'receive']);
+
         // Books tells us it cancelled or edited one of our bills (E8-BK-POST A16). Books' key and signature only.
         $router->post('v1/integration/books/voucher-events', [BooksEventsController::class, 'voucherEvents']);
 
