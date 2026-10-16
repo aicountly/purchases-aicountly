@@ -38,6 +38,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
+import { CompanyIdTag } from '../components/CompanyIdTag'
 import { usePurchases } from '../context/PurchasesContext'
 import { fetchAllCompanies, fetchCompanyInfo } from '../services/manage'
 import type { CompanyInfo, CompanyListOption } from '../services/manage'
@@ -443,6 +444,7 @@ export default function ChooseCompany() {
             <p className="launcher__confirm-head">
               <Building2 size={17} aria-hidden style={{ color: '#187b12' }} />
               {chosen.name}
+              <CompanyIdTag id={chosen.cmpId} />
             </p>
 
             {loadingInfo ? (
@@ -555,7 +557,9 @@ function CompanyCard({
         onClick={onPick}
         style={{ appearance: 'none', border: 0, background: 'none', font: 'inherit', textAlign: 'left', cursor: 'pointer', padding: 0 }}
       >
-        <span className="launcher__card-name">{company.name}</span>
+        <span className="launcher__card-name">
+          {company.name} <CompanyIdTag id={company.cmpId} />
+        </span>
         <span className="launcher__card-meta">
           <span className={company.ownership === 'shared' ? 'launcher__tag' : 'launcher__tag launcher__tag--owner'}>
             {company.ownership === 'shared' ? 'Shared with you' : 'You own this'}

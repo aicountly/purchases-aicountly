@@ -215,6 +215,15 @@
   white-space: nowrap;
 }
 
+.app-shell__cust-id {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--shell-muted);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .app-shell__signout {
   appearance: none;
   border: 1px solid var(--shell-border);
@@ -292,6 +301,7 @@
   min-width: 0;
 }
 
+.app-shell__pill .company-id-tag { flex-shrink: 0; overflow: visible; color: var(--shell-muted); }
 .app-shell__pill--quiet { font-weight: 500; color: var(--shell-ink); }
 .app-shell__pill svg { color: var(--shell-muted); flex-shrink: 0; }
 .app-shell__pill .app-shell__pill-caret { color: var(--shell-faint); }
