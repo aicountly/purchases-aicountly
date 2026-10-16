@@ -11,6 +11,7 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
+  UserCog,
   MapPin,
   Menu,
   PackageCheck,
@@ -32,6 +33,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
+import { manageProfileUrl } from '../services/appLauncher'
 import { ConnectEmbed } from '../components/ConnectEmbed'
 import { usePurchases } from '../context/PurchasesContext'
 import { AccessNotice } from './AccessNotice'
@@ -234,7 +236,21 @@ export function AppShell() {
             </span>
             <span className="app-shell__user-name" title={session?.display_name ?? undefined}>
               {session?.display_name ?? 'Signed in'}
+              {session?.kind === 'user' && session.uuid && (
+                <small className="app-shell__cust-id" title="Your AICOUNTLY customer ID">
+                  Cust ID: {session.uuid}
+                </small>
+              )}
             </span>
+            <button
+              type="button"
+              className="app-shell__signout"
+              onClick={() => window.open(manageProfileUrl(), '_blank', 'noopener,noreferrer')}
+              aria-label="Manage profile (opens in a new tab)"
+              title="Manage profile"
+            >
+              <UserCog size={15} aria-hidden />
+            </button>
             <button type="button" className="app-shell__signout" onClick={signOut} aria-label="Log out">
               <LogOut size={15} aria-hidden />
             </button>

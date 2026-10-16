@@ -32,6 +32,16 @@ export function getManageApiOrigin(sandbox: boolean = isSandboxHost()): string {
   return sandbox ? MANAGE_API_SANDBOX : MANAGE_API_PRODUCTION
 }
 
+/** Manage page where the signed-in user edits their own profile. */
+export function manageProfilePath(): string {
+  return '/profile'
+}
+
+/** Manage's profile page (hash route); Manage signs the person in itself when needed. */
+export function manageProfileUrl(sandbox: boolean = isSandboxHost()): string {
+  return `${getManageApiOrigin(sandbox)}/#${manageProfilePath()}`
+}
+
 /** Central product icons live behind Console — one origin regardless of sandbox/production. */
 export const CONSOLE_API_PRODUCTION = 'https://console.aicountly.org'
 

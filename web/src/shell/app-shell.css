@@ -215,6 +215,15 @@
   white-space: nowrap;
 }
 
+.app-shell__cust-id {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--shell-muted);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .app-shell__signout {
   appearance: none;
   border: 1px solid var(--shell-border);
