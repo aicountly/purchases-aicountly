@@ -19,7 +19,8 @@
  * person's saved default year and branch for it, else the latest financial year
  * and the head office (company/companyContextResolver.ts). There is no year and
  * branch step: both stay changeable from the top bar, whose star saves them as
- * the default. A company with no year or no branch says so here and stays shut.
+ * the default. A company with no branch opens on All branches; one with no
+ * financial year says so here and stays shut.
  *
  * DISCOVERY IS NOT ACCESS. "Browse all workspace companies" lists every company of the
  * person's workspaces from Manage's company registry, including ones they may not open in

@@ -105,11 +105,8 @@ export function CompanyPicker() {
           freshPick.current = false
           setFyId(resolved.fyId)
           setBoId(resolved.boId ?? 0)
-          if (resolved.error !== null || resolved.fyId === null || resolved.boId === null) {
-            // No year (or no branch): nothing opens; the notices below say why.
-            if (resolved.fyId !== null) setError(resolved.error)
-            return
-          }
+          // No financial year: nothing opens; the notice below says why.
+          if (resolved.error !== null || resolved.fyId === null || resolved.boId === null) return
           setCompanyScope({ cmp_id: cmpId, fy_id: resolved.fyId, bo_id: resolved.boId })
           setOpen(false)
           return

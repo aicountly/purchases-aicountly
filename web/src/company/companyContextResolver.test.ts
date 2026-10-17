@@ -2,7 +2,6 @@ import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   getCompanyDefault,
-  NO_BRANCH_ERROR,
   NO_FY_ERROR,
   pickHeadOfficeBranch,
   pickLatestFy,
@@ -75,9 +74,9 @@ describe('opening a company — one click, no year/branch step', () => {
     assert.deepEqual(result, { scope: null, error: NO_FY_ERROR })
   })
 
-  it('explains a company with no branch instead of opening it', async () => {
-    const result = await resolveCompanyScope(88, async () => ({ ...INFO, branches: [] }))
-    assert.deepEqual(result, { scope: null, error: NO_BRANCH_ERROR })
+  it('opens a company with no branch on All branches (bo 0)', async () => {
+    const result = await resolveCompanyScope(88, async () => ({ ...INFO, branches: [], hoId: null }))
+    assert.deepEqual(result, { scope: { cmp_id: 88, fy_id: 31, bo_id: 0 }, error: null })
   })
 
   it('passes a failed Manage request through, so a refusal can be told from an outage', async () => {

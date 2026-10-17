@@ -7,7 +7,9 @@
  *   2. otherwise the latest financial year (by end date, then start date) and the head-office
  *      branch (companyinfo `ho_id` when listed, else the branch flagged head office, else the
  *      first branch);
- *   3. no year or no branch: nothing opens, and the picker says why.
+ *   3. a company with years but no branch opens on branch 0 ("All branches", consolidated),
+ *      a real scope here; no financial year is the one case that does not open, and the
+ *      picker says why.
  *
  * The year and branch stay changeable afterwards from the top bar, whose star saves the
  * current pair as this company's default. Branch 0 ("All branches", consolidated) is a real
@@ -34,7 +36,6 @@ export interface ResolvedContext {
 }
 
 export const NO_FY_ERROR = 'This company has no financial year set up. Add one in Aicountly Manage — every document here is filed against a year, so it cannot be opened until one exists.'
-export const NO_BRANCH_ERROR = 'This company has no branch set up. Add one in Aicountly Manage, then open it again.'
 
 /** The year with the latest end (then start) date; the highest id when dates are missing. */
 export function pickLatestFy(list: FyOption[]): number | null {
@@ -72,8 +73,8 @@ export function resolveCompanyContext({
   }
   const fyId = pickLatestFy(fyList)
   if (fyId === null) return { fyId: null, boId: null, source: 'latest', error: NO_FY_ERROR }
-  const boId = pickHeadOfficeBranch(branches, hoId)
-  if (boId === null) return { fyId, boId: null, source: 'latest', error: NO_BRANCH_ERROR }
+  // No branch at all: the whole company, which every scoped request here accepts as bo 0.
+  const boId = pickHeadOfficeBranch(branches, hoId) ?? 0
   return { fyId, boId, source: 'latest', error: null }
 }
 
