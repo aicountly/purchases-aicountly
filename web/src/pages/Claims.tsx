@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api, ApiError } from '../services/api'
 import type { CatalogSupplier, Claim, ClaimResolution } from '../services/types'
 import { useApi } from '../hooks/useApi'
@@ -6,6 +6,8 @@ import { usePurchases } from '../context/PurchasesContext'
 import { LedgerPicker, SupplierPicker } from '../components/LivePicker'
 import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, Select, StatusBadge, Textarea } from '../ui'
+import { RegisterFilterBar } from '../registers/RegisterFilterBar'
+import { useRegisterFilters } from '../registers/useRegisterFilters'
 
 const KINDS = ['shortage', 'damage', 'rate_difference', 'scheme', 'rebate', 'quality', 'late_delivery', 'other']
 
@@ -28,12 +30,16 @@ export default function Claims() {
   const [form, setForm] = useState({ supplier: null as { id: number; name: string } | null, kind: 'shortage', amount: '', description: '' })
   const [openClaimId, setOpenClaimId] = useState<number | null>(null)
 
+  // Amount range and supplier (RegisterFilter), applied by the server.
+  const filters = useRegisterFilters()
   const [offset, setOffset] = useState(0)
+  useEffect(() => setOffset(0), [filters.key])
   const { data, loading, reload, error: loadError } = useApi(
-    (signal) => api.list<Claim>('v1/claims', { limit: 50, offset }, signal),
-    [scope?.cmp_id, scope?.fy_id, offset],
+    (signal) => api.list<Claim>('v1/claims', { ...filters.query, limit: 50, offset }, signal),
+    [scope?.cmp_id, scope?.fy_id, filters.key, offset],
     Boolean(scope),
   )
+  const supplierLabel = filters.supplierId ? data?.data.find((row) => String(row.supplier_account_id) === filters.supplierId)?.supplier_name : null
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true)
@@ -106,11 +112,17 @@ export default function Claims() {
       {loadError && <LoadFailed what="claims" error={loadError} onRetry={reload} />}
 
       <Card title={loadError ? 'Claims (not loaded)' : `${data?.meta.total ?? 0} claim${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}>
+        <RegisterFilterBar
+          filters={filters}
+          withSupplier
+          supplierLabel={supplierLabel}
+          amountHint="The amount claimed, as listed."
+        />
         <DataTable
           loading={loading}
           rows={data?.data ?? []}
           rowKey={(row) => row.claim_id}
-          empty={loadError ? "Not loaded — see above." : "No claims raised."}
+          empty={loadError ? "Not loaded — see above." : filters.active ? 'No claims match these filters.' : "No claims raised."}
           columns={[
             { key: 'no', header: 'Number', render: (row) => row.claim_no },
             { key: 'date', header: 'Raised', render: (row) => date(row.claim_date) },

@@ -6,6 +6,7 @@ namespace Aicountly\Api\Controllers;
 
 use Aicountly\Api\Domain\SupplierNames;
 use Aicountly\Api\Domain\BillService;
+use Aicountly\Api\Domain\RegisterFilter;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
 
@@ -17,14 +18,21 @@ final class BillsController extends Controller
         Permissions::assert($ctx, $auth, 'bill.enter');
 
         $params = Http::listParams(['supplier_invoice_date', 'supplier_invoice_no', 'status', 'created_at'], 'created_at');
+        // GST quick filters and the amount range (RegisterFilter): only reverse charge is a fact
+        // a bill here carries; the other GST keys come back as unavailable rather than ignored.
+        $register = RegisterFilter::fromRequest(BillService::GST_PREDICATES);
+        $supplierId = Http::intParam('supplier_account_id');
         $result = (new BillService($ctx, $auth))->search([
             'status'              => Http::param('status'),
-            'supplier_account_id' => Http::intParam('supplier_account_id'),
+            'supplier_account_id' => $supplierId,
             'exceptions_only'     => Http::param('exceptions_only') === '1',
             'q'                   => $params['q'],
+            'register'            => $register,
         ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
 
-        Http::list(SupplierNames::attach($ctx, $auth, $result['rows']), $result['total'], $params['limit'], $params['offset']);
+        Http::list(SupplierNames::attach($ctx, $auth, $result['rows']), $result['total'], $params['limit'], $params['offset'], [
+            'filters' => $register->metaWithSupplier($supplierId),
+        ]);
     }
 
     /**

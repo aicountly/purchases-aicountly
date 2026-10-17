@@ -408,6 +408,10 @@ export interface BillRequest extends BillRequestSummary {
   stock_effect: string | null
   /** The buyer owes this GST under reverse charge (F220). */
   is_reverse_charge?: boolean
+  /** The bills list's value: the sum of the lines, before tax (BillService::search). */
+  subtotal?: string | null
+  /** The order's currency; null for a bill without an order. Bills list only. */
+  currency_code?: string | null
   rcm_basis?: string | null
   /** What Books actually recorded, read back after posting — not an HTTP 200. */
   posting_check: { verified: boolean; checked_at: string; problems: string[] } | null
@@ -444,6 +448,8 @@ export interface PurchaseReturn {
   inventory_document_uuid: string | null
   books_debit_note_id: number | null
   books_debit_note_uuid: string | null
+  /** The returns list's value: the sum of the lines, before tax (ReturnClaimService::searchReturns). */
+  return_value?: string | null
   recall_reason: string | null
   cancel_reason: string | null
   lines: Array<{

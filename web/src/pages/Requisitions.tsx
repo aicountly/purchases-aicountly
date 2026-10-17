@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Plus, Trash2, Wand2 } from 'lucide-react'
 import { api, ApiError } from '../services/api'
@@ -9,6 +9,9 @@ import { usePurchases } from '../context/PurchasesContext'
 import { ItemPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
+import { Pager } from '../components/LoadFailed'
+import { RegisterFilterBar } from '../registers/RegisterFilterBar'
+import { useRegisterFilters } from '../registers/useRegisterFilters'
 
 const STATUSES = ['', 'DRAFT', 'APPROVAL_PENDING', 'APPROVED', 'REJECTED', 'SOURCING', 'ORDERED', 'CLOSED', 'CANCELLED']
 
@@ -16,10 +19,15 @@ export function RequisitionsList() {
   const navigate = useNavigate()
   const { scope, can } = usePurchases()
   const [status, setStatus] = useUrlFilter('status')
+  // The amount range on the estimated value (RegisterFilter); a requisition names no supplier.
+  const filters = useRegisterFilters(false)
 
+  // Paged (F145), so the count is reachable however many match.
+  const [offset, setOffset] = useState(0)
+  useEffect(() => setOffset(0), [status, filters.key])
   const { data, loading, error, reload } = useApi(
-    (signal) => api.list<Requisition>('v1/requisitions', { status: status || undefined, limit: 100 }, signal),
-    [scope?.cmp_id, scope?.fy_id, status],
+    (signal) => api.list<Requisition>('v1/requisitions', { status: status || undefined, ...filters.query, limit: 50, offset }, signal),
+    [scope?.cmp_id, scope?.fy_id, status, filters.key, offset],
     Boolean(scope),
   )
 
@@ -52,12 +60,13 @@ export function RequisitionsList() {
           </Select>
         }
       >
+        <RegisterFilterBar filters={filters} amountHint="The estimated value, as listed." />
         <DataTable
           loading={loading}
           rows={data?.data ?? []}
           rowKey={(row) => row.requisition_id}
           onRowClick={(row) => navigate(`/requisitions/${row.requisition_id}`)}
-          empty="No requisitions yet."
+          empty={error ? 'Not loaded — see above.' : filters.active ? 'No requisitions match these filters.' : 'No requisitions yet.'}
           columns={[
             {
               key: 'no',
@@ -75,6 +84,7 @@ export function RequisitionsList() {
             { key: 'value', header: 'Estimated', numeric: true, render: (row) => money(row.estimated_value) },
           ]}
         />
+        <Pager offset={offset} limit={50} total={data?.meta.total ?? 0} onChange={setOffset} />
       </Card>
     </div>
   )
