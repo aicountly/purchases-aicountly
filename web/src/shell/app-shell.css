@@ -306,6 +306,42 @@
 .app-shell__pill svg { color: var(--shell-muted); flex-shrink: 0; }
 .app-shell__pill .app-shell__pill-caret { color: var(--shell-faint); }
 
+/* Branch and year pills are native selects, so the list, the keyboard and a phone's own
+   picker all come free; the select is drawn as the pill's text. */
+.app-shell__pill--select { position: relative; }
+.app-shell__pill--select:focus-within { border-color: var(--shell-border); background: #f5f7f5; }
+.app-shell__pill--select select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  min-width: 0;
+  max-width: 13rem;
+  text-overflow: ellipsis;
+  outline: none;
+  field-sizing: content;
+}
+
+/* "Set as default" for the year and branch shown beside it. */
+.app-shell__star {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 9px;
+  width: 30px;
+  height: 30px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--shell-faint);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.app-shell__star:hover { background: #f5f7f5; border-color: var(--shell-border); color: #9a6400; }
+.app-shell__star.is-on { color: #d99b16; }
+
 .app-shell__pill-mark {
   width: 26px;
   height: 26px;

@@ -25,6 +25,7 @@ import {
   SlidersHorizontal,
   ShieldCheck,
   Sparkles,
+  Star,
   Truck,
   UserCheck,
   BarChart3,
@@ -40,6 +41,7 @@ import { usePurchases } from '../context/PurchasesContext'
 import { AccessNotice } from './AccessNotice'
 import { CompanyIdTag } from '../components/CompanyIdTag'
 import { useScopeLabels } from './useScopeLabels'
+import { getCompanyDefault, saveCompanyDefault } from '../company/companyContextResolver'
 import './app-shell.css'
 import { CompanyReadOnlyBanner } from '../lifecycle/CompanyReadOnlyBanner'
 
@@ -118,8 +120,13 @@ function initials(name: string): string {
 
 export function AppShell() {
   const { signOut } = useAuth()
-  const { session, can, scope } = usePurchases()
+  const { session, can, scope, setCompanyScope } = usePurchases()
   const labels = useScopeLabels(scope)
+  // "Set as default": the star only needs a re-render after a save; the default itself is read below.
+  const [, setDefaultSaved] = useState<string | null>(null)
+  const savedDefault = scope ? getCompanyDefault(scope.cmp_id) : null
+  const isDefault = scope !== null && savedDefault !== null
+    && savedDefault.fy_id === scope.fy_id && savedDefault.bo_id === scope.bo_id
   const location = useLocation()
   const navigate = useNavigate()
   const [navOpen, setNavOpen] = useState(false)
@@ -290,27 +297,92 @@ export function AppShell() {
               <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
             </button>
 
-            <button
-              type="button"
-              className="app-shell__pill app-shell__pill--quiet"
-              onClick={() => navigate('/choose-company')}
-              title="Change branch"
-            >
-              <MapPin size={15} aria-hidden />
-              <span>{labels.branch ?? 'All branches'}</span>
-              <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
-            </button>
+            {scope !== null ? (
+              <>
+                {/* Year and branch switch here, in place — opening a company never asks for
+                    them (it lands on the default, else the latest year and the head office). */}
+                <label className="app-shell__pill app-shell__pill--quiet app-shell__pill--select" title="Change branch">
+                  <MapPin size={15} aria-hidden />
+                  <select
+                    aria-label="Branch"
+                    value={scope.bo_id}
+                    onChange={(event) => setCompanyScope({ ...scope, bo_id: Number(event.target.value) || 0 })}
+                  >
+                    <option value={0}>All branches</option>
+                    {scope.bo_id > 0 && !labels.branches.some((b) => b.boId === scope.bo_id) && (
+                      <option value={scope.bo_id}>{labels.branch ?? `Branch ${scope.bo_id}`}</option>
+                    )}
+                    {labels.branches.map((b) => (
+                      <option key={b.boId} value={b.boId}>
+                        {b.name}
+                        {b.isHeadOffice ? ' (head office)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
+                </label>
 
-            <button
-              type="button"
-              className="app-shell__pill app-shell__pill--quiet"
-              onClick={() => navigate('/choose-company')}
-              title="Change financial year"
-            >
-              <CalendarDays size={15} aria-hidden />
-              <span>{labels.fy ?? (scope ? `FY ${scope.fy_id}` : 'Financial year')}</span>
-              <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
-            </button>
+                <label className="app-shell__pill app-shell__pill--quiet app-shell__pill--select" title="Change financial year">
+                  <CalendarDays size={15} aria-hidden />
+                  <select
+                    aria-label="Financial year"
+                    value={scope.fy_id}
+                    onChange={(event) => setCompanyScope({ ...scope, fy_id: Number(event.target.value) })}
+                  >
+                    {!labels.fyList.some((f) => f.fyId === scope.fy_id) && (
+                      <option value={scope.fy_id}>{labels.fy ?? `FY ${scope.fy_id}`}</option>
+                    )}
+                    {labels.fyList.map((f) => (
+                      <option key={f.fyId} value={f.fyId}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
+                </label>
+
+                <button
+                  type="button"
+                  className={isDefault ? 'app-shell__star is-on' : 'app-shell__star'}
+                  onClick={() => {
+                    if (saveCompanyDefault(scope.cmp_id, scope.fy_id, scope.bo_id)) {
+                      setDefaultSaved(`${scope.cmp_id}:${scope.fy_id}:${scope.bo_id}`)
+                    }
+                  }}
+                  aria-pressed={isDefault}
+                  aria-label={isDefault ? 'Default financial year and branch' : 'Set as default financial year and branch'}
+                  title={isDefault
+                    ? 'This financial year and branch open by default for this company'
+                    : 'Open this company on this financial year and branch by default'}
+                >
+                  <Star size={15} aria-hidden fill={isDefault ? 'currentColor' : 'none'} />
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="app-shell__pill app-shell__pill--quiet"
+                  onClick={() => navigate('/choose-company')}
+                  title="Change branch"
+                >
+                  <MapPin size={15} aria-hidden />
+                  <span>{labels.branch ?? 'All branches'}</span>
+                  <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
+                </button>
+
+                <button
+                  type="button"
+                  className="app-shell__pill app-shell__pill--quiet"
+                  onClick={() => navigate('/choose-company')}
+                  title="Change financial year"
+                >
+                  <CalendarDays size={15} aria-hidden />
+                  <span>{labels.fy ?? 'Financial year'}</span>
+                  <ChevronDown size={14} className="app-shell__pill-caret" aria-hidden />
+                </button>
+              </>
+            )}
           </div>
 
           <form className="app-shell__search" onSubmit={search} role="search">
