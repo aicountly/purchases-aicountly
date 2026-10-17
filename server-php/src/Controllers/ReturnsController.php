@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aicountly\Api\Controllers;
 
 use Aicountly\Api\Domain\SupplierNames;
+use Aicountly\Api\Domain\RegisterFilter;
 use Aicountly\Api\Domain\ReturnClaimService;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
@@ -17,13 +18,19 @@ final class ReturnsController extends Controller
         Permissions::assert($ctx, $auth, 'return.create');
 
         $params = Http::listParams(['return_date', 'return_no', 'status', 'created_at'], 'return_date');
+        // The amount range, on the return's value (RegisterFilter).
+        $register = RegisterFilter::fromRequest();
+        $supplierId = Http::intParam('supplier_account_id');
         $result = (new ReturnClaimService($ctx, $auth))->searchReturns([
             'status'              => Http::param('status'),
-            'supplier_account_id' => Http::intParam('supplier_account_id'),
+            'supplier_account_id' => $supplierId,
             'q'                   => $params['q'],
+            'register'            => $register,
         ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
 
-        Http::list(SupplierNames::attach($ctx, $auth, $result['rows']), $result['total'], $params['limit'], $params['offset']);
+        Http::list(SupplierNames::attach($ctx, $auth, $result['rows']), $result['total'], $params['limit'], $params['offset'], [
+            'filters' => $register->metaWithSupplier($supplierId),
+        ]);
     }
 
     public static function show(string $id): void

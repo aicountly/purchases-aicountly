@@ -106,6 +106,8 @@ STUB_PULSE_SERVICE_KEY="$PULSE_KEY" E8ID_API_PORT="${E8ID_API_PORT:-$((STUB_PORT
 php "$ROOT/tests/remediation.php" || status=$?
 # Launch readiness 2026-10 (E8-PUR): one check per finding, each failing before its correction.
 php "$ROOT/tests/launch_readiness.php" || status=$?
+# Register filters: GST quick filters and amount / supplier on the list screens, as SQL on real rows.
+php "$ROOT/tests/register_filters.php" || status=$?
 # The HTTP gate: the real front controller under php -S, every route, every caller (F219).
 # Its own port: the API started above keeps API_PORT for the whole run.
 API_PORT="${HTTP_GATE_PORT:-$((STUB_PORT + 2))}" php "$ROOT/tests/http_gate.php" || status=$?

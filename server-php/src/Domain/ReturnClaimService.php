@@ -49,6 +49,12 @@ final class ReturnClaimService
 
     private const EPSILON = 0.00005;
 
+    /**
+     * A return's value as the returns list shows it: the sum of its lines, before tax (the debit
+     * note's tax is Books'). The list prints this and the amount filter compares against it.
+     */
+    private const RETURN_VALUE_SQL = '(SELECT COALESCE(SUM(rl.line_amount), 0) FROM purchase_return_lines rl WHERE rl.return_id = r.return_id)';
+
     public function __construct(
         private readonly Context $ctx,
         private readonly Auth $auth,
@@ -598,12 +604,16 @@ final class ReturnClaimService
             $where[] = '(r.return_no ILIKE :term OR r.reason_note ILIKE :term)';
             $params['term'] = '%' . $filters['q'] . '%';
         }
+        $register = $filters['register'] ?? null;
+        if ($register instanceof RegisterFilter) {
+            $register->apply($where, $params, self::RETURN_VALUE_SQL);
+        }
 
         $clause = implode(' AND ', $where);
         $sortColumn = in_array($sort, ['return_date', 'return_no', 'status', 'created_at'], true) ? $sort : 'return_date';
 
         return [
-            'rows'  => Db::all("SELECT r.* FROM purchase_returns r WHERE {$clause} ORDER BY r.{$sortColumn} {$order}, r.return_id {$order} LIMIT {$limit} OFFSET {$offset}", $params),
+            'rows'  => Db::all('SELECT r.*, ' . self::RETURN_VALUE_SQL . "::text AS return_value FROM purchase_returns r WHERE {$clause} ORDER BY r.{$sortColumn} {$order}, r.return_id {$order} LIMIT {$limit} OFFSET {$offset}", $params),
             'total' => (int) Db::scalar("SELECT COUNT(*) FROM purchase_returns r WHERE {$clause}", $params),
         ];
     }
@@ -775,6 +785,11 @@ final class ReturnClaimService
         }
         if (!empty($filters['open_only'])) {
             $where[] = "c.status NOT IN ('SETTLED', 'CLOSED', 'REJECTED')";
+        }
+        // The amount range, on the amount claimed — the figure the list leads with.
+        $register = $filters['register'] ?? null;
+        if ($register instanceof RegisterFilter) {
+            $register->apply($where, $params, 'c.claimed_amount');
         }
 
         $clause = implode(' AND ', $where);

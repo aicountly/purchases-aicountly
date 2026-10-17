@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Controllers;
 
+use Aicountly\Api\Domain\RegisterFilter;
 use Aicountly\Api\Domain\RequisitionService;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
@@ -16,14 +17,19 @@ final class RequisitionsController extends Controller
         Permissions::assert($ctx, $auth, 'requisition.view');
 
         $params = Http::listParams(['requisition_date', 'requisition_no', 'estimated_value', 'status', 'created_at'], 'requisition_date');
+        // The amount range, on the estimated value (RegisterFilter). A requisition has no supplier.
+        $register = RegisterFilter::fromRequest();
         $result = (new RequisitionService($ctx, $auth))->search([
             'status'            => Http::param('status'),
             'requester_uuid'    => Http::param('requester_uuid'),
             'awaiting_approval' => Http::param('awaiting_approval') === '1',
             'q'                 => $params['q'],
+            'register'          => $register,
         ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
 
-        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset']);
+        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset'], [
+            'filters' => $register->toMeta(),
+        ]);
     }
 
     public static function show(string $id): void

@@ -1127,6 +1127,11 @@ final class PurchaseOrderService
         if (!empty($filters['overdue'])) {
             $where[] = "p.promised_date < CURRENT_DATE AND p.status IN ('ISSUED', 'ACKNOWLEDGED', 'PARTIALLY_RECEIVED')";
         }
+        // The amount range, on the order total the list shows (in the order's own currency).
+        $register = $filters['register'] ?? null;
+        if ($register instanceof RegisterFilter) {
+            $register->apply($where, $params, 'p.total_amount');
+        }
 
         $clause = implode(' AND ', $where);
         $sortColumn = in_array($sort, ['po_date', 'po_no', 'total_amount', 'status', 'promised_date', 'created_at'], true) ? $sort : 'po_date';

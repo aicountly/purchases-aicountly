@@ -4,7 +4,7 @@ import { api, ApiError } from '../services/api'
 import type { BillRequest, CatalogSupplier, PurchaseOrder } from '../services/types'
 import { useApi } from '../hooks/useApi'
 import { useWarehouses } from '../hooks/useWarehouses'
-import { useUrlFilter, useUrlId } from '../hooks/useUrlFilter'
+import { useUrlFilter } from '../hooks/useUrlFilter'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip } from '../components/CommandStrip'
 import { ItemPicker, LedgerPicker, SupplierPicker } from '../components/LivePicker'
@@ -14,6 +14,9 @@ import { DiscussInConnect } from '../components/ConnectEmbed'
 import { RecordHistory } from '../components/AuditDetail'
 import * as decimal from '../utils/decimal'
 import { localToday } from '../utils/localDate'
+import { RegisterFilterBar } from '../registers/RegisterFilterBar'
+import { useRegisterFilters } from '../registers/useRegisterFilters'
+import { BILL_GST_KEYS, readFilterMeta } from '../registers/registerFilters'
 
 const STATUSES = ['', 'DRAFT', 'MATCHING', 'MATCHED', 'EXCEPTION', 'REJECTED', 'POSTING', 'UNCERTAIN', 'POSTED', 'FAILED', 'BLOCKED', 'CANCELLED']
 
@@ -24,21 +27,25 @@ export function BillsList() {
   // `exceptions=1` is the older spelling of the same thing and still works.
   const [urlStatus, setStatus] = useUrlFilter('status')
   const status = urlStatus === '' && searchParams.get('exceptions') === '1' ? 'EXCEPTION' : urlStatus
-  const supplierId = useUrlId('supplier_id')
+  // GST chips, amount range and supplier — in the URL, applied by the server (RegisterFilter), so
+  // the count and the pages describe the filtered bills.
+  const filters = useRegisterFilters()
 
   // Paged (F145): every bill is reachable, not only the first hundred.
   const [offset, setOffset] = useState(0)
-  useEffect(() => setOffset(0), [status, supplierId])
+  useEffect(() => setOffset(0), [status, filters.key])
   const { data, loading, error, reload } = useApi(
     (signal) =>
       api.list<BillRequest>(
         'v1/bills',
-        { status: status || undefined, supplier_account_id: supplierId, limit: 50, offset },
+        { status: status || undefined, ...filters.query, limit: 50, offset },
         signal,
       ),
-    [scope?.cmp_id, scope?.fy_id, status, supplierId, offset],
+    [scope?.cmp_id, scope?.fy_id, status, filters.key, offset],
     Boolean(scope),
   )
+  // The supplier's name from the rows it narrowed to; "Ledger #id" until they load.
+  const supplierLabel = filters.supplierId ? data?.data.find((row) => String(row.supplier_account_id) === filters.supplierId)?.supplier_name : null
 
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
@@ -65,12 +72,20 @@ export function BillsList() {
           </Select>
         }
       >
+        <RegisterFilterBar
+          filters={filters}
+          gstKeys={BILL_GST_KEYS}
+          withSupplier
+          supplierLabel={supplierLabel}
+          amountHint="The bill's value before tax, as listed — Smart Books computes the GST when it posts."
+          gstUnavailable={readFilterMeta(data?.meta).gstUnavailable}
+        />
         <DataTable
           loading={loading}
           rows={data?.data ?? []}
           rowKey={(row) => row.request_id}
           onRowClick={(row) => navigate(`/bills/${row.request_id}`)}
-          empty={error ? "Not loaded — see above." : "No bills entered."}
+          empty={error ? "Not loaded — see above." : filters.active ? 'No bills match these filters.' : "No bills entered."}
           columns={[
             {
               key: 'no',
@@ -83,7 +98,22 @@ export function BillsList() {
             },
             { key: 'date', header: 'Dated', render: (row) => date(row.supplier_invoice_date) },
             { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? `Ledger #${row.supplier_account_id}` },
-            { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+            {
+              key: 'value',
+              header: 'Value (before tax)',
+              numeric: true,
+              render: (row) => (row.subtotal == null ? '—' : money(row.subtotal, row.currency_code ?? 'INR')),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              render: (row) => (
+                <>
+                  <StatusBadge status={row.status} />
+                  {row.is_reverse_charge && <span style={{ marginLeft: '0.35rem', color: 'var(--muted)', fontSize: '0.75rem' }}>RCM</span>}
+                </>
+              ),
+            },
             { key: 'voucher', header: 'Books voucher', render: (row) => row.books_voucher_no ?? '—' },
           ]}
         />

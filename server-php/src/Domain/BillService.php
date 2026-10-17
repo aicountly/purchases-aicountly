@@ -58,6 +58,25 @@ final class BillService
                        AND o.request_id < b.request_id
                        AND o.status <> 'CANCELLED')";
 
+    /**
+     * A bill's value as the bills list shows it: the sum of its lines, before tax — the figure
+     * the payables workspace calls the subtotal. Lines carry a tax category, never a rate, so
+     * there is no gross figure here to show (see payables()). The list prints this and the
+     * amount filter compares against this, written once so the two cannot disagree.
+     */
+    private const SUBTOTAL_SQL = "(SELECT COALESCE(SUM(NULLIF(line->>'amount', '')::numeric), 0)
+                                     FROM jsonb_array_elements(b.requested_lines) AS line)";
+
+    /**
+     * The GST quick filters the bills list can answer from its own rows (RegisterFilter says
+     * why the others cannot be). Reverse charge is marked on the bill itself (F220).
+     *
+     * @var array<string, string>
+     */
+    public const GST_PREDICATES = [
+        RegisterFilter::GST_RCM => 'b.is_reverse_charge = TRUE',
+    ];
+
     public function __construct(
         private readonly Context $ctx,
         private readonly Auth $auth,
@@ -1213,12 +1232,25 @@ final class BillService
             $where[] = 'b.supplier_invoice_no ILIKE :term';
             $params['term'] = '%' . $filters['q'] . '%';
         }
+        $register = $filters['register'] ?? null;
+        if ($register instanceof RegisterFilter) {
+            $register->apply($where, $params, self::SUBTOTAL_SQL);
+        }
 
         $clause = implode(' AND ', $where);
         $sortColumn = in_array($sort, ['supplier_invoice_date', 'supplier_invoice_no', 'status', 'created_at'], true) ? $sort : 'created_at';
 
+        // The currency is the order's, as on the payables workspace; a bill without an order is
+        // in the company's own (null here, INR on the screen).
         return [
-            'rows'  => Db::all("SELECT b.* FROM purchase_bill_requests b WHERE {$clause} ORDER BY b.{$sortColumn} {$order}, b.request_id {$order} LIMIT {$limit} OFFSET {$offset}", $params),
+            'rows'  => Db::all(
+                'SELECT b.*, ' . self::SUBTOTAL_SQL . "::text AS subtotal, p.currency_code
+                   FROM purchase_bill_requests b
+                   LEFT JOIN purchase_orders p ON p.po_id = b.po_id
+                  WHERE {$clause}
+                  ORDER BY b.{$sortColumn} {$order}, b.request_id {$order} LIMIT {$limit} OFFSET {$offset}",
+                $params,
+            ),
             'total' => (int) Db::scalar("SELECT COUNT(*) FROM purchase_bill_requests b WHERE {$clause}", $params),
         ];
     }

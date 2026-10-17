@@ -8,6 +8,7 @@ use Aicountly\Api\Domain\PurchaseOrderService;
 use Aicountly\Api\Domain\ReceiptLedger;
 use Aicountly\Api\Domain\ReceiptReturnService;
 use Aicountly\Api\Domain\ReceiptService;
+use Aicountly\Api\Domain\RegisterFilter;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
 
@@ -19,17 +20,23 @@ final class PurchaseOrdersController extends Controller
         Permissions::assert($ctx, $auth, 'po.view');
 
         $params = Http::listParams(['po_date', 'po_no', 'total_amount', 'status', 'promised_date', 'created_at'], 'po_date');
+        // The amount range (RegisterFilter). An order carries no GST facts to filter on.
+        $register = RegisterFilter::fromRequest();
+        $supplierId = Http::intParam('supplier_account_id');
         $result = (new PurchaseOrderService($ctx, $auth))->search([
             'status'              => Http::param('status'),
-            'supplier_account_id' => Http::intParam('supplier_account_id'),
+            'supplier_account_id' => $supplierId,
             'from'                => Http::dateParam('from'),
             'to'                  => Http::dateParam('to'),
             'open_only'           => Http::param('open_only') === '1',
             'overdue'             => Http::param('overdue') === '1',
             'q'                   => $params['q'],
+            'register'            => $register,
         ], $params['limit'], $params['offset'], $params['sort'], $params['order']);
 
-        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset']);
+        Http::list($result['rows'], $result['total'], $params['limit'], $params['offset'], [
+            'filters' => $register->metaWithSupplier($supplierId),
+        ]);
     }
 
     public static function show(string $id): void

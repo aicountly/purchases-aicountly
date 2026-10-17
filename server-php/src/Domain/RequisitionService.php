@@ -294,6 +294,11 @@ final class RequisitionService
         if (!empty($filters['awaiting_approval'])) {
             $where[] = "r.status = 'APPROVAL_PENDING'";
         }
+        // The amount range, on the estimated value the list shows. A requisition names no supplier.
+        $register = $filters['register'] ?? null;
+        if ($register instanceof RegisterFilter) {
+            $register->apply($where, $params, 'r.estimated_value');
+        }
 
         $clause = implode(' AND ', $where);
         $sortColumn = in_array($sort, ['requisition_date', 'requisition_no', 'estimated_value', 'status', 'created_at'], true) ? $sort : 'requisition_date';

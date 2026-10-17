@@ -4,7 +4,9 @@ import { Plus, Trash2 } from 'lucide-react'
 import { api, ApiError } from '../services/api'
 import type { CatalogSupplier, PurchaseOrder } from '../services/types'
 import { useApi } from '../hooks/useApi'
-import { useUrlFilter, useUrlFlag, useUrlId } from '../hooks/useUrlFilter'
+import { useUrlFilter, useUrlFlag } from '../hooks/useUrlFilter'
+import { RegisterFilterBar } from '../registers/RegisterFilterBar'
+import { useRegisterFilters } from '../registers/useRegisterFilters'
 import { usePurchases } from '../context/PurchasesContext'
 import { CommandStrip, recoveryPath } from '../components/CommandStrip'
 import type { IntegrationCommand, ReceiptRequest } from '../services/types'
@@ -27,11 +29,12 @@ export function PurchaseOrderList() {
   const [status, setStatus] = useUrlFilter('status')
   const [overdue, setOverdue] = useUrlFlag('overdue')
   const [openOnly, setOpenOnly] = useUrlFlag('open_only')
-  const supplierId = useUrlId('supplier_id')
+  // Amount range and supplier (RegisterFilter), applied by the server.
+  const filters = useRegisterFilters()
 
   // Paged (F145): every order is reachable, not only the first hundred.
   const [offset, setOffset] = useState(0)
-  useEffect(() => setOffset(0), [status, overdue, openOnly, supplierId])
+  useEffect(() => setOffset(0), [status, overdue, openOnly, filters.key])
   const { data, loading, error, reload } = useApi(
     (signal) =>
       api.list<PurchaseOrder>(
@@ -40,15 +43,18 @@ export function PurchaseOrderList() {
           status: status || undefined,
           overdue: overdue ? 1 : undefined,
           open_only: openOnly ? 1 : undefined,
-          supplier_account_id: supplierId,
+          ...filters.query,
           limit: 50,
           offset,
         },
         signal,
       ),
-    [scope?.cmp_id, scope?.fy_id, status, overdue, openOnly, supplierId, offset],
+    [scope?.cmp_id, scope?.fy_id, status, overdue, openOnly, filters.key, offset],
     Boolean(scope),
   )
+  const supplierLabel = filters.supplierId
+    ? data?.data.find((row) => String(row.supplier_account_id) === filters.supplierId)?.supplier_name_snapshot
+    : null
 
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
@@ -66,7 +72,7 @@ export function PurchaseOrderList() {
       <Card
         title={`${data?.meta.total ?? 0} order${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}
         action={
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.85rem' }}>
               <input type="checkbox" checked={openOnly} onChange={(e) => setOpenOnly(e.target.checked)} /> Open only
             </label>
@@ -81,12 +87,18 @@ export function PurchaseOrderList() {
           </div>
         }
       >
+        <RegisterFilterBar
+          filters={filters}
+          withSupplier
+          supplierLabel={supplierLabel}
+          amountHint="The order total as listed, in the order's own currency."
+        />
         <DataTable
           loading={loading}
           rows={data?.data ?? []}
           rowKey={(row) => row.po_id}
           onRowClick={(row) => navigate(`/purchase-orders/${row.po_id}`)}
-          empty={error ? "Not loaded — see above." : "No purchase orders yet."}
+          empty={error ? "Not loaded — see above." : filters.active ? 'No purchase orders match these filters.' : "No purchase orders yet."}
           columns={[
             { key: 'no', header: 'Number', render: (row) => <Link to={`/purchase-orders/${row.po_id}`} onClick={(e) => e.stopPropagation()}>{row.po_no}</Link> },
             { key: 'date', header: 'Raised', render: (row) => date(row.po_date) },

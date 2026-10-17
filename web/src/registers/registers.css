@@ -1,0 +1,140 @@
+/* Register filters: the filter bar, the GST chips and the Advanced popover. Wraps at phone width
+   instead of pushing the page sideways (F310). */
+
+.register-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.9rem;
+  margin-bottom: 0.85rem;
+}
+
+.register-filter-summary {
+  color: var(--muted);
+  font-size: 0.82rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.register-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+}
+
+.register-chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.register-chip-group-label {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-right: 0.1rem;
+}
+
+.register-chip {
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.15rem 0.65rem;
+}
+
+.register-chip:hover { border-color: var(--fg); }
+
+.register-chip[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.register-chip-clear {
+  border: none;
+  background: var(--surface-2);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.6rem;
+}
+
+.register-chip-clear:hover { color: var(--danger); background: var(--danger-bg); }
+
+.register-chip:focus-visible,
+.register-chip-clear:focus-visible,
+.register-advanced-button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.register-advanced { position: relative; }
+
+.register-advanced-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.register-advanced-button[data-active='true'] { border-color: var(--fg); }
+
+.register-advanced-badge {
+  background: var(--accent);
+  border-radius: 999px;
+  color: var(--accent-fg);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1rem;
+  min-width: 1.1rem;
+  padding: 0 0.35rem;
+  text-align: center;
+}
+
+.register-advanced-panel {
+  position: absolute;
+  z-index: 30;
+  top: 100%;
+  left: 0;
+  margin-top: 0.3rem;
+  width: 21rem;
+  max-width: calc(100vw - 2rem);
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+}
+
+.register-amount-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.register-amount-row input { text-align: right; font-variant-numeric: tabular-nums; min-width: 0; }
+
+.register-advanced-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.7rem;
+}

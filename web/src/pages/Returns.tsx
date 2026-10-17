@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError } from '../services/api'
 import type { CatalogSupplier, PurchaseOrder, PurchaseReturn } from '../services/types'
@@ -8,15 +8,24 @@ import { CommandStrip, recoveryPath } from '../components/CommandStrip'
 import { LedgerPicker, SupplierPicker } from '../components/LivePicker'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, StatusBadge } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
+import { LoadFailed, Pager } from '../components/LoadFailed'
+import { RegisterFilterBar } from '../registers/RegisterFilterBar'
+import { useRegisterFilters } from '../registers/useRegisterFilters'
 
 export function ReturnsList() {
   const navigate = useNavigate()
   const { scope } = usePurchases()
-  const { data, loading, error } = useApi(
-    (signal) => api.list<PurchaseReturn>('v1/returns', { limit: 100 }, signal),
-    [scope?.cmp_id, scope?.fy_id],
+  // Amount range and supplier (RegisterFilter), applied by the server.
+  const filters = useRegisterFilters()
+  // Paged (F145), so the count is reachable however many match.
+  const [offset, setOffset] = useState(0)
+  useEffect(() => setOffset(0), [filters.key])
+  const { data, loading, error, reload } = useApi(
+    (signal) => api.list<PurchaseReturn>('v1/returns', { ...filters.query, limit: 50, offset }, signal),
+    [scope?.cmp_id, scope?.fy_id, filters.key, offset],
     Boolean(scope),
   )
+  const supplierLabel = filters.supplierId ? data?.data.find((row) => String(row.supplier_account_id) === filters.supplierId)?.supplier_name : null
 
   return (
     <div style={{ display: 'grid', gap: '1rem' }}>
@@ -27,23 +36,31 @@ export function ReturnsList() {
         the debit note — this screen links the three without holding a copy of either.
       </Notice>
 
-      {error && <Notice tone="danger" title="Could not load returns">{error}</Notice>}
+      {error && <LoadFailed what="returns" error={error} onRetry={reload} />}
 
       <Card title={`${data?.meta.total ?? 0} return${(data?.meta.total ?? 0) === 1 ? '' : 's'}`}>
+        <RegisterFilterBar
+          filters={filters}
+          withSupplier
+          supplierLabel={supplierLabel}
+          amountHint="The return's value before tax, as listed — the debit note's GST is Smart Books'."
+        />
         <DataTable
           loading={loading}
           rows={data?.data ?? []}
           rowKey={(row) => row.return_id}
           onRowClick={(row) => navigate(`/returns/${row.return_id}`)}
-          empty="No returns raised."
+          empty={error ? 'Not loaded — see above.' : filters.active ? 'No returns match these filters.' : 'No returns raised.'}
           columns={[
             { key: 'no', header: 'Number', render: (row) => <Link to={`/returns/${row.return_id}`} onClick={(e) => e.stopPropagation()}>{row.return_no}</Link> },
             { key: 'date', header: 'Raised', render: (row) => date(row.return_date) },
             { key: 'supplier', header: 'Supplier', render: (row) => row.supplier_name ?? `Ledger #${row.supplier_account_id}` },
             { key: 'reason', header: 'Reason', render: (row) => row.reason_note ?? row.reason_code ?? '—' },
+            { key: 'value', header: 'Value (before tax)', numeric: true, render: (row) => (row.return_value == null ? '—' : money(row.return_value)) },
             { key: 'status', header: 'Status', render: (row) => <StatusBadge status={row.status} /> },
           ]}
         />
+        <Pager offset={offset} limit={50} total={data?.meta.total ?? 0} onChange={setOffset} />
       </Card>
     </div>
   )
