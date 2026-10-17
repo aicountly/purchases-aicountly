@@ -261,62 +261,13 @@
 .launcher__star:hover { background: #f3f5f4; color: #9a6400; }
 .launcher__star.is-on { color: #d99b16; }
 
-/* ------------------------------------------------------------------ *
- * The confirm step: year and branch, once a company is chosen.
- * ------------------------------------------------------------------ */
+/* A card whose year and branch are being resolved: it opens as soon as they are. */
+.launcher__spin { animation: launcher-spin 0.9s linear infinite; }
 
-.launcher__confirm {
-  position: sticky;
-  bottom: 0;
-  margin-top: 1.5rem;
-  background: #fff;
-  border: 1px solid var(--launcher-tint-strong);
-  border-radius: 14px;
-  padding: 1.1rem 1.2rem;
-  box-shadow: 0 -2px 24px rgba(20, 40, 24, 0.08);
-}
+@keyframes launcher-spin { to { transform: rotate(360deg); } }
 
-.launcher__confirm-head {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-bottom: 0.9rem;
-  font-weight: 600;
-}
-
-.launcher__confirm-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.launcher__field { min-width: 0; flex: 1 1 13rem; }
-
-.launcher__field label {
-  display: block;
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--launcher-faint);
-  margin-bottom: 0.3rem;
-}
-
-.launcher__field select {
-  appearance: none;
-  width: 100%;
-  font: inherit;
-  font-size: 0.92rem;
-  color: var(--launcher-ink);
-  background: #fff;
-  border: 1px solid #d3dad5;
-  border-radius: 10px;
-  padding: 0.55rem 2rem 0.55rem 0.75rem;
-  min-height: 40px;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
-  background-repeat: no-repeat;
-  background-position: right 0.7rem center;
+@media (prefers-reduced-motion: reduce) {
+  .launcher__spin { animation: none; }
 }
 
 .launcher__btn {

@@ -850,20 +850,21 @@ await check('with no company chosen the launcher is what you get, not a broken s
   await first.locator('.launcher__search input').fill('')
   await first.waitForTimeout(350)
 
-  // Choosing one asks for the year before opening anything: every document
-  // here is filed against a year, so it cannot be skipped.
+  // Choosing one opens it, as in Books: no year and branch step. It lands on the
+  // latest financial year and the head office, both switchable from the top bar.
   await cards.first().locator('.launcher__card-text').click()
-  await first.waitForTimeout(800)
-  ok(await first.locator('.launcher__confirm').isVisible(), 'the year and branch step appears')
-  ok(await first.locator('#launcher-fy').isVisible(), 'with a financial year to pick')
-
-  await first.getByRole('button', { name: /^Open/ }).click()
   await first.waitForTimeout(1200)
   ok(
     await first.getByRole('heading', { name: 'Purchase overview' }).isVisible(),
-    'and opening it lands on the dashboard',
+    'one click opens it on the dashboard',
   )
   ok((await first.locator('.app-shell__sidebar').count()) === 1, 'now the frame is there')
+  ok(await first.getByRole('combobox', { name: 'Financial year' }).isVisible(), 'the year is switchable from the top bar')
+  ok(await first.getByRole('combobox', { name: 'Branch' }).isVisible(), 'and so is the branch')
+  ok(
+    await first.getByRole('button', { name: 'Set as default financial year and branch' }).isVisible(),
+    'with a star to make them the default',
+  )
 
   await fresh.close()
 })

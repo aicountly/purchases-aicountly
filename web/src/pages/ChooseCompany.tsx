@@ -11,8 +11,16 @@
  * and the call carries the user's own session key — so Manage decides what
  * comes back. This product never filters that list and is never the thing
  * deciding what somebody may open. Nothing from it is stored except the three
- * ids, plus two conveniences that live only in this browser: which company to
- * offer first, and the handful most recently opened.
+ * ids, plus conveniences that live only in this browser: which company to
+ * offer first, the handful most recently opened, and each company's default
+ * year and branch.
+ *
+ * ONE CLICK OPENS, AS IN BOOKS. Picking a company opens it at once on the
+ * person's saved default year and branch for it, else the latest financial year
+ * and the head office (company/companyContextResolver.ts). There is no year and
+ * branch step: both stay changeable from the top bar, whose star saves them as
+ * the default. A company with no branch opens on All branches; one with no
+ * financial year says so here and stays shut.
  *
  * DISCOVERY IS NOT ACCESS. "Browse all workspace companies" lists every company of the
  * person's workspaces from Manage's company registry, including ones they may not open in
@@ -28,8 +36,8 @@ import {
   ArrowLeft,
   Building2,
   Check,
-  ChevronRight,
   Clock,
+  Loader2,
   LogOut,
   Search,
   Star,
@@ -40,8 +48,10 @@ import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
 import { CompanyIdTag } from '../components/CompanyIdTag'
 import { usePurchases } from '../context/PurchasesContext'
+import { resolveCompanyScope } from '../company/companyContextResolver'
+import { ApiError } from '../services/api'
 import { fetchAllCompanies, fetchCompanyInfo } from '../services/manage'
-import type { CompanyInfo, CompanyListOption } from '../services/manage'
+import type { CompanyListOption } from '../services/manage'
 // Module by module rather than the package index, so the access panels stay in the lazily
 // loaded Users & Access chunk.
 import { CompanyAccessBadge } from '../company-access/CompanyAccessBadge.tsx'
@@ -134,17 +144,15 @@ export default function ChooseCompany() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
 
-  const [chosen, setChosen] = useState<CompanyListOption | null>(null)
-  const [info, setInfo] = useState<CompanyInfo | null>(null)
-  const [loadingInfo, setLoadingInfo] = useState(false)
-  const [fyId, setFyId] = useState<number | null>(null)
-  const [boId, setBoId] = useState(0)
+  /** The company being opened (its year and branch are being resolved), and why the last one would not open. */
+  const [opening, setOpening] = useState<number | null>(null)
+  const [openError, setOpenError] = useState<{ name: string; message: string } | null>(null)
 
   const [defaultId, setDefaultId] = useState<number | null>(() => readStore<number | null>(DEFAULT_KEY, null))
   const [recent] = useState<RecentEntry[]>(() => readStore<RecentEntry[]>(RECENT_KEY, []))
 
   const infoAbort = useRef<AbortController | null>(null)
-  const confirmRef = useRef<HTMLDivElement | null>(null)
+  const openErrorRef = useRef<HTMLDivElement | null>(null)
 
   // ------------------------------------------------------------- the list
 
@@ -154,8 +162,6 @@ export default function ChooseCompany() {
       .then((rows) => {
         if (cancelled) return
         setCompanies(rows)
-        // A list of one is not a choice worth making somebody click through.
-        if (rows.length === 1 && rows[0].canOpenInCurrentApp !== false) setChosen(rows[0])
       })
       .catch((e: unknown) => {
         if (cancelled) return
@@ -167,72 +173,75 @@ export default function ChooseCompany() {
     }
   }, [])
 
-  // ------------------------------------------------- the chosen company
+  // ------------------------------------------------------ opening one
 
+  useEffect(() => () => infoAbort.current?.abort(), [])
+
+  // A company picked from far down a long list explains itself where it can be seen.
   useEffect(() => {
-    if (chosen === null) {
-      setInfo(null)
-      return
-    }
+    if (openError !== null) openErrorRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+  }, [openError])
 
-    infoAbort.current?.abort()
-    const controller = new AbortController()
-    infoAbort.current = controller
-    setLoadingInfo(true)
-
-    fetchCompanyInfo(chosen.cmpId, controller.signal)
-      .then((next) => {
-        if (controller.signal.aborted) return
-        setInfo(next)
-        // Newest year first, which is how Manage sorts them.
-        setFyId(next.fyList[0]?.fyId ?? null)
-        setBoId(0)
-      })
-      .catch(() => {
-        if (controller.signal.aborted) return
-        setInfo(null)
-        setError(`Could not load the years and branches for ${chosen.name}.`)
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoadingInfo(false)
-      })
-
-    return () => controller.abort()
-  }, [chosen])
-
-  // Bring the confirm step into view when a company is picked from far down
-  // a long list — otherwise the click appears to do nothing.
-  useEffect(() => {
-    if (chosen !== null) confirmRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-  }, [chosen])
-
-  const open = useCallback(() => {
-    if (chosen === null || fyId === null) return
-    rememberOpened(chosen.cmpId, chosen.name)
-    setCompanyScope({ cmp_id: chosen.cmpId, fy_id: fyId, bo_id: boId })
-    navigate('/dashboard/overview')
-  }, [chosen, fyId, boId, setCompanyScope, navigate])
-
-  /** Choosing a card: a company Manage will not open here for this person is explained, never chosen. */
-  const pick = useCallback((company: CompanyListOption) => {
-    if (company.canOpenInCurrentApp !== false) {
-      setChosen(company)
-      return
-    }
-    setChosen(null)
+  /** A restricted company explains itself ("Request access"), from the registry when it answers. */
+  const showRestricted = useCallback((company: CompanyListOption) => {
     companyRegistry
       .summary(company.cmpId)
       .then(setRestricted)
       .catch(() => setRestricted(restrictedRow(company)))
   }, [])
 
+  /**
+   * Opens the company on its default year and branch, else the latest year and the head
+   * office. No confirm step: both are changeable from the top bar once it is open.
+   */
+  const openCompany = useCallback((company: CompanyListOption) => {
+    infoAbort.current?.abort()
+    const controller = new AbortController()
+    infoAbort.current = controller
+    setOpening(company.cmpId)
+    setOpenError(null)
+
+    resolveCompanyScope(company.cmpId, fetchCompanyInfo, controller.signal)
+      .then((resolved) => {
+        if (controller.signal.aborted) return
+        if (resolved.scope === null) {
+          setOpenError({ name: company.name, message: resolved.error })
+          return
+        }
+        rememberOpened(company.cmpId, company.name)
+        setCompanyScope(resolved.scope)
+        navigate('/dashboard/overview')
+      })
+      .catch((e: unknown) => {
+        if (controller.signal.aborted) return
+        // Manage says the company is in this person's workspace but not open to them here.
+        if (e instanceof ApiError && e.details.manage_code === 'COMPANY_ACCESS_REQUIRED') {
+          showRestricted({ ...company, canOpenInCurrentApp: false, appAccessStatus: company.appAccessStatus ?? 'ACCESS_RESTRICTED' })
+          return
+        }
+        setOpenError({ name: company.name, message: 'Could not load its financial years and branches from Aicountly Manage. Try again.' })
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setOpening(null)
+      })
+  }, [setCompanyScope, navigate, showRestricted])
+
+  /** Choosing a card: a company Manage will not open here for this person is explained, never opened. */
+  const pick = useCallback((company: CompanyListOption) => {
+    if (company.canOpenInCurrentApp !== false) {
+      openCompany(company)
+      return
+    }
+    showRestricted(company)
+  }, [openCompany, showRestricted])
+
   /** From the workspace directory: only ever called for a company this person may open here. */
   const pickFromDirectory = useCallback((company: DirectoryCompany) => {
     const option = (companies ?? []).find((c) => c.cmpId === company.cmp_id) ?? fromDirectory(company)
     setCompanies((prev) => (prev === null || prev.some((c) => c.cmpId === option.cmpId) ? prev : [...prev, option]))
     setBrowsing(false)
-    setChosen(option)
-  }, [companies])
+    openCompany(option)
+  }, [companies, openCompany])
 
   const toggleDefault = useCallback((cmpId: number) => {
     setDefaultId((current) => {
@@ -287,7 +296,8 @@ export default function ChooseCompany() {
           <h1>Which company are you buying for?</h1>
           <p>
             Purchase orders, bills and approvals all belong to one company and one financial year.
-            Pick them here and everything that follows is scoped to them.
+            Pick a company and it opens on your default year and branch — else the latest year and
+            the head office. Change either from the top bar.
           </p>
 
           <div className="launcher__search">
@@ -313,6 +323,11 @@ export default function ChooseCompany() {
               {browsing ? <ArrowLeft size={15} aria-hidden /> : <Users size={15} aria-hidden />}
               {browsing ? 'Back to your companies' : 'Browse all workspace companies'}
             </button>
+            {scope !== null && (
+              <button type="button" className="launcher__btn" onClick={() => navigate(-1)} style={{ marginLeft: '0.5rem' }}>
+                <X size={15} aria-hidden /> Cancel
+              </button>
+            )}
           </div>
         </div>
 
@@ -326,7 +341,7 @@ export default function ChooseCompany() {
                 client={companyRegistry}
                 appName={COMPANY_REGISTRY_APP_NAME}
                 title={null}
-                selectedCmpId={chosen?.cmpId ?? scope?.cmp_id ?? null}
+                selectedCmpId={opening ?? scope?.cmp_id ?? null}
                 onOpen={pickFromDirectory}
               />
             </div>
@@ -359,6 +374,15 @@ export default function ChooseCompany() {
           </div>
         )}
 
+        {openError !== null && (
+          <div className="launcher__section" role="alert" ref={openErrorRef}>
+            <div className="launcher__note launcher__note--warning">
+              <strong>{openError.name} could not be opened</strong>
+              {openError.message}
+            </div>
+          </div>
+        )}
+
         {!browsing && recentRows.length > 0 && query.trim() === '' && (
           <section className="launcher__section">
             <div className="launcher__section-head">
@@ -375,7 +399,8 @@ export default function ChooseCompany() {
                   <CompanyCard
                     key={`recent-${row.cmpId}`}
                     company={company}
-                    selected={chosen?.cmpId === company.cmpId}
+                    selected={scope?.cmp_id === company.cmpId}
+                    opening={opening === company.cmpId}
                     isDefault={defaultId === company.cmpId}
                     onPick={() => pick(company)}
                     onToggleDefault={() => toggleDefault(company.cmpId)}
@@ -428,7 +453,8 @@ export default function ChooseCompany() {
                 <CompanyCard
                   key={company.cmpId}
                   company={company}
-                  selected={chosen?.cmpId === company.cmpId}
+                  selected={scope?.cmp_id === company.cmpId}
+                  opening={opening === company.cmpId}
                   isDefault={defaultId === company.cmpId}
                   onPick={() => pick(company)}
                   onToggleDefault={() => toggleDefault(company.cmpId)}
@@ -439,75 +465,6 @@ export default function ChooseCompany() {
         </section>
         )}
 
-        {chosen !== null && (
-          <div className="launcher__confirm" ref={confirmRef}>
-            <p className="launcher__confirm-head">
-              <Building2 size={17} aria-hidden style={{ color: '#187b12' }} />
-              {chosen.name}
-              <CompanyIdTag id={chosen.cmpId} />
-            </p>
-
-            {loadingInfo ? (
-              <p className="launcher__note">Loading its financial years and branches…</p>
-            ) : info !== null && info.fyList.length === 0 ? (
-              <div className="launcher__note launcher__note--warning">
-                <strong>No financial year</strong>
-                This company has no financial year set up. Add one in Aicountly Manage — every
-                document here is filed against a year, so there is nothing this product can do
-                until one exists.
-              </div>
-            ) : (
-              <div className="launcher__confirm-row">
-                <div className="launcher__field">
-                  <label htmlFor="launcher-fy">Financial year</label>
-                  <select
-                    id="launcher-fy"
-                    value={fyId ?? ''}
-                    onChange={(event) => setFyId(event.target.value === '' ? null : Number(event.target.value))}
-                  >
-                    {(info?.fyList ?? []).map((fy) => (
-                      <option key={fy.fyId} value={fy.fyId}>
-                        {fy.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="launcher__field">
-                  <label htmlFor="launcher-branch">Branch</label>
-                  <select
-                    id="launcher-branch"
-                    value={boId}
-                    onChange={(event) => setBoId(Number(event.target.value) || 0)}
-                  >
-                    <option value={0}>All branches</option>
-                    {(info?.branches ?? []).map((branch) => (
-                      <option key={branch.boId} value={branch.boId}>
-                        {branch.name}
-                        {branch.isHeadOffice ? ' (head office)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <button
-                  type="button"
-                  className="launcher__btn launcher__btn--primary"
-                  onClick={open}
-                  disabled={fyId === null}
-                >
-                  Open <ChevronRight size={16} aria-hidden />
-                </button>
-
-                {scope !== null && (
-                  <button type="button" className="launcher__btn" onClick={() => navigate(-1)}>
-                    <X size={15} aria-hidden /> Cancel
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {restricted !== null && (
@@ -535,12 +492,15 @@ export default function ChooseCompany() {
 function CompanyCard({
   company,
   selected,
+  opening,
   isDefault,
   onPick,
   onToggleDefault,
 }: {
   company: CompanyListOption
   selected: boolean
+  /** Its year and branch are being resolved; it opens as soon as they are. */
+  opening: boolean
   isDefault: boolean
   onPick: () => void
   onToggleDefault: () => void
@@ -548,13 +508,14 @@ function CompanyCard({
   return (
     <div className={selected ? 'launcher__card is-selected' : 'launcher__card'}>
       <span className="launcher__card-mark" aria-hidden>
-        {selected ? <Check size={18} /> : <Building2 size={18} />}
+        {opening ? <Loader2 size={18} className="launcher__spin" /> : selected ? <Check size={18} /> : <Building2 size={18} />}
       </span>
 
       <button
         type="button"
         className="launcher__card-text"
         onClick={onPick}
+        aria-busy={opening}
         style={{ appearance: 'none', border: 0, background: 'none', font: 'inherit', textAlign: 'left', cursor: 'pointer', padding: 0 }}
       >
         <span className="launcher__card-name">

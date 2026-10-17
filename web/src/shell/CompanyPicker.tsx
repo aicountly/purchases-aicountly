@@ -5,6 +5,7 @@ import { fetchAllCompanies, fetchCompanyInfo } from '../services/manage'
 import type { CompanyInfo, CompanyOption } from '../services/manage'
 import { usePurchases } from '../context/PurchasesContext'
 import { companyIdSuffix } from '../components/CompanyIdTag'
+import { getCompanyDefault, resolveCompanyContext } from '../company/companyContextResolver'
 
 /**
  * Which company, branch and financial year this product is working in.
@@ -18,6 +19,11 @@ import { companyIdSuffix } from '../components/CompanyIdTag'
  * Manage also decides WHICH companies come back, because the call carries the
  * signed-in user's own session key. This product never filters that list and is
  * never the thing deciding what someone may open.
+ *
+ * Choosing a company opens it at once, as in Books: on the person's saved default
+ * year and branch for it, else the latest year and the head office
+ * (company/companyContextResolver.ts). The year and branch selects stay for
+ * changing them afterwards, applied with Open.
  */
 export function CompanyPicker() {
   const { scope, setCompanyScope } = usePurchases()
@@ -37,6 +43,8 @@ export function CompanyPicker() {
   const [currentLabel, setCurrentLabel] = useState<string | null>(null)
 
   const abortRef = useRef<AbortController | null>(null)
+  /** Set when the person has just chosen a company: its info arriving opens it, no Open click. */
+  const freshPick = useRef(false)
 
   // ---------------------------------------------------------------- list
 
@@ -86,14 +94,27 @@ export function CompanyPicker() {
         if (controller.signal.aborted) return
         setInfo(next)
 
-        // Default to the most recent financial year — the list arrives sorted
-        // newest first — unless the current choice is still valid.
-        setFyId((prev) =>
-          prev !== null && next.fyList.some((f) => f.fyId === prev)
-            ? prev
-            : (next.fyList[0]?.fyId ?? null),
-        )
-        setBoId((prev) => (prev !== 0 && !next.branches.some((b) => b.boId === prev) ? 0 : prev))
+        const resolved = resolveCompanyContext({
+          saved: getCompanyDefault(cmpId),
+          fyList: next.fyList,
+          branches: next.branches,
+          hoId: next.hoId,
+        })
+
+        if (freshPick.current) {
+          freshPick.current = false
+          setFyId(resolved.fyId)
+          setBoId(resolved.boId ?? 0)
+          // No financial year: nothing opens; the notice below says why.
+          if (resolved.error !== null || resolved.fyId === null || resolved.boId === null) return
+          setCompanyScope({ cmp_id: cmpId, fy_id: resolved.fyId, bo_id: resolved.boId })
+          setOpen(false)
+          return
+        }
+
+        // Keep the current choice while it is still valid, else the default / latest year and head office.
+        setFyId((prev) => (prev !== null && next.fyList.some((f) => f.fyId === prev) ? prev : resolved.fyId))
+        setBoId((prev) => (prev === 0 || next.branches.some((b) => b.boId === prev) ? prev : (resolved.boId ?? 0)))
       })
       .catch((e: unknown) => {
         if (controller.signal.aborted) return
@@ -109,6 +130,8 @@ export function CompanyPicker() {
       })
 
     return () => controller.abort()
+    // setCompanyScope is stable (a useCallback with no dependencies).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cmpId])
 
   // Label for the collapsed state, so the header says which company is open
@@ -162,7 +185,12 @@ export function CompanyPicker() {
             <Select
               value={cmpId ?? ''}
               disabled={loadingList}
-              onChange={(e) => setCmpId(e.target.value === '' ? null : Number(e.target.value))}
+              onChange={(e) => {
+                const next = e.target.value === '' ? null : Number(e.target.value)
+                freshPick.current = next !== null
+                setError(null)
+                setCmpId(next)
+              }}
             >
               <option value="">{loadingList ? 'Loading…' : 'Choose a company'}</option>
               {companies.map((c) => (
