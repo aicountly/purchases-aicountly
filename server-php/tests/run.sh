@@ -116,4 +116,8 @@ php "$ROOT/tests/contacts_contract.php" || status=$?
 # Against the REAL Inventory (its own front controller on a disposable database) when
 # INVENTORY_CONTRACT_ROOT and INVENTORY_CONTRACT_DB are set; skips otherwise (E8-PUR F222/F223).
 php "$ROOT/tests/contract_receivers.php" || status=$?
+# The same-origin relays to Manage's company registry (/api/manage/v1/*) and the portal's logout:
+# the allowlist against web/src/company-access/companyRegistryClient.ts, the refusals, and real HTTP
+# through index.php against a fake Manage (headers, body, status, 504 when Manage does not answer).
+MANAGE_RELAY_API_PORT="${MANAGE_RELAY_API_PORT:-$((STUB_PORT+40))}" php "$ROOT/tests/manage_relay.php" || status=$?
 exit $status

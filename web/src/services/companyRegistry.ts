@@ -1,8 +1,11 @@
 /**
  * Manage's company registry (`/api/v1/*`), for this product.
  *
- * The browser talks to Manage directly with the person's own session key, the same way
- * the shared package does in every product (see src/company-access/README.md). Nothing
+ * The browser reaches Manage through Purchases' own API (`/api/manage/v1/*`, server-php
+ * src/ManageRelay.php) with the person's own session key, not directly: the hosting's bot
+ * shield answers some networks (common Indian broadband) with a challenge page that has no
+ * CORS headers, so a cross-site call to manage.aicountly.com failed with no response, while a
+ * same-origin call passes. The server forwards the call unchanged and grants nothing. Nothing
  * here is stored: the directory and the access lists are read live from Manage, and the
  * server keeps deciding access on every scoped request (Context::assertAllowed asks
  * Manage companyinfo for `purchases`).
@@ -15,7 +18,7 @@ import { ensureSesKey } from '../auth/portal'
 // The client module directly, not the package index: the index also carries the access
 // panels, which only the lazily loaded Users & Access page needs.
 import { createCompanyRegistryClient } from '../company-access/companyRegistryClient.ts'
-import { getManageApiOrigin } from './appLauncher'
+import { getApiBaseUrl } from '../config'
 
 /** Manage's catalog id for this product. */
 export const COMPANY_REGISTRY_APP_KEY = 'purchases'
@@ -41,6 +44,6 @@ async function registryFetch(url: string, init: RequestInit): Promise<Response> 
 
 export const companyRegistry = createCompanyRegistryClient({
   appKey: COMPANY_REGISTRY_APP_KEY,
-  baseUrl: `${getManageApiOrigin()}/api`,
+  baseUrl: `${getApiBaseUrl()}/manage`,
   fetchImpl: registryFetch,
 })
