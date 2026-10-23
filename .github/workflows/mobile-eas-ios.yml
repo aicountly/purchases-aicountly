@@ -68,4 +68,5 @@ jobs:
       - name: Build on EAS
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build --platform ios --profile "${{ inputs.profile }}" --non-interactive --no-wait
+          INPUT_PROFILE: ${{ inputs.profile }}
+        run: eas build --platform ios --profile "${INPUT_PROFILE}" --non-interactive --no-wait
