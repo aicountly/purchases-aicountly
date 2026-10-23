@@ -18,7 +18,9 @@ books and the stock of record (nothing here keeps a copy of either):
   sent to suppliers from here; the screen says so.
 - **Purchase orders** — approval rules, issue/acknowledge, amendments with version history,
   short-close, cancel and reopen; supplier, items and warehouses confirmed with Books and
-  Inventory before anything is stored.
+  Inventory before anything is stored. A supplier the company has never bought from is added from
+  the order editor (a Smart Books creditor ledger, once per form). The order's PDF is GST-complete:
+  both GSTINs, bill-to / ship-to, place of supply, HSN/SAC, CGST + SGST or IGST, amount in words.
 - **Goods receipts (GRN)** — each delivery is its own Inventory document (batches, expiry,
   serials, rejected quantity, duplicate-challan guard), recorded exactly once with
   reconcile/retry for an unknown outcome; receipt returns and reversals.
@@ -51,9 +53,11 @@ application. Purchases' catalog key is **`purchases`**.
   `403 COMPANY_ACCESS_REQUIRED`, which Purchases returns as `403 company_access_denied` with
   `details.manage_code = COMPANY_ACCESS_REQUIRED` (the app then shows "Company access restricted"
   with "Request access"). Manage unreachable stays a 503, never an allow.
-- **Client.** `web/src/services/companyRegistry.ts` talks to Manage `/api/v1/*` directly with the
-  person's session key. The shared screens are vendored verbatim in `web/src/company-access/`
-  (copied from manage-aicountly `Saas Common Handler/company-access`; change them there, copy again).
+- **Client.** `web/src/services/companyRegistry.ts` reaches Manage's `/api/v1/*` through Purchases'
+  own same-origin relay (`/api/manage/v1/*`, `server-php/src/ManageRelay.php`) with the person's
+  session key — never cross-site, which the host's bot shield breaks on some networks. The shared
+  screens are vendored verbatim in `web/src/company-access/` (package 1.2.0, copied from
+  manage-aicountly `Saas Common Handler/company-access`; change them there, copy again).
 - **Company picker.** The choose-company page has "Browse all workspace companies", listing every
   company of the person's workspaces; a company restricted in Purchases is badged and shows
   "Request access" instead of opening.
@@ -88,6 +92,16 @@ limited, and nothing already recorded is touched (`server-php/src/PlanEntitlemen
 | Code | What is counted | Where enforced |
 | --- | --- | --- |
 | `purchases.max_purchase_orders_per_month` | New purchase orders the company raised this calendar month (IST); an amendment of an existing order is not a new one | `POST v1/purchase-orders` |
+
+## Launch readiness (October 2026)
+
+Operators: every `api/.env` key, its mirror in Books, Inventory, Contacts and Manage, the activation
+order, crons, what `/api/health` checks and how to roll back are in
+[docs/launch-readiness-2026-10/OPERATOR_RUNBOOK.md](docs/launch-readiness-2026-10/OPERATOR_RUNBOOK.md).
+`/api/health` answers `ready: true` with `INVENTORY_SERVICE_KEY`, `BOOKS_EVENTS_SIGNING_SECRET`, a
+`books` entry in `SERVICE_KEYS`, `LIFECYCLE_WEBHOOK_SECRET` and `MANAGE_API_URL` set (there is no Books
+service key: Books is called as the signed-in person); `PULSE_SERVICE_KEY` and
+`MANAGE_PRODUCT_SERVICE_KEY` are reported as `config.warnings` only.
 
 ## Company lifecycle (Manage)
 
@@ -129,6 +143,7 @@ same-origin.
 | `npm run dev` | Vite dev server on http://localhost:5173 |
 | `npm run build` | Type-check, then build to `web/dist/` |
 | `npm run typecheck` | Type-check only |
+| `npm test` | Web unit tests (node:test over `src/**/*.test.ts`; also run by `ci.yml`) |
 | `npm run preview` | Serve the production build locally |
 
 The PHP API has no build step and no dependencies. To run it locally:
@@ -186,7 +201,7 @@ on every request.
 Deployment is **manual only**. Nothing deploys on push or merge — both
 workflows trigger exclusively via `workflow_dispatch`.
 
-**CI and the pre-deploy gate.** [`ci.yml`](.github/workflows/ci.yml) — `server-php/tests/run.sh` (integration, AI gateway and remediation tests on a throwaway PostgreSQL with the local stub) plus the web typecheck and build — runs automatically on every pull request and every push to `main`, and on demand; it only tests and never deploys. Both deploy workflows stay manual (`workflow_dispatch` only) and run that full suite first: their first job calls `ci.yml` on the commit being deployed and the deploy job `needs:` it, so a red suite stops the deploy.
+**CI and the pre-deploy gate.** [`ci.yml`](.github/workflows/ci.yml) — `server-php/tests/run.sh` (integration, AI gateway, remediation and launch-readiness tests on a throwaway PostgreSQL with the local stub), the ops kit, and the web unit tests, typecheck and build — runs on demand only (`workflow_dispatch`, and `workflow_call` from the deploys); no workflow runs on push or pull request, so run the suites locally before merging. It only tests and never deploys. Both deploy workflows stay manual (`workflow_dispatch` only) and run that full suite first: their first job calls `ci.yml` on the commit being deployed and the deploy job `needs:` it, so a red suite stops the deploy.
 
 To deploy: **Actions** → pick a workflow → **Run workflow** → pick a branch →
 **Run**.
