@@ -1,0 +1,72 @@
+{
+  "name": "aicountly-purchases-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "jest",
+    "brand:assets": "node scripts/generate-brand-assets.mjs",
+    "check:store-copy": "node scripts/check-store-copy.mjs",
+    "test:store-copy": "node --test scripts/check-store-copy.test.mjs",
+    "export:android": "expo export --platform android --output-dir .export-android",
+    "export:ios": "expo export --platform ios --output-dir .export-ios"
+  },
+  "dependencies": {
+    "@expo-google-fonts/ibm-plex-mono": "^0.4.1",
+    "@expo-google-fonts/ibm-plex-sans": "^0.4.1",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/netinfo": "12.0.1",
+    "expo": "~57.0.24",
+    "expo-apple-authentication": "~57.0.2",
+    "expo-build-properties": "~57.0.21",
+    "expo-camera": "~57.0.5",
+    "expo-constants": "~57.0.19",
+    "expo-crypto": "~57.0.3",
+    "expo-font": "~57.0.4",
+    "expo-haptics": "~57.0.3",
+    "expo-linking": "~57.0.10",
+    "expo-router": "~57.0.22",
+    "expo-secure-store": "~57.0.4",
+    "expo-splash-screen": "~57.0.9",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.4",
+    "expo-web-browser": "~57.0.3",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "react-native-svg": "15.15.4"
+  },
+  "devDependencies": {
+    "@react-native/jest-preset": "^0.86.3",
+    "@resvg/resvg-js": "^2.6.2",
+    "@testing-library/react-native": "^13.3.3",
+    "@types/jest": "^29.5.14",
+    "@types/react": "~19.2.2",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "~57.0.2",
+    "jest": "^29.7.0",
+    "jest-expo": "~57.0.6",
+    "react-test-renderer": "19.2.3",
+    "typescript": "~6.0.3"
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "setupFiles": [
+      "./jest.setup.js"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/.export-android/",
+      "/.export-ios/"
+    ],
+    "transformIgnorePatterns": [
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-native-svg))"
+    ]
+  }
+}

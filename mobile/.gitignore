@@ -1,0 +1,23 @@
+node_modules/
+.expo/
+dist/
+.export-android/
+.export-ios/
+expo-env.d.ts
+*.tsbuildinfo
+.metro-health-check*
+npm-debug.*
+.DS_Store
+.env
+.env.*
+!.env.example
+/ios
+/android
+# Store and signing credentials never live in the repository.
+/secrets/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem

@@ -1,0 +1,47 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "local",
+        "EXPO_PUBLIC_API_BASE_URL": "https://purchase.gh.aicountly.com/api",
+        "EXPO_PUBLIC_PORTAL_LOGIN_URL": "https://sandbox.aicountly.com"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "sandbox",
+        "EXPO_PUBLIC_API_BASE_URL": "https://purchase.gh.aicountly.com/api",
+        "EXPO_PUBLIC_PORTAL_LOGIN_URL": "https://sandbox.aicountly.com"
+      },
+      "android": { "buildType": "apk" },
+      "ios": { "simulator": false }
+    },
+    "production": {
+      "autoIncrement": true,
+      "distribution": "store",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production",
+        "EXPO_PUBLIC_API_BASE_URL": "https://purchase.aicountly.com/api",
+        "EXPO_PUBLIC_PORTAL_LOGIN_URL": "https://my.aicountly.com"
+      },
+      "android": { "buildType": "app-bundle" }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {},
+      "android": {
+        "serviceAccountKeyPath": "./secrets/google-play-service-account.json",
+        "track": "internal",
+        "releaseStatus": "draft"
+      }
+    }
+  }
+}
