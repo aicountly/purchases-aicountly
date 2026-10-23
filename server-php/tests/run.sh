@@ -113,6 +113,8 @@ php "$ROOT/tests/register_filters.php" || status=$?
 # The fleet alignment: plan limits from companyinfo's plan, workspace-wide access seated on first entry,
 # and Manage's signed seat route (POST internal/manage/seats), on real rows and the stub's Manage.
 php "$ROOT/tests/plans_and_seats.php" || status=$?
+# One supplier's open orders and Books dues for the phone app (mobile/), on real rows and the stub's Books.
+php "$ROOT/tests/supplier_position.php" || status=$?
 # The HTTP gate: the real front controller under php -S, every route, every caller (F219).
 # Its own port: the API started above keeps API_PORT for the whole run.
 API_PORT="${HTTP_GATE_PORT:-$((STUB_PORT + 2))}" php "$ROOT/tests/http_gate.php" || status=$?
