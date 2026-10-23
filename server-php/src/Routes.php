@@ -21,6 +21,7 @@ use Aicountly\Api\Controllers\RequisitionsController;
 use Aicountly\Api\Controllers\ReturnsController;
 use Aicountly\Api\Controllers\SettingsController;
 use Aicountly\Api\Controllers\SourcingController;
+use Aicountly\Api\Controllers\SupplierPositionController;
 use Aicountly\Api\Controllers\SuppliersController;
 
 /**
@@ -187,6 +188,8 @@ final class Routes
         $router->post('v1/suppliers/{id}/status', [SuppliersController::class, 'setStatus']);
         $router->get('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);
         $router->post('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);
+        // One supplier's open orders and Books dues, for the phone (mobile/README.md). Read-only.
+        $router->get('v1/suppliers/{id}/position', [SupplierPositionController::class, 'show']);
 
         // Read-only operational summaries for AICOUNTLY Insights (docs/contracts/insights/).
         $router->get('v1/analytics/open-commitment', [AnalyticsController::class, 'openCommitment']);
