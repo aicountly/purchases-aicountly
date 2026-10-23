@@ -29,8 +29,40 @@ final class OpsStatus
      * "stale"); everything else is still open.
      */
     public const CLOSED = ['COMPLETED', 'CANCELLED', 'SUPERSEDED', 'DUPLICATE', 'DEFERRED_RESTRICTED', 'DROPPED_COMPANY_DELETED'];
-    /** Settings the cross-app journeys need (presence only). */
-    public const REQUIRED_CONFIG = ['INVENTORY_SERVICE_KEY', 'BOOKS_SERVICE_KEY', 'PULSE_SERVICE_KEY'];
+    /**
+     * Settings the cross-app journeys need (presence only); `ready` requires every one of them.
+     *
+     *   INVENTORY_SERVICE_KEY        goods receipts, returns, batch/serial registration are posted to Inventory
+     *                                as Purchases (= Inventory's INVENTORY_SERVICE_KEYS `purchases:` entry)
+     *   BOOKS_EVENTS_SIGNING_SECRET  Books' voucher events (cancel / revise a posted bill) are verified with it
+     *                                (>= 16 characters; = Books' BOOKS_SOURCE_EVENTS_PURCHASES_SECRET)
+     *   SERVICE_KEYS:books           the `books:<key>` entry Books presents with those events
+     *                                (= Books' BOOKS_SOURCE_EVENTS_PURCHASES_KEY)
+     *   LIFECYCLE_WEBHOOK_SECRET     Manage's signed lifecycle and seat events (>= 32 characters;
+     *                                = Manage's LIFECYCLE_WEBHOOK_SECRET_PURCHASES)
+     *   MANAGE_API_URL               where a company purge is acknowledged to Manage
+     *
+     * There is no Books service key: Books is always called as the signed-in person (F374/F510), so the
+     * Books session path needs nothing here. BOOKS_SERVICE_KEY was listed until October 2026 and made
+     * `ready` unreachable on a correctly configured host (launch-readiness P0-P1).
+     */
+    public const REQUIRED_CONFIG = ['INVENTORY_SERVICE_KEY', 'BOOKS_EVENTS_SIGNING_SECRET', 'SERVICE_KEYS:books', 'LIFECYCLE_WEBHOOK_SECRET', 'MANAGE_API_URL'];
+
+    /**
+     * Settings a feature uses but the product works without: reported (config.optional, config.warnings),
+     * never part of `ready`.
+     *
+     *   PULSE_SERVICE_KEY            AI Pulse gateway key; without it AI Insights is rules-only (after
+     *                                2026-11-15 Pulse refuses a session-only call)
+     *   MANAGE_PRODUCT_SERVICE_KEY   the purge worker asks Manage whether a purge was reversed before it runs
+     *
+     * Contacts needs no setting: it is called as the signed-in person at the host APP_ENV derives
+     * (CONTACTS_API_BASE only pins another one), and Purchases holds no Contacts key.
+     */
+    public const OPTIONAL_CONFIG = ['PULSE_SERVICE_KEY', 'MANAGE_PRODUCT_SERVICE_KEY'];
+
+    /** Shortest secret each verifier accepts (BooksEventSignature, the lifecycle kit's Config). */
+    private const MIN_LENGTH = ['BOOKS_EVENTS_SIGNING_SECRET' => 16, 'LIFECYCLE_WEBHOOK_SECRET' => 32];
 
     public static function revision(): ?string
     {
@@ -43,16 +75,57 @@ final class OpsStatus
         return preg_match('/^[0-9a-f]{7,40}$/', $rev) === 1 ? $rev : null;
     }
 
-    /** @return array{items: array<string,bool>, ready: bool} */
-    public static function config(): array
+    /**
+     * Which settings are present (booleans only, never a value). `items` keeps its shape (name => bool, the
+     * required ones); `optional` and `warnings` (the names of optional settings that are missing) are new
+     * and never decide `ready`.
+     *
+     * @param (callable(string): string)|null $env test seam; Env::get by default
+     * @return array{items: array<string,bool>, ready: bool, optional: array<string,bool>, warnings: list<string>}
+     */
+    public static function config(?callable $env = null): array
     {
+        $env ??= static fn (string $name): string => Env::get($name);
         $items = [];
         foreach (self::REQUIRED_CONFIG as $name) {
-            $value = trim(Env::get($name));
-            $items[$name] = $value !== '' && !str_starts_with($value, 'CHANGE_ME');
+            $items[$name] = self::present($name, $env);
+        }
+        $optional = [];
+        foreach (self::OPTIONAL_CONFIG as $name) {
+            $optional[$name] = self::present($name, $env);
         }
 
-        return ['items' => $items, 'ready' => !in_array(false, $items, true)];
+        return [
+            'items'    => $items,
+            'ready'    => !in_array(false, $items, true),
+            'optional' => $optional,
+            'warnings' => array_keys(array_filter($optional, static fn (bool $set): bool => !$set)),
+        ];
+    }
+
+    /** @param callable(string): string $env */
+    private static function present(string $name, callable $env): bool
+    {
+        if (str_starts_with($name, 'SERVICE_KEYS:')) {
+            // One app's entry in the inbound key list (`app:key,other:key`), a placeholder not counting.
+            $app = substr($name, strlen('SERVICE_KEYS:'));
+            foreach (explode(',', (string) $env('SERVICE_KEYS')) as $pair) {
+                $pair = explode(':', trim($pair), 2);
+                if (count($pair) === 2 && strtolower(trim($pair[0])) === $app && self::usable(trim($pair[1]))) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        $value = trim((string) $env($name));
+
+        return self::usable($value) && strlen($value) >= (self::MIN_LENGTH[$name] ?? 1);
+    }
+
+    private static function usable(string $value): bool
+    {
+        return $value !== '' && !str_starts_with(strtoupper($value), 'CHANGE_ME');
     }
 
     public static function staleAfterSeconds(): int

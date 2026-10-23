@@ -31,6 +31,7 @@ import { DATE_PRESETS, isPurchaseView, useDashboardFilters, type PurchaseViewId 
 import { FilterCombo, useCentreOptions, useSupplierOptions } from './FilterCombo'
 import { useDashboard } from './useDashboard'
 import { OverviewDashboard } from './views/Overview'
+import { FirstRunChecklist } from './FirstRunChecklist'
 import { ProcurementDashboard } from './views/Procurement'
 import { SuppliersDashboard } from './views/Suppliers'
 import { AiInsightsDashboard } from './views/AiInsights'
@@ -489,6 +490,7 @@ export default function PurchaseDashboards() {
         </div>
       )}
 
+      {data && resolved === 'overview' && <FirstRunChecklist />}
       {data && resolved === 'overview' && <OverviewDashboard data={data} />}
       {data && resolved === 'procurement' && <ProcurementDashboard data={data} filters={filters} onChanged={refresh} />}
       {data && resolved === 'suppliers' && <SuppliersDashboard data={data} filters={filters} />}

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Aicountly\Api\Domain;
 
 use Aicountly\Api\Audit;
+use Aicountly\Api\Clients\BooksClient;
 use Aicountly\Api\Auth;
 use Aicountly\Api\Context;
 use Aicountly\Api\Db;
@@ -251,6 +252,84 @@ final class PurchaseOrderService
         return $this->find($poId);
     }
 
+    /**
+     * What the order's document needs from the products that own it, read now and never stored
+     * (launch-readiness P1-P4): the buyer's GST registration (Books' branch GST for the order's branch),
+     * the supplier's GSTIN, state and address (their Books ledger, decided as PlaceOfSupply does for a
+     * bill) and where the goods go (the order's delivery address, else its warehouse in Inventory).
+     * Every read is best effort: what could not be read prints as "Not known".
+     *
+     * @param array<string, mixed> $po
+     * @return array<string, mixed>
+     */
+    private function documentParties(array $po, \Aicountly\Api\Clients\InventoryClient $inventory): array
+    {
+        $books = (new BooksClient())->withSession($this->auth->sesKey());
+        $out = [];
+
+        $boId = (int) ($po['bo_id'] ?? 0);
+        if ($boId > 0) {
+            $branch = $books->branchGst($this->ctx, $boId, (string) $po['po_date']);
+            $data = $branch['ok'] && is_array($branch['body']['data'] ?? null) ? $branch['body']['data'] : [];
+            if ($data !== []) {
+                $out['buyer'] = ['gstin' => (string) ($data['gstin'] ?? ''), 'state_code' => (string) ($data['state_code'] ?? '')];
+            }
+        }
+        if (!isset($out['buyer'])) {
+            // A company-level order (all branches): the company's registered-office state from Manage.
+            $out['buyer'] = ['gstin' => '', 'state_code' => (string) ($this->ctx->companyStateCode() ?? '')];
+        }
+
+        $ledger = $books->account($this->ctx, (int) $po['supplier_account_id']);
+        if ($ledger['ok'] && is_array($ledger['body']['data'] ?? null)) {
+            $row = $ledger['body']['data'];
+            $decided = PlaceOfSupply::decide($row);
+            $out['supplier'] = [
+                'gstin'         => (string) ($row['gstin'] ?? ''),
+                'state_code'    => $decided['pos_state_code'],
+                'supply_nature' => $decided['supply_nature'],
+                'address'       => self::addressLine($row),
+            ];
+        }
+
+        $address = is_string($po['delivery_address'] ?? null) ? json_decode((string) $po['delivery_address'], true) : ($po['delivery_address'] ?? null);
+        if (is_array($address) && self::addressLine($address) !== '') {
+            $out['ship_to'] = ['name' => (string) ($address['name'] ?? $address['label'] ?? ''), 'address' => self::addressLine($address)];
+            if ($out['ship_to']['name'] === '') {
+                unset($out['ship_to']['name']);
+            }
+        } elseif (($po['delivery_warehouse_id'] ?? null) !== null) {
+            $warehouses = $inventory->warehouses($this->ctx);
+            foreach ($warehouses['ok'] ? (array) ($warehouses['body']['data'] ?? []) : [] as $w) {
+                if ((int) ($w['warehouse_id'] ?? 0) !== (int) $po['delivery_warehouse_id']) {
+                    continue;
+                }
+                $wAddress = $w['address'] ?? $w['address_json'] ?? null;
+                if (is_string($wAddress)) {
+                    $wAddress = json_decode($wAddress, true);
+                }
+                $out['ship_to'] = ['name' => (string) ($w['warehouse_name'] ?? ('Warehouse #' . $po['delivery_warehouse_id'])), 'address' => is_array($wAddress) ? self::addressLine($wAddress) : ''];
+                break;
+            }
+        }
+
+        return $out;
+    }
+
+    /** One printable line from an address however its owner keys it (Books ledger, Inventory warehouse, the order). */
+    private static function addressLine(array $a): string
+    {
+        $parts = [];
+        foreach (['address', 'address1', 'address_line1', 'line1', 'address2', 'address_line2', 'line2', 'street', 'area', 'city', 'district', 'state', 'pincode', 'pin', 'postal_code', 'country'] as $key) {
+            $v = $a[$key] ?? null;
+            if (is_scalar($v) && trim((string) $v) !== '' && !in_array(trim((string) $v), $parts, true)) {
+                $parts[] = trim((string) $v);
+            }
+        }
+
+        return implode(', ', $parts);
+    }
+
     public const SEND_CHANNELS = ['email', 'whatsapp', 'courier', 'hand_delivered', 'connect', 'other'];
     public const ACK_SOURCES = ['supplier_email', 'phone', 'supplier_document', 'in_person', 'other'];
 
@@ -281,14 +360,21 @@ final class PurchaseOrderService
             $company = (array) ($info['body']['data'] ?? $info['body'] ?? []);
         }
         $names = [];
+        $hsn = [];
         $itemIds = array_values(array_filter(array_map(static fn ($l) => $l['item_id'] === null ? null : (int) $l['item_id'], $po['lines'])));
-        $lookup = (new \Aicountly\Api\Clients\InventoryClient())->withSession($this->auth->sesKey())->bulkLookupItems($this->ctx, $itemIds);
+        $inventory = (new \Aicountly\Api\Clients\InventoryClient())->withSession($this->auth->sesKey());
+        $lookup = $inventory->bulkLookupItems($this->ctx, $itemIds);
         if ($lookup['ok']) {
             foreach ((array) ($lookup['body']['data'] ?? []) as $item) {
                 $names[(int) ($item['item_id'] ?? 0)] = (string) ($item['item_name'] ?? '');
+                $code = trim((string) ($item['hsn_sac'] ?? $item['hsn_code'] ?? ''));
+                if ($code !== '') {
+                    $hsn[(int) ($item['item_id'] ?? 0)] = $code;
+                }
             }
         }
-        $pdf = \Aicountly\Api\Pdf\PurchaseOrderDocument::render($po, $company, $names, $fingerprint);
+        $parties = $this->documentParties($po, $inventory) + ['hsn' => $hsn];
+        $pdf = \Aicountly\Api\Pdf\PurchaseOrderDocument::render($po, $company, $names, $fingerprint, $parties);
 
         $already = Db::scalar(
             "SELECT 1 FROM purchase_po_communications WHERE cmp_id = :cmp AND po_id = :po AND kind = 'prepared' AND document_fingerprint = :fp",

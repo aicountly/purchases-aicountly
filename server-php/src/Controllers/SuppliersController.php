@@ -6,7 +6,9 @@ namespace Aicountly\Api\Controllers;
 
 use Aicountly\Api\Domain\SupplierNames;
 use Aicountly\Api\Audit;
+use Aicountly\Api\Clients\BooksClient;
 use Aicountly\Api\Clients\InventoryClient;
+use Aicountly\Api\Domain\PlaceOfSupply;
 use Aicountly\Api\Db;
 use Aicountly\Api\Domain\SupplierContactService;
 use Aicountly\Api\Http;
@@ -30,6 +32,120 @@ final class SuppliersController extends Controller
             'SELECT * FROM purchase_supplier_profiles WHERE cmp_id = :cmp ORDER BY is_preferred DESC, supplier_account_id',
             ['cmp' => $ctx->cmpId],
         )));
+    }
+
+    /**
+     * POST v1/suppliers/ledger — a supplier the company has never bought from, added from the purchase
+     * order editor (launch-readiness P1-P8). A supplier IS a Books creditor ledger (Books owns the
+     * accounting identity; this product keeps only its procurement profile), so this asks Smart Books to
+     * create one, as the signed-in person, under the Sundry Creditors group read live:
+     *
+     *   body     {name, gstin?, state_code?, address?, city?, pincode?}
+     *   header   Idempotency-Key: one per "New supplier" form, so a retry after a lost answer is Books'
+     *            replay of the same ledger, never a second one
+     *
+     * The same name among the company's creditors is 409 supplier_exists (with the ledger to pick
+     * instead); a GSTIN is checked here (shape, state, check digit) and decides the state. Answers
+     * 201 {acc_id, acc_name, created|replayed}. Books' own refusal (permission, duplicate) is passed on.
+     */
+    public static function createLedger(): void
+    {
+        [$auth, $ctx] = self::enter();
+        Permissions::assert($ctx, $auth, 'supplier.manage');
+
+        $body = Http::body();
+        $name = trim((string) preg_replace('/\s+/u', ' ', (string) ($body['name'] ?? '')));
+        if ($name === '' || mb_strlen($name) > 150) {
+            Http::validationFailed('The supplier\'s name is required (at most 150 characters).', ['field' => 'name']);
+        }
+        $gstin = PlaceOfSupply::normaliseGstin($body['gstin'] ?? null, 'gstin');
+        $typedState = trim((string) ($body['state_code'] ?? ''));
+        $state = $gstin !== null ? PlaceOfSupply::stateOfGstin($gstin) : null;
+        if ($typedState !== '') {
+            $typed = preg_match('/^\d{1,2}$/', $typedState) === 1 ? str_pad($typedState, 2, '0', STR_PAD_LEFT) : null;
+            if ($typed === null || !isset(\Aicountly\Api\Pdf\PurchaseOrderTax::STATES[$typed])) {
+                Http::validationFailed('Choose the supplier\'s state from the list.', ['field' => 'state_code']);
+            }
+            if ($state !== null && $typed !== $state) {
+                Http::validationFailed('The GSTIN is registered in another state (' . $state . '); the state must match it.', ['field' => 'state_code']);
+            }
+            $state = $typed;
+        }
+        $requestKey = trim(Http::header('Idempotency-Key'));
+        if (preg_match('/^[A-Za-z0-9_-]{8,64}$/', $requestKey) !== 1) {
+            Http::validationFailed('An Idempotency-Key header (8-64 letters, digits, - or _) is required, one per new supplier.', ['field' => 'Idempotency-Key']);
+        }
+
+        $books = (new BooksClient())->withSession($auth->sesKey());
+        $found = $books->accounts($ctx, ['q' => $name, 'anchor_code' => 'SUNDRY_CREDITORS', 'per_page' => 50]);
+        if (!$found['ok']) {
+            self::booksRefused($found);
+        }
+        foreach ((array) ($found['body']['data'] ?? []) as $row) {
+            if (mb_strtolower(trim((string) ($row['acc_name'] ?? ''))) === mb_strtolower($name)) {
+                Http::error(409, 'supplier_exists', 'Smart Books already has a supplier called "' . $name . '". Choose it instead of adding it again.', [
+                    'acc_id' => (int) ($row['acc_id'] ?? 0), 'acc_name' => (string) $row['acc_name'],
+                ]);
+            }
+        }
+
+        $groups = $books->accountGroups($ctx);
+        if (!$groups['ok']) {
+            self::booksRefused($groups);
+        }
+        $groupId = null;
+        foreach ((array) ($groups['body']['data'] ?? $groups['body'] ?? []) as $group) {
+            if (is_array($group) && strtoupper((string) ($group['anchor_code'] ?? '')) === 'SUNDRY_CREDITORS') {
+                $groupId = (int) ($group['acc_grp_id'] ?? $group['id'] ?? 0) ?: null;
+                break;
+            }
+        }
+        if ($groupId === null) {
+            Http::error(422, 'creditors_group_missing', 'Smart Books has no Sundry Creditors group for this company, so a supplier cannot be added. Open Masters → Account Groups in Smart Books.');
+        }
+
+        $payload = array_filter([
+            'acc_name'     => $name,
+            'acc_grp_id'   => $groupId,
+            'party_type'   => 'supplier',
+            'is_active'    => 1,
+            'gstin'        => $gstin,
+            'state_code'   => $state,
+            'address'      => self::text($body['address'] ?? null),
+            'city'         => self::text($body['city'] ?? null),
+            'pincode'      => self::text($body['pincode'] ?? null),
+            'country_code' => 'IN',
+        ], static fn ($v) => $v !== null && $v !== '');
+        $result = $books->createAccount($ctx, $payload, 'purchases-supplier-' . $ctx->cmpId . '-' . $requestKey);
+        if (!$result['ok']) {
+            self::booksRefused($result);
+        }
+        $data = is_array($result['body']['data'] ?? null) ? $result['body']['data'] : (array) ($result['body'] ?? []);
+        $accountId = (int) ($data['acc_id'] ?? $data['id'] ?? 0);
+        if ($accountId <= 0) {
+            Http::error(502, 'upstream_unclear', 'Smart Books did not say which ledger it created. Search for the supplier before adding it again.');
+        }
+        $replayed = ($result['body']['idempotent_replay'] ?? false) === true;
+        if (!$replayed) {
+            // Best effort: the ledger exists in Books whatever happens to this row.
+            Audit::record($ctx, $auth, 'supplier.ledger_created', 'supplier', $accountId, null, ['acc_name' => $name, 'gstin' => $gstin, 'state_code' => $state], 'created in Smart Books from Purchases');
+        }
+
+        Http::data(['acc_id' => $accountId, 'acc_name' => (string) ($data['acc_name'] ?? $name), 'mode' => $replayed ? 'replayed' : 'created'], 201);
+    }
+
+    /** Books' refusal as the person should read it: its own message, or "could not reach". */
+    private static function booksRefused(array $result): never
+    {
+        $status = (int) ($result['status'] ?? 0);
+        if ($status === 0 || $status >= 500) {
+            Http::error(503, 'upstream_unavailable', 'Could not reach Smart Books. Nothing was created — try again.', ['retryable' => true]);
+        }
+        $body = (array) ($result['body'] ?? []);
+        $messages = $body['messages'] ?? $body['error']['message'] ?? $body['message'] ?? $result['error'] ?? 'Smart Books refused this.';
+        $message = is_array($messages) ? implode(' ', array_map('strval', array_values(array_filter($messages, 'is_scalar')))) : (string) $messages;
+        $code = is_array($body['error'] ?? null) ? (string) ($body['error']['code'] ?? 'books_refused') : 'books_refused';
+        Http::error(in_array($status, [401, 403, 409, 422], true) ? $status : 422, $code, $message === '' ? 'Smart Books refused this.' : $message);
     }
 
     public static function upsert(): void

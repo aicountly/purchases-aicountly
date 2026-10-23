@@ -12,6 +12,8 @@ import { CommandStrip, recoveryPath } from '../components/CommandStrip'
 import type { IntegrationCommand, ReceiptRequest } from '../services/types'
 import { AmendPanel, OrderCommunicationsPanel, ReceiptReturnPanel, ReceiveGoodsPanel, ShortClosePanel } from './purchase-order/OrderPanels'
 import { ItemPicker, SupplierPicker } from '../components/LivePicker'
+import { getAppById, launchApp } from '../services/appLauncher'
+import { NewSupplierForm } from './purchase-order/NewSupplierForm'
 import { LoadFailed, Pager } from '../components/LoadFailed'
 import { Button, Card, DataTable, date, Field, Input, money, Notice, qty, Select, StatusBadge, Textarea } from '../ui'
 import { DiscussInConnect } from '../components/ConnectEmbed'
@@ -578,6 +580,9 @@ export function PurchaseOrderEditor() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const [supplier, setSupplier] = useState<{ id: number; name: string; status?: string } | null>(null)
+  // "New supplier": a creditor ledger created in Smart Books from here (P1-P8); the first-run
+  // checklist opens the editor with it showing (?new_supplier=1).
+  const [addingSupplier, setAddingSupplier] = useState(() => searchParams.get('new_supplier') === '1')
   const [poDate, setPoDate] = useState(() => localToday())
   const [promisedDate, setPromisedDate] = useState('')
   const [paymentTerms, setPaymentTerms] = useState('')
@@ -656,6 +661,22 @@ export function PurchaseOrderEditor() {
           <Field label="Payment terms"><Input value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)} placeholder="30 days" /></Field>
           <Field label="Freight"><Input value={freight} inputMode="decimal" onChange={(e) => setFreight(e.target.value)} /></Field>
         </div>
+        {addingSupplier ? (
+          <NewSupplierForm
+            onCancel={() => setAddingSupplier(false)}
+            onCreated={(created) => {
+              setSupplier({ id: created.acc_id, name: created.acc_name })
+              setAddingSupplier(false)
+            }}
+          />
+        ) : (
+          <p style={{ margin: '0.6rem 0 0', fontSize: '0.82rem', color: 'var(--muted)' }}>
+            Not in the list?{' '}
+            <button type="button" onClick={() => setAddingSupplier(true)} style={{ background: 'none', border: 0, padding: 0, color: 'var(--accent)', fontWeight: 600, cursor: 'pointer', font: 'inherit' }}>
+              Add a new supplier
+            </button>
+          </p>
+        )}
         {supplier && supplier.status !== 'approved' && (
           <div style={{ marginTop: '0.85rem' }}>
             <Notice tone="warning" title="This supplier is not approved">
@@ -669,6 +690,17 @@ export function PurchaseOrderEditor() {
       </Card>
 
       <Card title="Lines" action={<Button onClick={() => setLines((c) => [...c, emptyLine()])}>Add line</Button>}>
+        <p style={{ margin: '0 0 0.75rem', fontSize: '0.82rem', color: 'var(--muted)' }}>
+          Items come from Inventory. Item not there?{' '}
+          <button
+            type="button"
+            onClick={() => launchApp(getAppById('inventory'), { newTab: true })}
+            style={{ background: 'none', border: 0, padding: 0, color: 'var(--accent)', fontWeight: 600, cursor: 'pointer', font: 'inherit' }}
+          >
+            Add it in Inventory
+          </button>{' '}
+          (opens a new tab), then search for it here.
+        </p>
         <div style={{ display: 'grid', gap: '0.85rem' }}>
           {lines.map((line) => (
             <div key={line.key} style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.75rem', display: 'grid', gap: '0.6rem' }}>

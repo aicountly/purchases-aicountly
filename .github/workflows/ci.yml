@@ -3,10 +3,11 @@ name: CI
 # Purchases had no test workflow: the two deploys were the only workflows and neither ran a test.
 # This runs the documented checks (docs/DEVELOPMENT.md "Checks"): server-php/tests/run.sh —
 # integration tests on a real PostgreSQL with the local stub for Books, Inventory, Manage and
-# AI Pulse, then the AI gateway and remediation tests — and the web typecheck + build. The
-# browser checks (test:ui, test:remediation) need a running stack and are not run here.
+# AI Pulse, then the AI gateway and remediation tests — and the web unit tests (node:test),
+# typecheck + build. The browser checks (test:ui, test:remediation) need a running stack and are
+# not run here.
 #
-# Runs on every pull request and every push to main, and on demand. Deploys stay manual
+# Runs on demand only (workflow_dispatch) and from the deploys (workflow_call). Deploys stay manual
 # (workflow_dispatch only) and call this same workflow first through workflow_call, so a
 # deploy cannot ship a commit whose suite is red. This workflow only tests and builds: it
 # never deploys, uploads to a host or calls a live service — the integration suite talks to
@@ -70,7 +71,7 @@ jobs:
         run: bash server-php/tests/ops/run.sh
 
   web:
-    name: web (typecheck + build)
+    name: web (unit tests + typecheck + build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -90,6 +91,11 @@ jobs:
       # E8-OPS (F421): known-vulnerable runtime dependencies fail the gate (dev tooling is not shipped).
       - name: Dependency audit (runtime)
         run: npm audit --omit=dev --audit-level=high
+
+      # The web unit tests (node:test over src/**/*.test.ts: plan-limit sentences, same-origin relays,
+      # stock mode, the error boundary, the first-run checklist, …) — launch-readiness P1-P7.
+      - name: Unit tests
+        run: npm test
 
       - name: Typecheck and build
         run: npm run build

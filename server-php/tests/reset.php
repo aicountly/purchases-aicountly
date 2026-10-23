@@ -32,13 +32,13 @@ if (!function_exists(__NAMESPACE__ . '\\resetPurchaseTables')) {
             'purchase_approval_requests', 'purchase_approval_rules',
             'purchase_supplier_scorecards', 'purchase_supplier_profiles',
             'purchase_integration_commands', 'purchase_permission_assignments',
-            'purchase_permission_profiles', 'purchase_settings', 'purchase_user_preferences',
+            'purchase_permission_profiles', 'purchase_access_removals', 'purchase_settings', 'purchase_user_preferences',
             'purchase_audit_log',
         ];
 
         Db::connect()->exec('TRUNCATE ' . implode(', ', $tables) . ' RESTART IDENTITY CASCADE');
 
-        foreach (['stub-idempotency.json', 'stub-requests.jsonl', 'stub-documents.json', 'stub-drafts.json', 'stub-vouchers.json', 'stub-books-caps.json', 'stub-inventory-caps.json', 'stub-control.json', 'stub-mode.json', 'stub-contacts.json', 'stub-accounts.json', 'stub-serials.json'] as $file) {
+        foreach (['stub-idempotency.json', 'stub-requests.jsonl', 'stub-documents.json', 'stub-drafts.json', 'stub-vouchers.json', 'stub-books-caps.json', 'stub-inventory-caps.json', 'stub-control.json', 'stub-mode.json', 'stub-contacts.json', 'stub-accounts.json', 'stub-serials.json', 'stub-created-accounts.json'] as $file) {
             @unlink(sys_get_temp_dir() . '/' . $file);
         }
 

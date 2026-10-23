@@ -74,6 +74,8 @@ return [
         ['table' => 'purchase_permission_profiles', 'key' => 'cmp_id'],
         // Manage's signed seat events (CONTRACTS §5): the company's record of who Manage seated here.
         ['table' => 'purchase_manage_seat_events', 'key' => 'cmp_id'],
+        // An administrator's removal of a person from Purchases in the company (migration 030).
+        ['table' => 'purchase_access_removals', 'key' => 'cmp_id'],
         ['table' => 'purchase_settings', 'key' => 'cmp_id'],
         ['table' => 'purchase_user_preferences', 'key' => 'cmp_id'],
 
@@ -137,5 +139,6 @@ return [
         // record of who may do what there — removed with the company (above) or by Manage's share revoke.
         ['table' => 'purchase_permission_assignments', 'reason' => 'company seat (role per company), not the person\'s own data: purged with the company, revoked by Manage'],
         ['table' => 'purchase_manage_seat_events', 'reason' => 'Manage\'s signed record of a company seat (who was given which role), not the person\'s own data: purged with the company'],
+        ['table' => 'purchase_access_removals', 'reason' => 'the company\'s record that an administrator removed a person from Purchases there, not the person\'s own data: purged with the company'],
     ],
 ];

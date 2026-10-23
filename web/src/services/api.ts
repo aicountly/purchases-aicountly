@@ -105,6 +105,8 @@ interface RequestOptions {
   /** Pass false for calls that take no company context. */
   scoped?: boolean
   signal?: AbortSignal
+  /** Extra request headers (an Idempotency-Key). Never Authorization, which is always the session's. */
+  headers?: Record<string, string>
 }
 
 async function send<T>(path: string, options: RequestOptions, sesKey: string): Promise<T> {
@@ -112,6 +114,7 @@ async function send<T>(path: string, options: RequestOptions, sesKey: string): P
   const method = options.method ?? 'GET'
 
   const headers: Record<string, string> = {
+    ...(options.headers ?? {}),
     Accept: 'application/json',
     Authorization: `Bearer ${sesKey}`,
   }
@@ -239,6 +242,13 @@ export const api = {
     request<ItemResponse<T>>(path, { method: 'GET', params, signal }),
 
   post: <T>(path: string, body?: unknown, params?: QueryParams) => postDeciding<T>(path, body, params),
+
+  /**
+   * A POST that creates something in another product under an Idempotency-Key (one per form), so a
+   * retry after a lost answer is that product's replay of the same record, never a second one.
+   */
+  postOnce: <T>(path: string, body: unknown, idempotencyKey: string) =>
+    request<ItemResponse<T>>(path, { method: 'POST', body, headers: { 'Idempotency-Key': idempotencyKey } }),
 
   put: <T>(path: string, body?: unknown, params?: QueryParams) =>
     request<ItemResponse<T>>(path, { method: 'PUT', body: body ?? {}, params }),
