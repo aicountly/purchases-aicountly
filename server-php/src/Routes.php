@@ -184,6 +184,8 @@ final class Routes
         $router->post('v1/suppliers/{id}/contact', [SuppliersController::class, 'linkContact']);
         $router->delete('v1/suppliers/{id}/contact', [SuppliersController::class, 'unlinkContact']);
         $router->post('v1/suppliers', [SuppliersController::class, 'upsert']);
+        // A new supplier from the purchase order editor: a Books creditor ledger (P1-P8).
+        $router->post('v1/suppliers/ledger', [SuppliersController::class, 'createLedger']);
         $router->post('v1/suppliers/{id}/status', [SuppliersController::class, 'setStatus']);
         $router->get('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);
         $router->post('v1/suppliers/{id}/scorecard', [SuppliersController::class, 'scorecard']);

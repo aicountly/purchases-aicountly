@@ -100,6 +100,37 @@ final class BooksClient extends ApiClient
         return $this->call('GET', 'masters/accounts/' . $accountId . self::query($ctx->asQuery()));
     }
 
+    /**
+     * Create a ledger (a new supplier's creditor account) under an Idempotency-Key: Books answers the
+     * same key and body with a replay of the first account (`idempotent_replay: true`) and the same key
+     * with another body with 409 idempotency_conflict, so a retry can never make a second ledger.
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function createAccount(Context $ctx, array $payload, string $idempotencyKey): array
+    {
+        return $this->call('POST', 'masters/accounts', $payload + $ctx->asBody(), true, ['Idempotency-Key' => $idempotencyKey]);
+    }
+
+    /**
+     * The company's account groups, read live. Each carries `anchor_code` (SUNDRY_CREDITORS, …), the
+     * platform-stable name a group is found by — never a hard-coded id, which differs per company.
+     */
+    public function accountGroups(Context $ctx): array
+    {
+        return $this->call('GET', 'masters/account-groups' . self::query(['active_only' => 1] + $ctx->asQuery()));
+    }
+
+    /**
+     * The branch's GST registration on a date — its GSTIN and the state its CGST + SGST / IGST is split
+     * against (Books' GET branch-gst/{bo_id}/resolve, readable with vouchers.read). Printed on the
+     * purchase order as the buyer's registration; never stored.
+     */
+    public function branchGst(Context $ctx, int $boId, string $date): array
+    {
+        return $this->call('GET', 'branch-gst/' . $boId . '/resolve' . self::query(['date' => $date] + $ctx->asQuery()));
+    }
+
     public function taxCategories(Context $ctx): array
     {
         return $this->call('GET', 'masters/tax-categories' . self::query(['limit' => 200] + $ctx->asQuery()));

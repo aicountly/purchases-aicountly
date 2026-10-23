@@ -620,6 +620,8 @@ final class AccessController extends Controller
                 $assignmentId = (int) $existing['assignment_id'];
                 Db::update(Permissions::TABLE_ASSIGNMENTS, $fields, ['assignment_id' => $assignmentId]);
             }
+            // Granting a profile again replaces an earlier removal of this person.
+            \Aicountly\Api\ManageSeats::forgetRemoval($ctx->cmpId, $uuid);
 
             // A label is a note about a person, so it is applied to every grant they
             // hold rather than only the one just made.
@@ -664,6 +666,16 @@ final class AccessController extends Controller
 
         Db::transaction(static function () use ($id, $assignment, $ctx, $auth): void {
             Db::run('DELETE FROM ' . Permissions::TABLE_ASSIGNMENTS . ' WHERE assignment_id = :id', ['id' => (int) $id]);
+
+            // Their last Purchases profile here: remember the removal, so workspace-wide access from
+            // Manage does not seat them again on their next request (ManageSeats::seatWorkspaceMember).
+            $left = (int) Db::scalar(
+                'SELECT COUNT(*) FROM ' . Permissions::TABLE_ASSIGNMENTS . ' WHERE cmp_id = :cmp AND user_uuid = :uuid',
+                ['cmp' => $ctx->cmpId, 'uuid' => $assignment['user_uuid']],
+            );
+            if ($left === 0) {
+                \Aicountly\Api\ManageSeats::recordRemoval($ctx->cmpId, (string) $assignment['user_uuid'], $auth->uuid);
+            }
 
             Audit::material($ctx, $auth, 'access.profile_unassigned', 'permission_assignment', (int) $id, [
                 'user_uuid'    => $assignment['user_uuid'],

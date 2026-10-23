@@ -1160,10 +1160,66 @@ if (str_contains($path, '/v1/warehouses')) {
 }
 
 // --- Books ----------------------------------------------------------------
+/*
+ * Books' BranchGstController::resolve: the branch's registration on a date, its GSTIN and the state
+ * its GST is split against. Branch 2 is registered in Karnataka (29); any other branch has none.
+ */
+if (preg_match('#/branch-gst/(\d+)/resolve$#', $path, $bm) === 1 && $method === 'GET') {
+    $registered = (int) $bm[1] === 2;
+    echo json_encode(['data' => [
+        'reg_type' => $registered ? 'regular' : 'unregistered', 'gstin' => $registered ? '29AAACS1234A1ZY' : '',
+        'state_code' => $registered ? '29' : '', 'bo_id' => (int) $bm[1], 'returns' => [],
+    ]]);
+    exit;
+}
 /**
  * The account list, filtered the way Books filters it: anchor_code is a comma list of group
  * anchors, q a substring of the name. Creditors carry SUNDRY_CREDITORS.
  */
+/*
+ * Books' account groups (AccountGroupsController::index): each with its anchor_code. Mode
+ * no_creditors_group answers as a company whose groups were never bootstrapped.
+ */
+if (preg_match('#/masters/account-groups$#', $path) === 1 && $method === 'GET') {
+    $groups = [['acc_grp_id' => 11, 'grp_name' => 'Sundry Debtors', 'anchor_code' => 'SUNDRY_DEBTORS']];
+    if (empty($modes['no_creditors_group'])) {
+        $groups[] = ['acc_grp_id' => 12, 'grp_name' => 'Sundry Creditors', 'anchor_code' => 'SUNDRY_CREDITORS'];
+    }
+    echo json_encode(['data' => $groups]);
+    exit;
+}
+/*
+ * Books' AccountsController::create under an Idempotency-Key, as Books keeps it: the same key and body
+ * is a 201 replay of the first account (idempotent_replay: true), the same key with another body 409
+ * idempotency_conflict naming the account; a name already used is a 400 validation error.
+ */
+if (preg_match('#/masters/accounts$#', $path) === 1 && $method === 'POST') {
+    $store = sys_get_temp_dir() . '/stub-created-accounts.json';
+    $created = is_file($store) ? (json_decode((string) file_get_contents($store), true) ?: []) : [];
+    $key = (string) ($headers['idempotency-key'] ?? '');
+    $hash = md5((string) json_encode($body));
+    if ($key !== '' && isset($created[$key])) {
+        if ($created[$key]['hash'] !== $hash) {
+            http_response_code(409);
+            echo json_encode(['error' => ['code' => 'idempotency_conflict', 'message' => 'This key was used for a different account.', 'details' => ['acc_id' => $created[$key]['acc_id']]]]);
+            exit;
+        }
+        http_response_code(201);
+        echo json_encode(['data' => ['acc_id' => $created[$key]['acc_id'], 'acc_name' => $created[$key]['acc_name']], 'idempotent_replay' => true]);
+        exit;
+    }
+    if (in_array(strtolower(trim((string) ($body['acc_name'] ?? ''))), ['northern distributors', 'eastern metals'], true)) {
+        http_response_code(400);
+        echo json_encode(['status' => 400, 'error' => 400, 'messages' => ['acc_name' => 'An account with this name already exists.']]);
+        exit;
+    }
+    $accId = 9100 + count($created) + 1;
+    $created[$key !== '' ? $key : 'nokey-' . $accId] = ['hash' => $hash, 'acc_id' => $accId, 'acc_name' => (string) ($body['acc_name'] ?? '')];
+    file_put_contents($store, json_encode($created));
+    http_response_code(201);
+    echo json_encode(['data' => ['acc_id' => $accId, 'acc_name' => (string) ($body['acc_name'] ?? '')]]);
+    exit;
+}
 if (preg_match('#/masters/accounts$#', $path) === 1 && $method === 'GET') {
     $accounts = [
         ['acc_id' => 501, 'acc_name' => 'Northern Distributors', 'grp_name' => 'Sundry Creditors', 'grp_anchor_code' => 'SUNDRY_CREDITORS'],

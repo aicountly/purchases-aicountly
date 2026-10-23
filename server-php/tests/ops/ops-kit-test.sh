@@ -25,6 +25,11 @@
 set -uo pipefail
 : "${APP:?}" "${MIGTABLE:?}" "${PORT:?}" "${ROUTE_OK:?}"
 DB_ADMIN_URL="${DB_ADMIN_URL:-postgresql://postgres:postgres@127.0.0.1:5432/postgres}"
+# The port the kit's own role connects on: DB_PORT, else the one in DB_ADMIN_URL, else 5432 (it used
+# to be 5432 always, so the kit could not run against a PostgreSQL on any other port; X-P2-4).
+KIT_DB_PORT="${DB_PORT:-$(printf '%s' "$DB_ADMIN_URL" | sed -n 's#^[a-z]*://[^@/]*@[^:/]*:\([0-9][0-9]*\)/.*#\1#p')}"
+KIT_DB_PORT="${KIT_DB_PORT:-5432}"
+export KIT_DB_PORT
 DB_PREFIX="${DB_PREFIX:-e8op_}"
 HEALTH_READY_FILTER="${HEALTH_READY_FILTER:-.usable == true}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # server-php
@@ -38,7 +43,7 @@ pass=0 fail=0
 ok() { echo "PASS $*"; pass=$((pass + 1)); }
 no() { echo "FAIL $*"; fail=$((fail + 1)); }
 psql_admin() { psql "$DB_ADMIN_URL" -v ON_ERROR_STOP=1 -qAt "$@"; }
-dburl() { echo "postgresql://${ROLE}:${PASS}@127.0.0.1:5432/$1"; }
+dburl() { echo "postgresql://${ROLE}:${PASS}@127.0.0.1:${KIT_DB_PORT}/$1"; }
 SERVER_PID=""
 cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
@@ -58,7 +63,7 @@ write_env() { # dir db
 APP_ENV=local
 APP_PRODUCT_KEY=${APP}
 DB_HOST=127.0.0.1
-DB_PORT=5432
+DB_PORT=${KIT_DB_PORT}
 DB_NAME=$2
 DB_USER=${ROLE}
 DB_PASS=${PASS}
@@ -186,7 +191,7 @@ bash "$REPO/scripts/ops/preflight-receivers.sh" production "$WORK/recv-health.tx
 if [ -n "${COMMANDS_TABLE:-}" ]; then
   # One FAILED command untouched for an hour; every NOT NULL column without a default gets a typed dummy.
   php -r '
-    $pdo = new PDO("pgsql:host=127.0.0.1;port=5432;dbname=" . $argv[1], $argv[2], $argv[3], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $pdo = new PDO("pgsql:host=127.0.0.1;port=" . getenv("KIT_DB_PORT") . ";dbname=" . $argv[1], $argv[2], $argv[3], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     $cols = $pdo->query("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = " . $pdo->quote($argv[4]) . " AND is_nullable = '"'"'NO'"'"' AND column_default IS NULL")->fetchAll(PDO::FETCH_ASSOC);
     $names = []; $vals = [];
     foreach ($cols as $c) {

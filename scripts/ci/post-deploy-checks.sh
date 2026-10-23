@@ -56,11 +56,19 @@ fi
 # settings its cross-app journeys need are present (health: config / books_delivery, booleans only)
 # and its background job has run (bin/ops/release.sh installs it and runs it once). Fatal there;
 # a warning on sandbox, whose configuration may legitimately lag.
+# `ready` needs exactly the settings in OpsStatus::REQUIRED_CONFIG (config.items: INVENTORY_SERVICE_KEY,
+# BOOKS_EVENTS_SIGNING_SECRET, a books entry in SERVICE_KEYS, LIFECYCLE_WEBHOOK_SECRET, MANAGE_API_URL) —
+# docs/launch-readiness-2026-10/OPERATOR_RUNBOOK.md. There is no BOOKS_SERVICE_KEY to set.
 if [ "$target" = production ]; then
   check json "Purchases ready (${target})" "${base}/api/health" '.usable == true and .ready == true'
 else
   check json "Purchases ready (${target})" "${base}/api/health" '.app == "Purchases"' '.ready == true'
 fi
+# Optional settings (config.warnings: PULSE_SERVICE_KEY, MANAGE_PRODUCT_SERVICE_KEY) are reported and
+# never fail a deploy: AI falls back to rules; a purge runs without Manage's reversal check.
+bash "$verify" json "Purchases optional settings (${target}, warning only)" "${base}/api/health" \
+  '(.config.warnings // []) == []' \
+  || echo "WARNING: optional settings missing on Purchases ${target} (health config.warnings); see OPERATOR_RUNBOOK.md."
 
 # The web root serves the build just deployed, or at least the Purchases page (fatal).
 if [ -n "$entry" ]; then

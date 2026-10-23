@@ -46,7 +46,6 @@ PULSE_API_ORIGIN=http://127.0.0.1:$STUB_PORT
 CONTACTS_API_BASE=http://127.0.0.1:$STUB_PORT/api
 PORTAL_AUTH_BASE=http://127.0.0.1:$STUB_PORT
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:5173
-BOOKS_SERVICE_KEY=test-books-key
 INVENTORY_SERVICE_KEY=test-inventory-key
 PULSE_SERVICE_KEY=$PULSE_KEY
 SERVICE_KEYS=books:test-books-service-key-0001,insights:test-insights-service-key-01
@@ -106,6 +105,9 @@ STUB_PULSE_SERVICE_KEY="$PULSE_KEY" E8ID_API_PORT="${E8ID_API_PORT:-$((STUB_PORT
 php "$ROOT/tests/remediation.php" || status=$?
 # Launch readiness 2026-10 (E8-PUR): one check per finding, each failing before its correction.
 php "$ROOT/tests/launch_readiness.php" || status=$?
+# Launch readiness phase 2: health `ready` with the documented settings, the GST purchase order, a new
+# supplier from the order editor, sticky removal of a workspace member, headers and the manual CI.
+php "$ROOT/tests/launch_readiness_p2.php" || status=$?
 # Register filters: GST quick filters and amount / supplier on the list screens, as SQL on real rows.
 php "$ROOT/tests/register_filters.php" || status=$?
 # The fleet alignment: plan limits from companyinfo's plan, workspace-wide access seated on first entry,
