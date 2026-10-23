@@ -71,7 +71,7 @@ export default function DeleteAccount() {
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.paper }}>
-      <Bar title="Close my account" />
+      <Bar title="Delete my account" />
       {summary.phase === 'loading' ? (
         <StatePanel kind="loading" />
       ) : (
@@ -80,7 +80,7 @@ export default function DeleteAccount() {
           <Docket>
             <Icon name="alert" size={28} color={palette.reject} />
             <T v="title" style={{ marginTop: space.s }}>
-              Close your AICOUNTLY account
+              Delete your AICOUNTLY account
             </T>
             <T v="body" color={palette.textSoft} style={{ marginTop: space.s }}>
               {CLOSURE_TERMS}
@@ -142,14 +142,14 @@ export default function DeleteAccount() {
               {error ? <Banner tone="stop" icon="alert" text={error} /> : null}
               <Field label={`Type ${CONFIRM_WORD} to confirm`} value={typed} onChangeText={setTyped} autoCapitalize="characters" autoCorrect={false} testID="confirm-word" />
               <Button
-                label="Close my account"
+                label="Delete my account"
                 kind="reject"
                 busy={busy}
                 disabled={!ready}
                 onPress={() =>
-                  Alert.alert('Close your account?', CLOSURE_TERMS, [
+                  Alert.alert('Delete your account?', CLOSURE_TERMS, [
                     { text: 'Keep it', style: 'cancel' },
-                    { text: 'Close account', style: 'destructive', onPress: () => void close() },
+                    { text: 'Delete account', style: 'destructive', onPress: () => void close() },
                   ])
                 }
                 testID="close-account"

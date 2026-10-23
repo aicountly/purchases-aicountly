@@ -1,0 +1,108 @@
+name: Mobile EAS submit (existing build)
+
+# Sends an EAS build of the Purchases phone app (mobile/) that has already finished to its store,
+# without rebuilding. Started by hand only.
+#   iOS:     uploads to App Store Connect (TestFlight). Refused unless the repository variable
+#            IOS_SUBMISSION_APPROVED is "true": AICOUNTLY releases its iOS apps one at a time, and
+#            this one waits its turn. Sending it to App Review is a separate step in App Store Connect.
+#   Android: uploads to the Play track named in eas.json (internal, as a draft).
+# Secrets: EXPO_TOKEN; ASC_APP_ID (iOS); GOOGLE_PLAY_SERVICE_ACCOUNT_JSON (Android).
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Store to submit to
+        required: true
+        default: android
+        type: choice
+        options:
+          - android
+          - ios
+      build_id:
+        description: EAS build id (the uuid at the end of the build page link)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-eas-submit-${{ inputs.platform }}
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: iOS submission gate
+        if: inputs.platform == 'ios'
+        env:
+          APPROVED: ${{ vars.IOS_SUBMISSION_APPROVED }}
+        working-directory: .
+        run: |
+          if [ "$APPROVED" != "true" ]; then
+            echo "::error::iOS submission of Purchases is not approved yet. Set the repository variable IOS_SUBMISSION_APPROVED to true only when this app's iOS release is cleared." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Check App Store copy (iOS)
+        if: inputs.platform == 'ios'
+        run: node scripts/check-store-copy.mjs
+
+      - name: Check inputs
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if ! printf '%s' "$BUILD_ID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "::error::build_id must be an EAS build uuid." >&2; exit 1
+          fi
+          if [ -z "$EXPO_TOKEN" ]; then echo "::error::Repository secret EXPO_TOKEN is not set." >&2; exit 1; fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - run: npm install -g eas-cli@24.8.0
+
+      # eas.json carries no App Store Connect id; it is written into this run's copy from a secret.
+      - name: Configure App Store Connect
+        if: inputs.platform == 'ios'
+        env:
+          ASC_APP_ID: ${{ secrets.ASC_APP_ID }}
+        run: |
+          if ! printf '%s' "$ASC_APP_ID" | grep -Eq '^[0-9]+$'; then
+            echo "::error::Repository secret ASC_APP_ID (App Store Connect → App Information → Apple ID) is required." >&2; exit 1
+          fi
+          node -e '
+            const fs = require("fs");
+            const eas = JSON.parse(fs.readFileSync("eas.json", "utf8"));
+            eas.submit.production.ios = { ...(eas.submit.production.ios || {}), ascAppId: process.env.ASC_APP_ID };
+            fs.writeFileSync("eas.json", JSON.stringify(eas, null, 2));
+          '
+
+      - name: Restore the Google Play service account
+        if: inputs.platform == 'android'
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" ]; then echo "::error::Repository secret GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is required." >&2; exit 1; fi
+          mkdir -p secrets
+          printf '%s' "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" > secrets/google-play-service-account.json
+
+      - name: Submit
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: eas submit --platform "${{ inputs.platform }}" --profile production --id "${{ inputs.build_id }}" --non-interactive
+
+      - name: Remove the service account
+        if: always()
+        run: rm -rf secrets

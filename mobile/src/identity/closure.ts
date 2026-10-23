@@ -1,7 +1,7 @@
 /**
  * A closed AICOUNTLY account, met at sign-in.
  *
- * Closing an account (Account → Close my account) takes effect at once. For the next 45 days
+ * Closing an account (Account → Delete my account) takes effect at once. For the next 45 days
  * the holder can reopen it by signing in again and choosing "Reopen my account" — the same
  * sign-in, sent again with `reactivate: true`. After 45 days the account and its data are
  * erased. The identity service decides all of this; the phone only reads its answer.

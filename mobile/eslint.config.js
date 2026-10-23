@@ -12,6 +12,7 @@ module.exports = [
       eqeqeq: ['error', 'smart'],
     },
   },
+  { files: ['scripts/**'], rules: { 'no-console': 'off' } },
   {
     files: ['src/**/__tests__/**', 'jest.setup.js'],
     rules: { 'import/first': 'off', '@typescript-eslint/no-require-imports': 'off' },

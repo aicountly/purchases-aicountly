@@ -91,7 +91,7 @@ export default function Account() {
             ])
           }
         />
-        <Row icon="bin" label="Close my AICOUNTLY account" danger onPress={() => router.push('/delete-account')} />
+        <Row icon="bin" label="Delete my AICOUNTLY account" danger onPress={() => router.push('/delete-account')} />
         <T v="small" color={palette.textMuted} style={{ marginTop: space.l, textAlign: 'center' }}>
           Purchases {Constants.expoConfig?.version ?? ''}
         </T>

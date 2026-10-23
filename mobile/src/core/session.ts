@@ -70,9 +70,10 @@ export function setSessionTransport(next: Fetch | null): void {
 }
 
 async function mint(path: '/api/seskey' | '/api/seskey/refresh'): Promise<string> {
-  const token = await readSignInToken();
-  if (!token) throw new SessionEndedError();
+  // Taken before anything is awaited: a sign-out that lands at any point after this wins.
   const started = generation;
+  const token = await readSignInToken();
+  if (!token || started !== generation) throw new SessionEndedError();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), MINT_TIMEOUT_MS);
   let res: Response;

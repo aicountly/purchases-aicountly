@@ -69,12 +69,23 @@ export default function Desk() {
     <>
       {!online ? <Banner tone="go" icon="offline" text="You're offline. You can still count a delivery; recording it needs a connection." /> : null}
       {restricted ? <Banner tone="late" icon="alert" text="This company is read-only in Purchases right now. Contact your company administrator." /> : null}
-      {seat.kind === 'failed' ? <Banner tone="stop" icon="alert" text={seat.message} action={seat.noAccess ? { label: 'Change', onPress: () => router.push('/company') } : { label: 'Retry', onPress: reloadSeat }} /> : null}
     </>
   );
 
   const body = useMemo(() => {
     if (seat.kind === 'loading' || seat.kind === 'idle') return <StatePanel kind="loading" />;
+    if (seat.kind === 'failed') {
+      return (
+        <View style={{ padding: space.l }}>
+          <Banner tone="stop" icon="alert" text={seat.message} />
+          {seat.noAccess ? (
+            <StatePanel kind="empty" icon="building" title="Can't open this company here" text="Choose another company, or ask its owner for access to Purchases." action={{ label: 'Choose a company', onPress: () => router.push('/company') }} />
+          ) : (
+            <StatePanel kind="empty" icon="refresh" title="This company did not open" text="Check your connection and try again." action={{ label: 'Try again', onPress: reloadSeat }} />
+          )}
+        </View>
+      );
+    }
     if (queue === 'approve' && !approver) {
       return <StatePanel kind="empty" icon="stamp" title="You don't approve here" text="Approvals in this company are decided by others. Track orders or look up suppliers below." />;
     }
@@ -82,7 +93,7 @@ export default function Desk() {
       return <StatePanel kind="empty" icon="crate" title="You don't receive goods here" text="Your profile in this company does not record goods receipts. Track orders below." />;
     }
     return null;
-  }, [seat.kind, queue, approver, receiver]);
+  }, [seat, queue, approver, receiver, router, reloadSeat]);
 
   const failure = active.phase === 'failed' ? (active.error as Problem) : null;
 
