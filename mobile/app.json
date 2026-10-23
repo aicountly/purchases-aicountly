@@ -7,7 +7,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "backgroundColor": "#F3EEE4",
+    "backgroundColor": "#DCDFE3",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.aicountly.purchases",
@@ -73,7 +73,7 @@
     "android": {
       "package": "com.aicountly.purchases",
       "adaptiveIcon": {
-        "backgroundColor": "#1B1A17",
+        "backgroundColor": "#6E2A80",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -112,7 +112,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#1B1A17",
+          "backgroundColor": "#6E2A80",
           "image": "./assets/splash-icon.png",
           "imageWidth": 180,
           "resizeMode": "contain"

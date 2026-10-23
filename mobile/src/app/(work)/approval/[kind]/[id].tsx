@@ -185,7 +185,7 @@ function OrderBody({ po, amendment }: { po: PurchaseOrder; amendment: { reason: 
         )}
         {pendingApproval?.reason_detail ? (
           <View style={st.why}>
-            <T v="label" color={palette.signalDeep}>
+            <T v="label" color={palette.plumDeep}>
               Why it needs you
             </T>
             <T v="small">{pendingApproval.reason_detail}</T>
@@ -243,7 +243,7 @@ function RequisitionBody({ req }: { req: Requisition }) {
         </T>
         {pendingApproval?.reason_detail ? (
           <View style={st.why}>
-            <T v="label" color={palette.signalDeep}>
+            <T v="label" color={palette.plumDeep}>
               Why it needs you
             </T>
             <T v="small">{pendingApproval.reason_detail}</T>
@@ -280,6 +280,6 @@ function RequisitionBody({ req }: { req: Requisition }) {
 const st = StyleSheet.create({
   actions: { flexDirection: 'row', gap: space.m, padding: space.l, backgroundColor: palette.sheet, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: palette.ruleStrong },
   line: { backgroundColor: palette.sheet, padding: space.m, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: palette.rule, gap: 2 },
-  why: { marginTop: space.m, padding: space.m, backgroundColor: palette.signalWash, borderLeftWidth: 3, borderLeftColor: palette.signal },
+  why: { marginTop: space.m, padding: space.m, backgroundColor: palette.plumWash, borderLeftWidth: 3, borderLeftColor: palette.plum },
   bigStamp: { borderWidth: 4, paddingHorizontal: space.xl, paddingVertical: space.m, transform: [{ rotate: '-6deg' }] },
 });

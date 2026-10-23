@@ -56,7 +56,7 @@ export default function Account() {
           </T>
           {onTheWeb.map((m) => (
             <View key={m.module} style={{ flexDirection: 'row', gap: space.s, marginTop: space.xs }}>
-              <T v="small" color={palette.signalDeep}>
+              <T v="small" color={palette.plumDeep}>
                 ▪
               </T>
               <T v="small" style={{ flex: 1 }}>
@@ -65,7 +65,7 @@ export default function Account() {
             </View>
           ))}
           <Pressable accessibilityRole="link" onPress={() => void WebBrowser.openBrowserAsync(webAppUrl())} style={{ marginTop: space.m }}>
-            <T v="bodyStrong" color={palette.signalDeep}>
+            <T v="bodyStrong" color={palette.plumDeep}>
               Open Purchases on the web
             </T>
           </Pressable>

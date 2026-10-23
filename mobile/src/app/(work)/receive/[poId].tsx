@@ -31,7 +31,7 @@ import { useScope } from '../../../scope/ScopeProvider';
 import { Icon } from '../../../ui/Icon';
 import { Banner, Bar, Button, Docket, Field, KeyValue, ReasonSheet, Rule, StatePanel, T } from '../../../ui/kit';
 import { ScannerSheet, type ScanFeedback } from '../../../ui/ScannerSheet';
-import { palette, radius, space } from '../../../ui/theme';
+import { font, palette, radius, space } from '../../../ui/theme';
 
 type Outcome =
   | { kind: 'recorded'; receiptNo: string; po: PurchaseOrder }
@@ -219,14 +219,16 @@ export default function ReceiveScreen() {
           text={po.grn_stock_effect === 'challan_only' ? 'This company records deliveries as challans: stock is added when the bill is posted.' : 'Recording this puts the accepted goods into stock now, at the order rate.'}
         />
         <Pressable accessibilityRole="button" onPress={() => { setFeedback(null); setDraft(collectSerialsFor(draft, null)); setScanning(true); }} style={st.scanHero}>
-          <Icon name="scan" size={28} color={palette.ink} />
+          <Icon name="scan" size={28} color={palette.white} />
           <View style={{ flex: 1 }}>
-            <T v="heading">Scan items</T>
-            <T v="small" color={palette.textSoft}>
+            <T v="heading" color={palette.white}>
+              Scan items
+            </T>
+            <T v="small" color={palette.plumWash}>
               Each barcode counts one unit on its order line.
             </T>
           </View>
-          <Icon name="next" color={palette.ink} />
+          <Icon name="next" color={palette.white} />
         </Pressable>
 
         {draft.lines.map((line) => (
@@ -388,7 +390,7 @@ function LineCard({
   const [typing, setTyping] = useState<string | null>(null);
   const [showBatch, setShowBatch] = useState(!!line.batchNo || !!line.tracks?.batch);
   const serialLine = !!line.tracks?.serial || line.serials.length > 0;
-  const accent = verdict === 'complete' ? palette.approve : verdict === 'over' ? palette.reject : verdict === 'short' ? palette.signal : palette.ruleStrong;
+  const accent = verdict === 'complete' ? palette.approve : verdict === 'over' ? palette.reject : verdict === 'short' ? palette.plum : palette.ruleStrong;
   return (
     <View style={[st.lineCard, { borderLeftColor: accent }]} testID={`line-${line.lineId}`}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: space.s }}>
@@ -432,8 +434,8 @@ function LineCard({
                 <T v="figure">{qty(line.counted)}</T>
               </Pressable>
             )}
-            <Pressable accessibilityRole="button" accessibilityLabel={`One more ${line.label}`} onPress={() => onCount(line.counted + 1)} style={[st.step, { backgroundColor: palette.signal, borderColor: palette.signal }]}>
-              <Icon name="plus" color={palette.ink} />
+            <Pressable accessibilityRole="button" accessibilityLabel={`One more ${line.label}`} onPress={() => onCount(line.counted + 1)} style={[st.step, { backgroundColor: palette.plum, borderColor: palette.plum }]}>
+              <Icon name="plus" color={palette.white} />
             </Pressable>
             <Pressable accessibilityRole="button" accessibilityLabel={`All ${qty(line.outstanding)} arrived`} onPress={() => onCount(line.outstanding)} style={st.all}>
               <T v="label">All</T>
@@ -459,7 +461,7 @@ function LineCard({
         </Pressable>
         {!showBatch ? (
           <Pressable accessibilityRole="button" onPress={() => setShowBatch(true)} hitSlop={6}>
-            <T v="small" color={palette.signalDeep}>
+            <T v="small" color={palette.plumDeep}>
               Add batch
             </T>
           </Pressable>
@@ -496,7 +498,7 @@ function RejectSheet({ line, onClose, onSave }: { line: DraftLine | null; onClos
   const n = Number(amount.replace(',', '.'));
   return (
     <Modal visible={!!line} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: 'rgba(27,26,23,0.45)', justifyContent: 'flex-end' }}>
+      <View style={{ flex: 1, backgroundColor: 'rgba(38,40,45,0.45)', justifyContent: 'flex-end' }}>
         <SafeAreaView edges={['bottom']} style={{ backgroundColor: palette.paper, padding: space.xl, borderTopLeftRadius: radius.l, borderTopRightRadius: radius.l }}>
           <T v="title">Reject at the gate</T>
           <T v="small" color={palette.textSoft} style={{ marginBottom: space.l }}>
@@ -566,12 +568,12 @@ function OutcomeView({ outcome, busy, error, onFollowUp, onDone, onOrder }: { ou
 }
 
 const st = StyleSheet.create({
-  scanHero: { flexDirection: 'row', alignItems: 'center', gap: space.m, backgroundColor: palette.signal, padding: space.l, borderRadius: radius.m, marginBottom: space.l },
+  scanHero: { flexDirection: 'row', alignItems: 'center', gap: space.m, backgroundColor: palette.plum, padding: space.l, borderRadius: radius.m, marginBottom: space.l },
   lineCard: { backgroundColor: palette.sheet, borderRadius: radius.m, padding: space.l, marginBottom: space.m, borderLeftWidth: 5, borderWidth: StyleSheet.hairlineWidth, borderColor: palette.ruleStrong },
   counterRow: { flexDirection: 'row', alignItems: 'center', gap: space.s, marginTop: space.m },
   step: { width: 48, height: 48, borderRadius: radius.m, borderWidth: 1.5, borderColor: palette.ruleStrong, alignItems: 'center', justifyContent: 'center' },
   count: { flex: 1, height: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: palette.paper, borderRadius: radius.m },
-  countInput: { flex: 1, height: 48, textAlign: 'center', fontFamily: 'IBMPlexMono_600SemiBold', fontSize: 22, backgroundColor: palette.paper, borderRadius: radius.m, color: palette.text },
+  countInput: { flex: 1, height: 48, textAlign: 'center', fontFamily: font.monoBold, fontSize: 22, backgroundColor: palette.paper, borderRadius: radius.m, color: palette.text },
   all: { height: 48, paddingHorizontal: space.m, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: palette.ruleStrong, borderRadius: radius.m },
   serials: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs, marginTop: space.s },
   serialChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: space.s, paddingVertical: 2, backgroundColor: palette.paper, borderRadius: radius.s, borderWidth: 1, borderColor: palette.rule },
