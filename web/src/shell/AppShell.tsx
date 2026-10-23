@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { AppErrorBoundary } from './AppErrorBoundary'
+import { COPYRIGHT, GRIEVANCE_OFFICER, LEGAL_LINKS } from './legal'
 import {
   AlertTriangle,
   Bell,
@@ -240,6 +242,18 @@ export function AppShell() {
             <span>Smarter procurement. Stronger businesses.</span>
           </p>
 
+          {/* Privacy, terms, support and grievance, as every AICOUNTLY app carries them. */}
+          <nav className="app-shell__legal" aria-label="Legal and support">
+            {LEGAL_LINKS.map((link) => (
+              <a key={link.href} href={link.href} target="_blank" rel="noopener noreferrer">
+                {link.label}
+              </a>
+            ))}
+            <span className="app-shell__legal-note" title={`Grievance officer: ${GRIEVANCE_OFFICER.name}, ${GRIEVANCE_OFFICER.email}`}>
+              {COPYRIGHT}
+            </span>
+          </nav>
+
           <div className="app-shell__user">
             <span className="app-shell__avatar" aria-hidden>
               {session?.display_name ? initials(session.display_name) : '•'}
@@ -411,7 +425,11 @@ export function AppShell() {
         <main className="app-shell__content">
           <AccessNotice />
           <CompanyReadOnlyBanner cmpId={scope?.cmp_id} />
-          <Outlet />
+          {/* A screen that fails to render shows Reload and a reference here; the shell keeps working
+              and choosing another page clears it. */}
+          <AppErrorBoundary resetKey={location.pathname} homeHref="/dashboard/overview">
+            <Outlet />
+          </AppErrorBoundary>
         </main>
         {/* Aicountly Connect draws its own launcher, in its own shadow root; nothing of it
             touches this shell's styles. */}

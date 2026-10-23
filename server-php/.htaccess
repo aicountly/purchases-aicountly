@@ -39,6 +39,11 @@
 <IfModule mod_headers.c>
   Header set X-Content-Type-Options "nosniff"
   Header always set Cache-Control "no-store"
+  # Clickjacking (launch-readiness P1-P3): the API's answers (a purchase order PDF among them) may be
+  # framed by this origin only. "always" so error answers carry them too.
+  Header always set Content-Security-Policy "frame-ancestors 'self'"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Strict-Transport-Security "max-age=31536000"
 </IfModule>
 
 # The API's .env sits inside the document root, so without this it would be

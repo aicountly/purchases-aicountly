@@ -134,6 +134,8 @@ final class ManageSeats
             $result = Db::transaction(static function () use ($event, $raw, $cmpId, $uuid): array {
                 if ($event['action'] === 'grant') {
                     $outcome = self::seat($cmpId, $uuid, (string) $event['role_key'], self::ACTOR, 'manage_seat:' . $event['event_id']) ? 'seated' : 'already';
+                    // An explicit grant in Manage is a new decision: an earlier removal here no longer stands.
+                    self::forgetRemoval($cmpId, $uuid);
                 } else {
                     $removed = Db::all(
                         'DELETE FROM ' . Permissions::TABLE_ASSIGNMENTS . ' WHERE cmp_id = :cmp AND user_uuid = :uuid RETURNING assignment_id, profile_id',
@@ -254,6 +256,11 @@ final class ManageSeats
             if ($held > 0) {
                 return false;
             }
+            // An administrator of this company removed this person's last Purchases profile: that stands
+            // until someone grants them one again (here or in Manage), so they are not re-seated.
+            if (self::wasRemoved($cmpId, $uuid)) {
+                return false;
+            }
             $added = (bool) Db::transaction(static fn (): bool => self::seat($cmpId, $uuid, $role, self::WORKSPACE_ACTOR, 'workspace_access'));
             if ($added) {
                 Permissions::forget();
@@ -265,6 +272,34 @@ final class ManageSeats
 
             return false;
         }
+    }
+
+    /** Removals an administrator made (migration 030): who is NOT to be seated on first entry. */
+    public const TABLE_REMOVALS = 'purchase_access_removals';
+
+    /**
+     * Remember that an administrator removed $uuid's last Purchases profile in $cmpId, so workspace-wide
+     * access does not seat them again on their next request. Called inside the removal's transaction.
+     */
+    public static function recordRemoval(int $cmpId, string $uuid, string $removedBy): void
+    {
+        Db::run(
+            'INSERT INTO ' . self::TABLE_REMOVALS . ' (cmp_id, user_uuid, removed_by, removed_at)
+             VALUES (:cmp, :uuid, :by, NOW())
+             ON CONFLICT (cmp_id, user_uuid) DO UPDATE SET removed_by = EXCLUDED.removed_by, removed_at = NOW()',
+            ['cmp' => $cmpId, 'uuid' => $uuid, 'by' => $removedBy],
+        );
+    }
+
+    /** A new grant (an administrator here, or Manage's signed seat event) replaces an earlier removal. */
+    public static function forgetRemoval(int $cmpId, string $uuid): void
+    {
+        Db::run('DELETE FROM ' . self::TABLE_REMOVALS . ' WHERE cmp_id = :cmp AND user_uuid = :uuid', ['cmp' => $cmpId, 'uuid' => $uuid]);
+    }
+
+    public static function wasRemoved(int $cmpId, string $uuid): bool
+    {
+        return Db::scalar('SELECT 1 FROM ' . self::TABLE_REMOVALS . ' WHERE cmp_id = :cmp AND user_uuid = :uuid', ['cmp' => $cmpId, 'uuid' => $uuid]) !== null;
     }
 
     /**

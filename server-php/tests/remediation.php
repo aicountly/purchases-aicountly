@@ -1202,8 +1202,9 @@ check('an order is prepared, sent and acknowledged as three facts, each with its
 
     $doc = $orders->document((int) $po['po_id']);
     truthy(str_starts_with($doc['pdf'], '%PDF'), 'a PDF');
-    truthy(str_contains($doc['pdf'], (string) $po['po_no']), 'naming the order');
-    truthy(str_contains($doc['pdf'], 'Stub Item 201'), 'with the item\'s name from Inventory, read now');
+    $text = \Aicountly\Api\Pdf\PdfText::extract($doc['pdf']);
+    truthy(str_contains($text, (string) $po['po_no']), 'naming the order');
+    truthy(str_contains($text, 'Stub Item 201'), 'with the item\'s name from Inventory, read now');
     $orders->document((int) $po['po_id']);
     same(1, (int) Db::scalar("SELECT COUNT(*) FROM purchase_po_communications WHERE kind = 'prepared'"), 'the same document prepared twice is one fact');
 
@@ -1661,7 +1662,7 @@ check('item names come from Inventory\'s bulk lookup as Inventory reads it: item
     reset();
     $po = orderOf($ctx, $owner);
     $doc = (new PurchaseOrderService($ctx, $owner))->document((int) $po['po_id']);
-    truthy(str_contains($doc['pdf'], 'Stub Item 201'), 'the order\'s document names the item');
+    truthy(str_contains(\Aicountly\Api\Pdf\PdfText::extract($doc['pdf']), 'Stub Item 201'), 'the order\'s document names the item');
     $asked = stubRequests('/v1/items/bulk-lookup');
     same([201], end($asked)['body']['item_ids'] ?? null, 'Inventory is asked by item_ids');
     truthy(!array_key_exists('ids', end($asked)['body']), 'never by ids, which Inventory ignores');

@@ -196,6 +196,19 @@
 .app-shell__signature strong { display: block; color: var(--shell-ink); font-weight: 600; }
 .app-shell__signature span { color: var(--shell-faint); }
 
+/* Privacy, terms, support and grievance (launch item A.1): small, quiet, always reachable. */
+.app-shell__legal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.6rem;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+.app-shell__legal a { color: var(--shell-faint); text-decoration: none; }
+.app-shell__legal a:hover,
+.app-shell__legal a:focus-visible { color: var(--shell-ink); text-decoration: underline; }
+.app-shell__legal-note { flex-basis: 100%; color: var(--shell-faint); }
+
 .app-shell__user {
   display: flex;
   align-items: center;

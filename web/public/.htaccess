@@ -44,6 +44,14 @@
 <IfModule mod_headers.c>
   Header set X-Content-Type-Options "nosniff"
   Header set Referrer-Policy "strict-origin-when-cross-origin"
+  # Clickjacking (launch-readiness P1-P3): only this app and AICOUNTLY's own apps may frame it, as
+  # Sales (F311) and Inventory (#9) send it. frame-ancestors only: no other CSP directive is set, so
+  # nothing the SPA loads is affected. X-Frame-Options is for browsers without CSP; every current
+  # browser obeys frame-ancestors and ignores it when both are present.
+  Header set Content-Security-Policy "frame-ancestors 'self' https://*.aicountly.com"
+  Header set X-Frame-Options "SAMEORIGIN"
+  # HTTPS only for a year on this host (no includeSubDomains, no preload — as Inventory).
+  Header set Strict-Transport-Security "max-age=31536000"
 </IfModule>
 
 # Deny access to any dotfile that somehow lands in the docroot (e.g. .env),

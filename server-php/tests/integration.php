@@ -3189,6 +3189,11 @@ check('a workbook survives shared strings, date serials and skipped columns', fu
 });
 
 check('a PDF this product writes is a PDF this product can read back', function () {
+    // The statement reader decodes simple-font text (what most accounting packages export); the PO and
+    // dashboard writer now embeds a Unicode CID font (P1-P4), which PdfText reads back (see the GST
+    // purchase-order checks in launch_readiness_p2.php). The writer's Helvetica fallback is the
+    // fixture here, as it was before.
+    PdfDocument::useFontDirectoryForTesting(sys_get_temp_dir() . '/no-fonts-here');
     $pdf = new PdfDocument();
     $pdf->text('Supplier statement', 40, 14, PdfDocument::FONT_BOLD);
     $pdf->advance(24);
@@ -3210,6 +3215,7 @@ check('a PDF this product writes is a PDF this product can read back', function 
     $table = PdfTextReader::read($bytes);
     $flat = array_map(static fn (array $r) => implode('|', $r), $table->rows);
 
+    PdfDocument::useFontDirectoryForTesting(null);
     assertTrue(in_array('2026-04-05|INV-4460|1,25,000.00', $flat, true), 'the row came back whole: ' . implode(' / ', $flat));
     assertTrue(in_array('Date|Invoice|Amount', $flat, true), 'and so did the heading');
 });
@@ -3303,7 +3309,9 @@ check('a dashboard prints, and an unavailable figure prints as Unavailable', fun
 
     assertTrue(str_starts_with($pdf, '%PDF-'), 'a PDF was produced');
     assertTrue(strlen($pdf) > 1200, 'with content in it');
-    assertTrue(str_contains($pdf, 'Purchase overview'), 'titled with the report, not the route');
+    // Text is drawn with the embedded Unicode font (glyph ids, deflated): read it as a PDF reader does.
+    $text = \Aicountly\Api\Pdf\PdfText::extract($pdf);
+    assertTrue(str_contains($text, 'Purchase overview'), 'titled with the report, not the route');
 
     // A printout is circulated, filed and quoted months later. A zero standing
     // in for "we could not ask" becomes a fact the moment it is printed.
@@ -3315,7 +3323,7 @@ check('a dashboard prints, and an unavailable figure prints as Unavailable', fun
         }
     }
     if ($hasUnavailable) {
-        assertTrue(str_contains($pdf, 'Unavailable'), 'and it says so on the page');
+        assertTrue(str_contains($text, 'Unavailable'), 'and it says so on the page');
     }
 });
 
