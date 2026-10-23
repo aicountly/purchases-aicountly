@@ -47,7 +47,7 @@ export default function SignIn() {
       <SafeAreaView edges={['top']} style={{ backgroundColor: palette.ink }}>
         <View style={st.hero}>
           <View style={st.mark}>
-            <Icon name="stamp" size={26} color={palette.ink} />
+            <Icon name="stamp" size={26} color={palette.white} />
           </View>
           <T v="display" color={palette.onInk} style={{ marginTop: space.l }}>
             Purchases
@@ -69,7 +69,7 @@ export default function SignIn() {
             {error ? <Banner tone="stop" icon="alert" text={error} /> : null}
             <Button label="Sign in" busy={busy === 'password'} disabled={!online || busy !== null} onPress={() => run('password', (reopen) => signInWithPassword(email, password, reopen))} testID="sign-in" />
             <Pressable accessibilityRole="link" onPress={() => void WebBrowser.openBrowserAsync(`${IDENTITY_ORIGIN}/forgot_password`)} style={{ alignSelf: 'center', marginTop: space.m }}>
-              <T v="small" color={palette.signalDeep}>
+              <T v="small" color={palette.plumDeep}>
                 Forgot your password?
               </T>
             </Pressable>
@@ -102,12 +102,12 @@ export default function SignIn() {
           </T>
           <View style={{ flexDirection: 'row', gap: space.l, marginTop: space.m }}>
             <Pressable accessibilityRole="link" onPress={() => void WebBrowser.openBrowserAsync(PRIVACY_URL)}>
-              <T v="small" color={palette.signalDeep}>
+              <T v="small" color={palette.plumDeep}>
                 Privacy policy
               </T>
             </Pressable>
             <Pressable accessibilityRole="link" onPress={() => void WebBrowser.openBrowserAsync(TERMS_URL)}>
-              <T v="small" color={palette.signalDeep}>
+              <T v="small" color={palette.plumDeep}>
                 Terms
               </T>
             </Pressable>
@@ -120,7 +120,7 @@ export default function SignIn() {
 
 const st = StyleSheet.create({
   hero: { paddingHorizontal: space.xl, paddingTop: space.xl, paddingBottom: space.xxl },
-  mark: { width: 48, height: 48, backgroundColor: palette.signal, alignItems: 'center', justifyContent: 'center', borderRadius: 4 },
+  mark: { width: 48, height: 48, backgroundColor: palette.plum, alignItems: 'center', justifyContent: 'center', borderRadius: 4 },
   or: { flexDirection: 'row', alignItems: 'center', gap: space.m, marginVertical: space.l },
   orLine: { flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: palette.ruleStrong },
 });

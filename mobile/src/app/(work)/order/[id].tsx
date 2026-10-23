@@ -151,7 +151,7 @@ export default function OrderScreen() {
 }
 
 function RouteStop({ stage, last }: { stage: Stage; last: boolean }) {
-  const color = stage.state === 'done' ? palette.approve : stage.state === 'current' ? palette.signalDeep : palette.ruleStrong;
+  const color = stage.state === 'done' ? palette.approve : stage.state === 'current' ? palette.plumDeep : palette.ruleStrong;
   return (
     <View style={{ flexDirection: 'row', gap: space.m }}>
       <View style={{ alignItems: 'center', width: 22 }}>

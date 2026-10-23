@@ -106,11 +106,22 @@ and cleared on sign-out.
 
 ## Look
 
-Its own: warm paper, ink-black bars, a saffron signal colour, approve green / reject red; IBM Plex
-Sans with Plex Mono for document numbers and counts; dockets with perforated edges; its own SVG
-glyphs (`src/ui/Icon.tsx`) and welcome scenes (`src/ui/illustrations.tsx`); a desk with a queue switch
-and a dock rather than tabs. The icon, adaptive icon and splash are drawn from vector shapes by
-`npm run brand:assets` (`scripts/generate-brand-assets.mjs`).
+Its own "goods-in desk" (`src/ui/theme.ts`): cool stone-grey surfaces (`#DCDFE3`, near-white cards), graphite bars
+(`#26282D`) on every signed-in screen and on the welcome strip, a deep plum (`#6E2A80`) for the one thing to do next,
+and plain signal colours for status — approve green, reject red, late amber, in-transit teal. Body type is **Public
+Sans**; document numbers, codes and quantities are **JetBrains Mono**. Shapes are square: cards with 3-point corners
+and a graphite cap along the top edge, status chips with a square lamp and an uppercase label, square buttons. Its
+own SVG glyphs (`src/ui/Icon.tsx`) and welcome scenes (`src/ui/illustrations.tsx`); a desk with a queue switch and a
+dock rather than tabs.
+
+The icon is an orchid arrow dropping into an open stone-white tray that carries a graphite barcode, on a deep plum
+field. The icon, adaptive icon (plum background), themed monochrome icon and splash (plum) are drawn from vector shapes
+by `npm run brand:assets` (`scripts/generate-brand-assets.mjs`).
+
+How it differs from the other AICOUNTLY phone apps: Sales is navy and coral on a cool off-white with Space Grotesk +
+DM Sans, rounded cards and a light icon (a speech bubble with a price tag); Insights is warm paper, ink and ember with
+Newsreader, and an ink icon (a sun on a horizon). Books, Billing, Inventory, Notes and Drive are green, green/blue,
+royal blue, indigo and blue-indigo; none uses plum, Public Sans or JetBrains Mono.
 
 ## Develop
 

@@ -1,44 +1,47 @@
 /**
- * Purchases' own look: a docket desk. Warm paper, ink-black bars, a saffron "signal" for the
- * one thing to do next, and decisions in two unmistakable colours — approve green, reject red.
- * Type is IBM Plex Sans, with Plex Mono for document numbers and quantities, so a PO number or
- * a count reads like it does on the printed docket.
+ * Purchases' own look: a goods-in desk. Cool stone-grey surfaces, graphite bars, a deep plum for
+ * the one thing to do next, and plain signal colours for status — approve green, reject red, late
+ * amber, in-transit teal. Body type is Public Sans; document numbers, codes and quantities are
+ * JetBrains Mono, so a PO number or a count reads like a label printed on the carton. Cards are
+ * square-cornered with a graphite cap along the top edge.
  */
 
 export const palette = {
-  ink: '#1B1A17',
-  inkRaised: '#2A2823',
-  inkLine: '#3D3A33',
-  onInk: '#F3EEE4',
-  onInkMuted: '#B9B1A2',
-  paper: '#F3EEE4',
-  sheet: '#FFFDF8',
-  rule: '#DDD5C7',
-  ruleStrong: '#C6BBA8',
-  text: '#1B1A17',
-  textSoft: '#4D483F',
-  textMuted: '#7A7366',
-  signal: '#E3A008',
-  signalDeep: '#8A5B00',
-  signalWash: '#FBF0D2',
-  approve: '#1F6B45',
-  approveWash: '#E2F0E7',
-  reject: '#B42318',
-  rejectWash: '#FBE4E1',
-  late: '#A15C07',
-  lateWash: '#FCEFD9',
-  steel: '#2C5866',
-  steelWash: '#E1ECEF',
+  ink: '#26282D',
+  inkRaised: '#33363C',
+  inkLine: '#4A4E57',
+  onInk: '#EEF0F3',
+  onInkMuted: '#A7ADB8',
+  paper: '#DCDFE3',
+  sheet: '#F8F9FA',
+  rule: '#CDD1D7',
+  ruleStrong: '#AEB4BD',
+  text: '#1C1E22',
+  textSoft: '#43474F',
+  textMuted: '#585D66',
+  plum: '#6E2A80',
+  plumDeep: '#511C5F',
+  plumWash: '#EEE1F1',
+  /** Plum for text and marks on the graphite bars. */
+  plumLight: '#D3A6E0',
+  approve: '#13784A',
+  approveWash: '#DDF0E6',
+  reject: '#C0271D',
+  rejectWash: '#FADFDC',
+  late: '#9A5200',
+  lateWash: '#FBEBD3',
+  transit: '#0F6E7A',
+  transitWash: '#D9EEF0',
   white: '#FFFFFF',
 } as const;
 
 export const font = {
-  regular: 'IBMPlexSans_400Regular',
-  medium: 'IBMPlexSans_500Medium',
-  semibold: 'IBMPlexSans_600SemiBold',
-  bold: 'IBMPlexSans_700Bold',
-  mono: 'IBMPlexMono_500Medium',
-  monoBold: 'IBMPlexMono_600SemiBold',
+  regular: 'PublicSans_400Regular',
+  medium: 'PublicSans_500Medium',
+  semibold: 'PublicSans_600SemiBold',
+  bold: 'PublicSans_700Bold',
+  mono: 'JetBrainsMono_500Medium',
+  monoBold: 'JetBrainsMono_700Bold',
 } as const;
 
 /** Type scale (size / line height). Labels are small caps-style: uppercase, tracked. */
@@ -50,19 +53,19 @@ export const type = {
   bodyStrong: { fontFamily: font.medium, fontSize: 15, lineHeight: 21 },
   small: { fontFamily: font.regular, fontSize: 13, lineHeight: 18 },
   label: { fontFamily: font.semibold, fontSize: 11, lineHeight: 14, letterSpacing: 1.2, textTransform: 'uppercase' as const },
-  docNo: { fontFamily: font.monoBold, fontSize: 15, lineHeight: 20, letterSpacing: 0.2 },
-  figure: { fontFamily: font.monoBold, fontSize: 24, lineHeight: 28 },
+  docNo: { fontFamily: font.monoBold, fontSize: 14, lineHeight: 20, letterSpacing: 0 },
+  figure: { fontFamily: font.monoBold, fontSize: 22, lineHeight: 28 },
 } as const;
 
 export const space = { xs: 4, s: 8, m: 12, l: 16, xl: 24, xxl: 32 } as const;
 
-/** Square-ish corners: dockets and stamps, not bubbles. */
-export const radius = { s: 4, m: 6, l: 10 } as const;
+/** Square corners: cartons and labels, not bubbles. */
+export const radius = { s: 2, m: 3, l: 6 } as const;
 
 export const toneColors = {
-  neutral: { fg: palette.textSoft, bg: '#ECE6DA' },
-  waiting: { fg: palette.signalDeep, bg: palette.signalWash },
-  go: { fg: palette.steel, bg: palette.steelWash },
+  neutral: { fg: palette.textSoft, bg: '#E4E7EB' },
+  waiting: { fg: palette.plumDeep, bg: palette.plumWash },
+  go: { fg: palette.transit, bg: palette.transitWash },
   done: { fg: palette.approve, bg: palette.approveWash },
   stop: { fg: palette.reject, bg: palette.rejectWash },
   late: { fg: palette.late, bg: palette.lateWash },

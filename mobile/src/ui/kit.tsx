@@ -19,7 +19,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Problem } from '../core/problems';
 import { Icon, type IconName } from './Icon';
-import { palette, radius, space, toneColors, type } from './theme';
+import { font, palette, radius, space, toneColors, type } from './theme';
 
 type Variant = keyof typeof type;
 
@@ -31,10 +31,10 @@ export function T({ v = 'body', color, style, children, ...rest }: { v?: Variant
   );
 }
 
-type ButtonKind = 'signal' | 'approve' | 'reject' | 'ink' | 'quiet';
+type ButtonKind = 'primary' | 'approve' | 'reject' | 'ink' | 'quiet';
 
 const BUTTON: Record<ButtonKind, { bg: string; fg: string; border: string }> = {
-  signal: { bg: palette.signal, fg: palette.ink, border: palette.signal },
+  primary: { bg: palette.plum, fg: palette.white, border: palette.plum },
   approve: { bg: palette.approve, fg: palette.white, border: palette.approve },
   reject: { bg: palette.sheet, fg: palette.reject, border: palette.reject },
   ink: { bg: palette.ink, fg: palette.onInk, border: palette.ink },
@@ -44,7 +44,7 @@ const BUTTON: Record<ButtonKind, { bg: string; fg: string; border: string }> = {
 export function Button({
   label,
   onPress,
-  kind = 'signal',
+  kind = 'primary',
   icon,
   busy,
   disabled,
@@ -72,31 +72,28 @@ export function Button({
       style={({ pressed }) => [s.button, { backgroundColor: c.bg, borderColor: c.border, opacity: off ? 0.45 : pressed ? 0.8 : 1 }, style]}
     >
       {busy ? <ActivityIndicator color={c.fg} /> : icon ? <Icon name={icon} size={18} color={c.fg} /> : null}
-      <Text style={[type.bodyStrong, { color: c.fg, fontFamily: 'IBMPlexSans_600SemiBold' }]}>{label}</Text>
+      <Text style={[type.bodyStrong, { color: c.fg, fontFamily: font.semibold }]}>{label}</Text>
     </Pressable>
   );
 }
 
-/** A status mark, drawn like an ink stamp: bordered, uppercase, tracked. */
+/** A status signal: a square lamp in the status colour and an uppercase, tracked label. */
 export function Stamp({ label, tone }: { label: string; tone: keyof typeof toneColors }) {
   const c = toneColors[tone];
   return (
-    <View style={[s.stamp, { borderColor: c.fg, backgroundColor: c.bg }]} accessibilityLabel={`Status: ${label}`}>
+    <View style={[s.stamp, { backgroundColor: c.bg }]} accessibilityLabel={`Status: ${label}`}>
+      <View style={[s.lamp, { backgroundColor: c.fg }]} />
       <Text style={[type.label, { color: c.fg }]}>{label}</Text>
     </View>
   );
 }
 
-/** A docket: a sheet with a perforated left edge. */
+/** A docket: a square-cornered card with a graphite cap along its top edge, like a carton label. */
 export function Docket({ children, style, onPress, testID, accessibilityLabel }: { children: React.ReactNode; style?: StyleProp<ViewStyle>; onPress?: () => void; testID?: string; accessibilityLabel?: string }) {
   const body = (
     <View style={[s.docket, style]}>
-      <View style={s.perforation}>
-        {Array.from({ length: 6 }).map((_, i) => (
-          <View key={i} style={s.hole} />
-        ))}
-      </View>
-      <View style={{ flex: 1, padding: space.l }}>{children}</View>
+      <View style={s.cap} />
+      <View style={{ padding: space.l }}>{children}</View>
     </View>
   );
   if (!onPress) return body;
@@ -192,7 +189,7 @@ export function StatePanel(
   if (props.kind === 'loading') {
     return (
       <View style={s.panel} testID="state-loading">
-        <ActivityIndicator color={palette.signalDeep} />
+        <ActivityIndicator color={palette.plumDeep} />
         <T v="small" color={palette.textMuted} style={{ marginTop: space.s }}>
           {props.text ?? 'Loading…'}
         </T>
@@ -218,7 +215,7 @@ export function StatePanel(
   const offline = props.problem.kind === 'offline';
   return (
     <View style={s.panel} testID={offline ? 'state-offline' : 'state-error'}>
-      <Icon name={offline ? 'offline' : 'alert'} size={34} color={offline ? palette.steel : palette.reject} />
+      <Icon name={offline ? 'offline' : 'alert'} size={34} color={offline ? palette.transit : palette.reject} />
       <T v="heading" style={{ marginTop: space.m, textAlign: 'center' }}>
         {offline ? "You're offline" : props.problem.kind === 'no_access' ? 'No access here' : 'That did not load'}
       </T>
@@ -327,10 +324,10 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     gap: space.s,
   },
-  stamp: { alignSelf: 'flex-start', borderWidth: 1.5, borderRadius: radius.s, paddingHorizontal: 6, paddingVertical: 2 },
-  docket: { flexDirection: 'row', backgroundColor: palette.sheet, borderRadius: radius.m, borderWidth: StyleSheet.hairlineWidth, borderColor: palette.ruleStrong, marginBottom: space.m, overflow: 'hidden' },
-  perforation: { width: 10, backgroundColor: palette.paper, justifyContent: 'space-around', alignItems: 'center', borderRightWidth: 1, borderRightColor: palette.rule, borderStyle: 'dashed' },
-  hole: { width: 4, height: 4, borderRadius: 2, backgroundColor: palette.ruleStrong },
+  stamp: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: radius.s, paddingHorizontal: 6, paddingVertical: 3 },
+  lamp: { width: 7, height: 7 },
+  docket: { backgroundColor: palette.sheet, borderRadius: radius.m, borderWidth: StyleSheet.hairlineWidth, borderColor: palette.ruleStrong, marginBottom: space.m, overflow: 'hidden' },
+  cap: { height: 3, backgroundColor: palette.ink },
   input: {
     marginTop: space.xs,
     borderWidth: 1,
@@ -339,13 +336,13 @@ const s = StyleSheet.create({
     backgroundColor: palette.sheet,
     paddingHorizontal: space.m,
     paddingVertical: Platform.OS === 'ios' ? space.m : space.s,
-    fontFamily: 'IBMPlexSans_400Regular',
+    fontFamily: font.regular,
     fontSize: 16,
     color: palette.text,
   },
   bar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.l, paddingVertical: space.m, minHeight: 56 },
   banner: { flexDirection: 'row', alignItems: 'center', gap: space.s, padding: space.m, borderLeftWidth: 4, borderRadius: radius.s, marginBottom: space.m },
   panel: { alignItems: 'center', justifyContent: 'center', paddingVertical: space.xxl * 1.5, paddingHorizontal: space.xl },
-  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(27,26,23,0.45)' },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(38,40,45,0.45)' },
   sheet: { backgroundColor: palette.paper, padding: space.xl, borderTopLeftRadius: radius.l, borderTopRightRadius: radius.l },
 });

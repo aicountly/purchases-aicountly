@@ -3,14 +3,14 @@ import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Dimensions, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { CountedCrate, StampedDocket, TrackedRoute } from '../ui/illustrations';
+import { CountedCrate, ApprovedOrder, TrackedRoute } from '../ui/illustrations';
 import { Button, T } from '../ui/kit';
 import { palette, space } from '../ui/theme';
 
 const SCENES = [
   {
     key: 'approve',
-    art: StampedDocket,
+    art: ApprovedOrder,
     kicker: 'Approvals',
     title: 'Decide on orders without going back to your desk',
     text: 'Purchase orders and requisitions waiting for you, with their lines and the reason they need you. Approve, or reject with a reason that is recorded.',
@@ -44,17 +44,19 @@ export default function Welcome() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: palette.paper }}>
-      <View style={st.top}>
-        <T v="label" color={palette.signalDeep}>
-          Purchases · Aicountly
-        </T>
-        <Pressable accessibilityRole="button" onPress={finish} hitSlop={12}>
-          <T v="label" color={palette.textSoft}>
-            Skip
+    <SafeAreaView edges={['bottom']} style={{ flex: 1, backgroundColor: palette.paper }}>
+      <SafeAreaView edges={['top']} style={{ backgroundColor: palette.ink }}>
+        <View style={st.top}>
+          <T v="label" color={palette.plumLight}>
+            Purchases · Aicountly
           </T>
-        </Pressable>
-      </View>
+          <Pressable accessibilityRole="button" onPress={finish} hitSlop={12}>
+            <T v="label" color={palette.onInk}>
+              Skip
+            </T>
+          </Pressable>
+        </View>
+      </SafeAreaView>
       <FlatList
         ref={list}
         data={SCENES}
@@ -68,7 +70,7 @@ export default function Welcome() {
             <View style={{ alignItems: 'center', marginBottom: space.xl }}>
               <item.art size={Math.min(240, width - 96)} />
             </View>
-            <T v="label" color={palette.signalDeep}>
+            <T v="label" color={palette.plumDeep}>
               {item.kicker}
             </T>
             <T v="display" style={{ marginTop: space.s }}>
@@ -88,7 +90,7 @@ export default function Welcome() {
         </View>
         <Button
           label={index === SCENES.length - 1 ? 'Sign in' : 'Next'}
-          kind={index === SCENES.length - 1 ? 'signal' : 'ink'}
+          kind={index === SCENES.length - 1 ? 'primary' : 'ink'}
           onPress={() => {
             if (index === SCENES.length - 1) return void finish();
             list.current?.scrollToIndex({ index: index + 1 });
@@ -102,7 +104,7 @@ export default function Welcome() {
 }
 
 const st = StyleSheet.create({
-  top: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: space.xl, paddingTop: space.m },
+  top: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: space.xl, paddingVertical: space.m },
   foot: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: space.xl },
   tick: { height: 4, width: 12, backgroundColor: palette.ruleStrong },
 });

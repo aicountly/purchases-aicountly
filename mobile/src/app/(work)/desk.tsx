@@ -44,7 +44,7 @@ export default function Desk() {
     <SafeAreaView edges={['top']} style={{ backgroundColor: palette.ink }}>
       <View style={st.head}>
         <Pressable accessibilityRole="button" accessibilityLabel={`Company ${scope?.companyName}. Change company`} onPress={() => router.push('/company')} style={{ flex: 1 }}>
-          <T v="label" color={palette.signal}>
+          <T v="label" color={palette.plumLight}>
             Purchases desk
           </T>
           <T v="title" color={palette.onInk} numberOfLines={1}>
@@ -105,7 +105,7 @@ export default function Desk() {
           data={(active.data?.rows ?? []) as (ApprovalRow | PoListRow)[]}
           keyExtractor={(r) => ('approval_id' in r ? `a${r.approval_id}` : `p${r.po_id}`)}
           contentContainerStyle={{ padding: space.l, paddingBottom: 120 }}
-          refreshControl={<RefreshControl refreshing={active.refreshing} onRefresh={reload} tintColor={palette.signalDeep} />}
+          refreshControl={<RefreshControl refreshing={active.refreshing} onRefresh={reload} tintColor={palette.plumDeep} />}
           ListHeaderComponent={
             <>
               {banners}
@@ -146,13 +146,13 @@ export default function Desk() {
 function QueueTab({ label, icon, count, on, onPress }: { label: string; icon: IconName; count?: number; on: boolean; onPress: () => void }) {
   return (
     <Pressable accessibilityRole="tab" accessibilityState={{ selected: on }} accessibilityLabel={count !== undefined ? `${label}, ${count}` : label} onPress={onPress} style={[st.tab, on && st.tabOn]}>
-      <Icon name={icon} size={18} color={on ? palette.ink : palette.onInkMuted} />
-      <T v="bodyStrong" color={on ? palette.ink : palette.onInk}>
+      <Icon name={icon} size={18} color={on ? palette.white : palette.onInkMuted} />
+      <T v="bodyStrong" color={on ? palette.white : palette.onInk}>
         {label}
       </T>
       {count !== undefined ? (
         <View style={[st.count, on && { backgroundColor: palette.ink }]}>
-          <T v="label" color={on ? palette.signal : palette.ink}>
+          <T v="label" color={on ? palette.plumLight : palette.ink}>
             {count > 99 ? '99+' : String(count)}
           </T>
         </View>
@@ -227,7 +227,7 @@ function ReceiveCard({ row, today, onPress }: { row: PoListRow; today: string; o
             {row.promised_date ? `Promised ${day(row.promised_date)} (${relativeDay(row.promised_date, today)})` : 'No promised date'}
           </T>
         </View>
-        <Icon name="scan" size={18} color={palette.signalDeep} />
+        <Icon name="scan" size={18} color={palette.plumDeep} />
       </View>
     </Docket>
   );
@@ -238,7 +238,7 @@ const st = StyleSheet.create({
   person: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: palette.inkLine, alignItems: 'center', justifyContent: 'center' },
   switch: { flexDirection: 'row', paddingHorizontal: space.l, gap: space.s, paddingBottom: space.m },
   tab: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: space.s, paddingVertical: space.m, paddingHorizontal: space.m, borderRadius: radius.m, borderWidth: 1, borderColor: palette.inkLine },
-  tabOn: { backgroundColor: palette.signal, borderColor: palette.signal },
+  tabOn: { backgroundColor: palette.plum, borderColor: palette.plum },
   count: { marginLeft: 'auto', minWidth: 24, paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.s, backgroundColor: palette.onInk, alignItems: 'center' },
   cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   cardBottom: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: space.s },

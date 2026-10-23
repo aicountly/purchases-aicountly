@@ -9,7 +9,7 @@ import { localToday } from '../../scope/companies';
 import { useScope } from '../../scope/ScopeProvider';
 import { Icon } from '../../ui/Icon';
 import { Banner, Bar, Docket, Stamp, StatePanel, T } from '../../ui/kit';
-import { palette, radius, space } from '../../ui/theme';
+import { font, palette, radius, space } from '../../ui/theme';
 
 type View_ = 'open' | 'overdue' | 'pending' | 'all';
 const VIEWS: { key: View_; label: string }[] = [
@@ -99,7 +99,7 @@ export default function Orders() {
 
 const st = StyleSheet.create({
   search: { flexDirection: 'row', alignItems: 'center', gap: space.s, margin: space.l, marginBottom: space.s, paddingHorizontal: space.m, backgroundColor: palette.sheet, borderRadius: radius.m, borderWidth: 1, borderColor: palette.ruleStrong },
-  searchInput: { flex: 1, paddingVertical: space.m, fontFamily: 'IBMPlexMono_500Medium', fontSize: 16, color: palette.text },
+  searchInput: { flex: 1, paddingVertical: space.m, fontFamily: font.mono, fontSize: 16, color: palette.text },
   views: { flexDirection: 'row', flexWrap: 'wrap', gap: space.s, paddingHorizontal: space.l, paddingBottom: space.s },
   view: { paddingHorizontal: space.m, paddingVertical: 6, borderRadius: radius.s, borderWidth: 1, borderColor: palette.ruleStrong, backgroundColor: palette.sheet },
   viewOn: { backgroundColor: palette.ink, borderColor: palette.ink },

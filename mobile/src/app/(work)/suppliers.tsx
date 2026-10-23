@@ -6,7 +6,7 @@ import { purchasing } from '../../purchasing/api';
 import { useScope } from '../../scope/ScopeProvider';
 import { Icon } from '../../ui/Icon';
 import { Bar, Docket, Stamp, StatePanel, T } from '../../ui/kit';
-import { palette, radius, space } from '../../ui/theme';
+import { font, palette, radius, space } from '../../ui/theme';
 
 const QUALIFICATION: Record<string, { label: string; tone: 'done' | 'waiting' | 'stop' | 'neutral' }> = {
   approved: { label: 'Approved', tone: 'done' },
@@ -79,5 +79,5 @@ export default function Suppliers() {
 
 const st = StyleSheet.create({
   search: { flexDirection: 'row', alignItems: 'center', gap: space.s, margin: space.l, marginBottom: space.s, paddingHorizontal: space.m, backgroundColor: palette.sheet, borderRadius: radius.m, borderWidth: 1, borderColor: palette.ruleStrong },
-  input: { flex: 1, paddingVertical: space.m, fontFamily: 'IBMPlexSans_400Regular', fontSize: 16, color: palette.text },
+  input: { flex: 1, paddingVertical: space.m, fontFamily: font.regular, fontSize: 16, color: palette.text },
 });

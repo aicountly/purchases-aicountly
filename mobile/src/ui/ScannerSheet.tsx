@@ -54,14 +54,14 @@ export function ScannerSheet({
   };
 
   const message = shown ?? feedback;
-  const toneColor = message?.tone === 'good' ? palette.approve : message?.tone === 'warn' ? palette.signal : palette.reject;
+  const toneColor = message?.tone === 'good' ? palette.approve : message?.tone === 'warn' ? palette.plumLight : palette.reject;
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="fullScreen">
       <View style={{ flex: 1, backgroundColor: palette.ink }}>
         {!permission ? null : !permission.granted ? (
           <SafeAreaView style={st.center}>
-            <Icon name="scan" size={44} color={palette.signal} />
+            <Icon name="scan" size={44} color={palette.plumLight} />
             <T v="title" color={palette.onInk} style={{ marginTop: space.l, textAlign: 'center' }}>
               Scan item barcodes
             </T>
@@ -89,8 +89,8 @@ export function ScannerSheet({
                 <T v="heading" color={palette.onInk} style={{ flex: 1 }} numberOfLines={1}>
                   {title}
                 </T>
-                <Pressable accessibilityRole="button" accessibilityLabel={torch ? 'Torch off' : 'Torch on'} onPress={() => setTorch((t) => !t)} hitSlop={10} style={[st.round, torch && { backgroundColor: palette.signal }]}>
-                  <Icon name="torch" color={torch ? palette.ink : palette.onInk} />
+                <Pressable accessibilityRole="button" accessibilityLabel={torch ? 'Torch off' : 'Torch on'} onPress={() => setTorch((t) => !t)} hitSlop={10} style={[st.round, torch && { backgroundColor: palette.plum }]}>
+                  <Icon name="torch" color={palette.onInk} />
                 </Pressable>
               </View>
               <View style={st.frame} pointerEvents="none">
@@ -113,7 +113,7 @@ export function ScannerSheet({
                     </T>
                   </View>
                 )}
-                <Button label="Done scanning" kind="signal" onPress={onClose} />
+                <Button label="Done scanning" kind="primary" onPress={onClose} />
               </View>
             </SafeAreaView>
           </>
@@ -125,9 +125,9 @@ export function ScannerSheet({
 
 const st = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl },
-  top: { flexDirection: 'row', alignItems: 'center', padding: space.l, backgroundColor: 'rgba(27,26,23,0.7)' },
+  top: { flexDirection: 'row', alignItems: 'center', padding: space.l, backgroundColor: 'rgba(38,40,45,0.72)' },
   round: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: palette.inkLine },
   frame: { alignSelf: 'center', width: 260, height: 170 },
-  corner: { position: 'absolute', width: 34, height: 34, borderColor: palette.signal },
-  toast: { backgroundColor: 'rgba(27,26,23,0.88)', padding: space.m, borderRadius: radius.m, borderLeftWidth: 4, borderLeftColor: palette.inkLine },
+  corner: { position: 'absolute', width: 34, height: 34, borderColor: palette.plumLight },
+  toast: { backgroundColor: 'rgba(38,40,45,0.9)', padding: space.m, borderRadius: radius.m, borderLeftWidth: 4, borderLeftColor: palette.inkLine },
 });
