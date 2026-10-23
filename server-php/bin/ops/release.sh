@@ -148,7 +148,11 @@ is_protected() { # ./relative/path
 switch_ok=1
 if command -v rsync >/dev/null 2>&1; then
   filters=(--exclude="/$ENV_FILE" --include='/.env.example' --exclude='/.env.*' --exclude='.git*' --exclude='/REVISION')
-  for p in "${PROTECT[@]}"; do filters+=(--filter="P $p"); done
+  # "P /writable/logs/" alone protects only the directory entry: once the stage has a folder of the
+  # same name (the migration runs in the stage write writable/logs/), rsync recurses into it and
+  # --delete removes the live files inside. "dir/***" protects the folder and everything under it,
+  # as is_protected() does for the tar path.
+  for p in "${PROTECT[@]}"; do p="${p%/}"; filters+=(--filter="P $p/***"); done
   rsync -a --delete "${filters[@]}" "$stage/" "$live/" || switch_ok=0
 else
   # No rsync on this host: copy with tar, then remove what the stage no longer has (deepest first).
