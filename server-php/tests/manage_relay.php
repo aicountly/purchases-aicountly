@@ -61,11 +61,29 @@ foreach ($calls as [, $method, $path]) {
 foreach (['accept', 'decline', 'exit'] as $action) {
     $check("POST v1/workspaces/3/{$action} is relayed", ManageRelay::isRelayed('POST', 'v1/workspaces/3/' . $action));
 }
+// The fleet alignment (FLEET_CONTRACT B): company-access 1.2.0 and the plan reads, by name, so a
+// later client that stops calling one does not silently drop it from the relay.
+foreach ([
+    ['GET', 'v1/app-roles'],
+    ['GET', 'v1/company-creation-targets'],
+    ['PATCH', 'v1/workspaces/3'],
+    ['PATCH', 'v1/workspaces/3/members/1f2e-uuid'],
+    ['POST', 'v1/companies/74/creator-access/retry'],
+    ['GET', 'v1/companies/74/plan'],
+    ['GET', 'v1/me/plan'],
+    ['GET', 'v1/me/pending'],
+] as [$method, $path]) {
+    $check("{$method} {$path} is relayed", ManageRelay::isRelayed($method, $path));
+}
 
 $refused = [
     ['DELETE', 'manage/v1/companies/74/permissions', 'the right path with the wrong method'],
     ['POST', 'manage/v1/workspaces', 'creating a workspace is not a call the screens make'],
-    ['PATCH', 'manage/v1/workspaces/3', 'renaming a workspace is not a call this client makes'],
+    ['POST', 'manage/v1/app-roles', 'the role catalogue is read-only'],
+    ['GET', 'manage/v1/companies/74/creator-access/retry', 'the creator-access retry with the wrong method'],
+    ['GET', 'manage/v1/me/plan/extra', 'an extra level under the plan read'],
+    ['POST', 'manage/v1/me/pending', 'the pending counts are read-only'],
+    ['PATCH', 'manage/v1/workspaces/3/members/1f2e/extra', 'an extra level under a member'],
     ['OPTIONS', 'manage/v1/workspaces', 'an unlisted method'],
     ['GET', 'manage/v1/audit-log', 'an unlisted Manage path'],
     ['GET', 'manage/internal/company-status', 'Manage internal routes'],

@@ -63,6 +63,31 @@ application. Purchases' catalog key is **`purchases`**.
   person may *do* in Purchases.
 - **Discovery is not access.** Seeing a company in the directory never opens it; the server check
   above is what decides.
+- **Seats from Manage.** `POST /api/internal/manage/seats` (CONTRACTS §5, `server-php/src/ManageSeats.php`):
+  Manage, after granting someone Purchases, sends `{event_id, cmp_id, platform_user_id, uuid, role_key,
+  action: grant|revoke}` signed like the lifecycle events (`X-Manage-Timestamp`, `X-Manage-Signature:
+  sha256=HMAC("{ts}.{body}", LIFECYCLE_WEBHOOK_SECRET)`, 300 s). `role_key` is a starter profile —
+  `buyer` (Buyer), `approver` (Purchase approver), `payables` (Accounts payable), `viewer` (Read only;
+  the least privileged); never owner (422 `ROLE_UNKNOWN`). A grant adds that profile (created from the
+  starter if the company has none) and never takes anything away; revoke releases every Purchases
+  profile the person holds. Idempotent by `event_id`; answers `{success, data:{status: seated|already|revoked}}`.
+- **Workspace-wide access.** When the workspace owner gives a member Purchases on every company of the
+  workspace, `companyinfo` says `app_access_source: workspace` with `app_role_key`; the member is given
+  that starter profile on first entry (an unknown key → Read only; never owner; someone who already
+  holds a Purchases profile keeps exactly what they hold).
+
+## Plan limits
+
+The company's plan for Purchases comes from Manage: `companyinfo` (asked on every scoped request,
+naming Purchases) carries `plan.entitlements` (CONTRACTS §3.5). Values are data in Engage; an absent
+code, or a Manage that sends no plan, means no limit. Over the limit a new purchase order answers
+**402 `PLAN_LIMIT_REACHED`** `{code, limit, used}` and the web says "Your plan allows N … — ask the
+account owner to upgrade in Manage". Reads, exports, approvals, receipts, bills and returns are never
+limited, and nothing already recorded is touched (`server-php/src/PlanEntitlements.php`).
+
+| Code | What is counted | Where enforced |
+| --- | --- | --- |
+| `purchases.max_purchase_orders_per_month` | New purchase orders the company raised this calendar month (IST); an amendment of an existing order is not a new one | `POST v1/purchase-orders` |
 
 ## Company lifecycle (Manage)
 

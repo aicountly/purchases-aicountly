@@ -11,6 +11,7 @@ use Aicountly\Api\Db;
 use Aicountly\Api\Http;
 use Aicountly\Api\IntegrationCommand;
 use Aicountly\Api\Permissions;
+use Aicountly\Api\PlanEntitlements;
 
 /**
  * Purchase orders — the commitment.
@@ -55,6 +56,11 @@ final class PurchaseOrderService
 
         $settings = $this->settings();
         $this->guardApprovedVendor($supplierId, $settings, $input);
+
+        // The company's plan may cap new purchase orders a month (402 PLAN_LIMIT_REACHED); an
+        // amendment of an existing order is not a new one and is never counted or refused.
+        PlanEntitlements::assertWithin($this->ctx, $this->auth, PlanEntitlements::MAX_PURCHASE_ORDERS_PER_MONTH,
+            fn (): int => PlanEntitlements::purchaseOrdersThisMonth($this->ctx->cmpId));
 
         return Db::transaction(function () use ($input, $supplierId, $lines, $settings, $header, $supplierName) {
             $lineRefs = [];

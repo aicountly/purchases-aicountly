@@ -108,6 +108,9 @@ php "$ROOT/tests/remediation.php" || status=$?
 php "$ROOT/tests/launch_readiness.php" || status=$?
 # Register filters: GST quick filters and amount / supplier on the list screens, as SQL on real rows.
 php "$ROOT/tests/register_filters.php" || status=$?
+# The fleet alignment: plan limits from companyinfo's plan, workspace-wide access seated on first entry,
+# and Manage's signed seat route (POST internal/manage/seats), on real rows and the stub's Manage.
+php "$ROOT/tests/plans_and_seats.php" || status=$?
 # The HTTP gate: the real front controller under php -S, every route, every caller (F219).
 # Its own port: the API started above keeps API_PORT for the whole run.
 API_PORT="${HTTP_GATE_PORT:-$((STUB_PORT + 2))}" php "$ROOT/tests/http_gate.php" || status=$?

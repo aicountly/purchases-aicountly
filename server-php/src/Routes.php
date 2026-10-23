@@ -37,6 +37,11 @@ final class Routes
         // Outside every session and company check — Manage's HMAC signature is its only credential.
         $router->post('internal/manage/company-lifecycle', [CompanyLifecycle::class, 'receive']);
 
+        // Manage seats a person it granted Purchases on a company (CONTRACTS §5): the named starter
+        // profile, or revoke. Signed exactly like company-lifecycle; outside every session and company
+        // check. ManageSeats.
+        $router->post('internal/manage/seats', [ManageSeats::class, 'receive']);
+
         // Books tells us it cancelled or edited one of our bills (E8-BK-POST A16). Books' key and signature only.
         $router->post('v1/integration/books/voucher-events', [BooksEventsController::class, 'voucherEvents']);
 

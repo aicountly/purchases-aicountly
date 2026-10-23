@@ -72,6 +72,8 @@ return [
         // person's saved views in the company.
         ['table' => 'purchase_permission_assignments', 'key' => 'cmp_id'],
         ['table' => 'purchase_permission_profiles', 'key' => 'cmp_id'],
+        // Manage's signed seat events (CONTRACTS §5): the company's record of who Manage seated here.
+        ['table' => 'purchase_manage_seat_events', 'key' => 'cmp_id'],
         ['table' => 'purchase_settings', 'key' => 'cmp_id'],
         ['table' => 'purchase_user_preferences', 'key' => 'cmp_id'],
 
@@ -134,5 +136,6 @@ return [
         // Found by the person-scope scan (user_uuid): the person's role in a company is the company's
         // record of who may do what there — removed with the company (above) or by Manage's share revoke.
         ['table' => 'purchase_permission_assignments', 'reason' => 'company seat (role per company), not the person\'s own data: purged with the company, revoked by Manage'],
+        ['table' => 'purchase_manage_seat_events', 'reason' => 'Manage\'s signed record of a company seat (who was given which role), not the person\'s own data: purged with the company'],
     ],
 ];

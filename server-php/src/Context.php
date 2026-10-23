@@ -50,6 +50,14 @@ final class Context
      */
     private static array $fyRanges = [];
 
+    /**
+     * The company's plan for Purchases per company, read off the same companyinfo answer (CONTRACTS
+     * §3.5); null when Manage said nothing about plans. PlanEntitlements.
+     *
+     * @var array<int, array<string, mixed>|null>
+     */
+    private static array $plans = [];
+
     private function __construct(
         public readonly int $cmpId,
         public readonly int $fyId,
@@ -142,6 +150,13 @@ final class Context
         // answer, and a later request path without the role would look like a stranger.
         $auth->noteCompanyAccess($this->cmpId, self::$answers[$key]['access']);
 
+        // Workspace-wide access (company-access 1.2.0): the workspace owner gave this member every
+        // company of the workspace and Manage stores no seat for it. Seat the role Manage names on
+        // first entry, as a §5 seat event would (ManageSeats::seatWorkspaceMember). Never the owner.
+        if (!$auth->ownsCompany($this->cmpId)) {
+            ManageSeats::seatWorkspaceMember($this->cmpId, $auth->uuid, $company);
+        }
+
         // Read-only after a lapsed subscription (docs/COMPANY_LIFECYCLE.md): only here, after Manage confirmed
         // access, so a caller who may not open the company still gets 403; a write then answers 423.
         CompanyLifecycle::enforce($this->cmpId);
@@ -225,6 +240,8 @@ final class Context
         // Manage's companyinfo is the source of truth for the company's lifecycle here (restricted /
         // purge_pending / active): a missed event is corrected on the next fresh answer.
         CompanyLifecycle::sync($this->cmpId, $company);
+        // The company's plan for Purchases rides on the same answer (CONTRACTS §3.5); PlanEntitlements.
+        self::$plans[$this->cmpId] = PlanEntitlements::fromCompanyInfo($company, is_array($body) ? $body : []);
 
         return ['company' => $company, 'access' => $accessType];
     }
@@ -258,6 +275,24 @@ final class Context
         self::$answers = [];
         self::$companyStates = [];
         self::$fyRanges = [];
+        self::$plans = [];
+    }
+
+    /**
+     * The plan Manage stated for this company on this request's companyinfo answer, or null (no
+     * plan: unlimited). Only a session verified by assertAllowed() has one.
+     *
+     * @return array<string, mixed>|null
+     */
+    public static function planFor(int $cmpId): ?array
+    {
+        return self::$plans[$cmpId] ?? null;
+    }
+
+    /** Test seam: the plan a request would have read off companyinfo (a raw `plan`, normalised here). */
+    public static function seedPlanForTesting(int $cmpId, mixed $plan): void
+    {
+        self::$plans[$cmpId] = PlanEntitlements::normalize($plan);
     }
 
     /**

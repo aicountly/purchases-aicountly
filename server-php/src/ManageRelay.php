@@ -39,18 +39,30 @@ final class ManageRelay
             '#^v1/access-requests$#',
             '#^v1/workspaces$#',
             '#^v1/workspaces/\d+/(members|member-suggestions)$#',
+            // company-access 1.2.0: workspace sharing settings and creation targets (CONTRACTS §1/§2),
+            // the plan reads (§3.5) and what waits on the person in Manage (pendingCounts).
+            '#^v1/app-roles$#',
+            '#^v1/company-creation-targets$#',
+            '#^v1/companies/\d+/plan$#',
+            '#^v1/me/plan$#',
+            '#^v1/me/pending$#',
         ],
         'POST' => [
             '#^v1/companies/duplicate-check$#',
             '#^v1/companies/\d+/(permissions|access-requests)$#',
             '#^v1/access-requests/\d+/(approve|reject|cancel)$#',
             '#^v1/workspaces/\d+/(members|accept|decline|exit)$#',
+            // 1.2.0: seat a company creator again where a product seat is still pending (§2).
+            '#^v1/companies/\d+/creator-access/retry$#',
         ],
         'PUT' => [
             '#^v1/companies/\d+/visibility$#',
         ],
         'PATCH' => [
             '#^v1/companies/\d+/permissions/' . self::REF . '$#',
+            // Workspace rename (company-access 1.1) and a member's sharing settings (1.2.0, §1).
+            '#^v1/workspaces/\d+$#',
+            '#^v1/workspaces/\d+/members/' . self::REF . '$#',
         ],
         'DELETE' => [
             '#^v1/companies/\d+/permissions/' . self::REF . '$#',

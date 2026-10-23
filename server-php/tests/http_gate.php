@@ -179,7 +179,7 @@ for ($i = 0; $i < 60; $i++) {
 
 // Manage's signed company-lifecycle events (docs/COMPANY_LIFECYCLE.md) take no session and no company: the
 // HMAC is the only credential. Checked on their own below rather than as a session route.
-const MANAGE_SIGNED = ['POST internal/manage/company-lifecycle'];
+const MANAGE_SIGNED = ['POST internal/manage/company-lifecycle', 'POST internal/manage/seats'];
 $routes = array_values(array_filter(routes(), static fn (array $r): bool => !in_array($r[0] . ' ' . $r[1], MANAGE_SIGNED, true)));
 $owner = ['Authorization' => 'Bearer stub-ses-key.role-1.as-user-owner'];
 $noSeat = ['Authorization' => 'Bearer stub-ses-key.role-3.as-user-noseat'];
@@ -205,6 +205,16 @@ check('Manage\'s signed lifecycle route: no signature is never accepted, whateve
         // 401 bad signature, or 503 while LIFECYCLE_WEBHOOK_SECRET is unset here — never a 2xx.
         if (!in_array($r['status'], [401, 503], true)) {
             throw new \RuntimeException('unsigned lifecycle event -> ' . $r['status'] . ' ' . $r['raw']);
+        }
+    }
+});
+
+check('Manage\'s signed seat route: no signature is never accepted, whatever session rides along', function () use ($api, $owner) {
+    foreach ([[], $owner] as $who) {
+        $r = call('POST', $api . '/internal/manage/seats', $who, ['event_id' => '6f1c3c5e-8d8e-4c55-9a3e-0e4b7f6b2a11', 'cmp_id' => 88, 'platform_user_id' => 'u', 'uuid' => 'u', 'role_key' => 'buyer', 'action' => 'grant']);
+        // 401 bad signature, or 503 while LIFECYCLE_WEBHOOK_SECRET is unset here — never a 2xx.
+        if (!in_array($r['status'], [401, 503], true)) {
+            throw new \RuntimeException('unsigned seat event -> ' . $r['status'] . ' ' . $r['raw']);
         }
     }
 });
