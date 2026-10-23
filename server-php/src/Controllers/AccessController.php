@@ -44,7 +44,7 @@ final class AccessController extends Controller
      *
      * @var array<string, array{name: string, description: string, permissions: list<string>}>
      */
-    private const STARTER_PROFILES = [
+    public const STARTER_PROFILES = [
         'buyer' => [
             'name'        => 'Buyer',
             'description' => 'Raises requisitions, sources quotes and issues purchase orders. Cannot approve their own.',

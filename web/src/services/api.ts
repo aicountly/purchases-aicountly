@@ -16,6 +16,7 @@ import { getApiBaseUrl } from '../config'
 import { AuthError, ensureSesKey, redirectToPortalSso } from '../auth/portal'
 import { clearAllTokens } from '../auth/tokens'
 import { noteApiRefusal } from '../lifecycle/companyLifecycle'
+import { PLAN_LIMIT_CODE, planLimitFromError, planLimitMessage } from './planLimit'
 
 export interface CompanyScope {
   cmp_id: number
@@ -158,6 +159,11 @@ async function send<T>(path: string, options: RequestOptions, sesKey: string): P
     const envelope = parsed as
       | { error?: { code?: string; message?: string; details?: Record<string, unknown> }; message?: string }
       | null
+    // 402 PLAN_LIMIT_REACHED: one sentence naming the limit and who can change it, on every screen.
+    const planLimit = planLimitFromError(response.status, envelope?.error?.code ?? null, envelope?.error?.details ?? null)
+    if (planLimit) {
+      throw new ApiError(response.status, PLAN_LIMIT_CODE, planLimitMessage(planLimit), envelope?.error?.details ?? {})
+    }
     throw new ApiError(
       response.status,
       envelope?.error?.code ?? 'error',

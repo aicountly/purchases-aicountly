@@ -566,6 +566,13 @@ if (str_contains($path, '/companyinfo')) {
     if (is_array($lifecycle) && is_array($lifecycle[(string) $cmpId] ?? null)) {
         $company = $lifecycle[(string) $cmpId] + $company;
     }
+    // Plans and workspace-wide access (tests/plans_and_seats.php): stub-manage-company-extra.json
+    // {"<cmp_id>": {"plan": {…}, "app_access_source": "workspace", "app_role_key": "buyer"}} is what a
+    // Manage with plans and workspace sharing settings adds to the company row for this app.
+    $extra = json_decode((string) @file_get_contents(sys_get_temp_dir() . '/stub-manage-company-extra.json'), true);
+    if (is_array($extra) && is_array($extra[(string) $cmpId] ?? null)) {
+        $company = $extra[(string) $cmpId] + $company;
+    }
     echo json_encode(['success' => '1', 'data' => $company]);
     exit;
 }
