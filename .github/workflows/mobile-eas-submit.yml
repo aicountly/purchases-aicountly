@@ -101,7 +101,9 @@ jobs:
       - name: Submit
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas submit --platform "${{ inputs.platform }}" --profile production --id "${{ inputs.build_id }}" --non-interactive
+          INPUT_PLATFORM: ${{ inputs.platform }}
+          INPUT_BUILD_ID: ${{ inputs.build_id }}
+        run: eas submit --platform "${INPUT_PLATFORM}" --profile production --id "${INPUT_BUILD_ID}" --non-interactive
 
       - name: Remove the service account
         if: always()
