@@ -8,11 +8,14 @@
 #
 #   bash <stage>/bin/ops/release.sh --stage=<stage> --live=<docroot>/api --revision=<sha> \
 #        [--backup-dir=~/aicountly-backups/<app>-<env>] [--snapshot=required|skip] [--jobs=install|skip] \
-#        [--php=/path/to/php]
+#        [--php=/path/to/php] [--check-url=https://<site>/api/<health route>]
 #
 # Product settings (release.conf): APP, ENTRY, ENV_FILE, MIGRATE or MIGRATE_STEPS (php arguments, run in
 # order), SNAPSHOT, PROTECT (runtime folders never deleted), PREPARE_SH (shell, in the stage, before the
-# snapshot), POST_SWITCH (php first runs), POST_SWITCH_SH (shell hooks in the live folder after the switch).
+# snapshot), POST_SWITCH (php first runs), POST_SWITCH_SH (shell hooks in the live folder after the switch),
+# ATOMIC (1 = switch with bin/ops/atomic-switch.sh: the live api/ becomes a symlink to a complete release
+# folder, swapped by one rename; PROTECT folders are shared between releases; the front controller must
+# carry the guard in bin/ops/atomic-entry.php.txt first), ATOMIC_KEEP (releases kept, default 5).
 #
 # Order — the live code is not touched until the schema it needs is in place:
 #   1. checks   stage has the front controller; live api/.env exists (first deploy: create it first)
@@ -22,19 +25,25 @@
 #               BEFORE any migration. --snapshot=required (default) makes a failed snapshot fatal.
 #   5. migrate  the NEW migrations, from the stage, against the live database — expand-only by policy,
 #               so the old code still serving keeps working against the new schema
-#   6. switch   rsync stage -> live with --delete, keeping .env, uploads and other runtime folders
-#               (release.conf: PROTECT), then REVISION is written (health reports it)
+#   6. switch   ATOMIC=1: atomic-switch.sh builds a complete release folder and swaps the api/ symlink to
+#               it in one rename (no request ever runs a mix of old and new files); --check-url must
+#               answer afterwards or the previous code is put back (exit 21)
+#               otherwise: rsync stage -> live with --delete, keeping .env, uploads and other runtime
+#               folders (release.conf: PROTECT), then REVISION is written (health reports it)
 #   7. first    one run of each background job (release.conf: POST_SWITCH) so health has a heartbeat
 #   8. jobs     bin/ops/install-jobs.sh --apply: the product's scheduled jobs (bin/ops/jobs.txt)
 #
 # Exit codes (the workflow turns them into messages):
 #   0 released · 10 stage incomplete · 11 live api/.env missing · 12 no usable PHP · 13 snapshot failed
 #   14 migration failed (live code untouched) · 15 an applied migration was edited (untouched)
-#   16 migration lock held by another run (untouched) · 17 switch failed · 18 jobs install failed
+#   16 migration lock held by another run (untouched) · 17 switch failed, or refused (live is an atomic
+#   symlink but ATOMIC is not 1; nothing ran) · 18 jobs install failed
 #   19 stage preparation failed (untouched) · 20 post-switch hook failed (new code live)
+#   21 ATOMIC: the new release failed --check-url, the previous code is live again
+#   22 ATOMIC: the check failed and the previous code could not be restored (act now)
 set -uo pipefail
 
-stage="" live="" revision="" backup_dir="" snapshot=required jobs=install php_bin=""
+stage="" live="" revision="" backup_dir="" snapshot=required jobs=install php_bin="" check_url=""
 for arg in "$@"; do
   case "$arg" in
     --stage=*) stage="${arg#--stage=}" ;;
@@ -44,6 +53,7 @@ for arg in "$@"; do
     --snapshot=*) snapshot="${arg#--snapshot=}" ;;
     --jobs=*) jobs="${arg#--jobs=}" ;;
     --php=*) php_bin="${arg#--php=}" ;;
+    --check-url=*) check_url="${arg#--check-url=}" ;;
     *) echo "release: unknown option $arg" >&2; exit 2 ;;
   esac
 done
@@ -56,13 +66,22 @@ conf="$stage/bin/ops/release.conf"
 [ -f "$conf" ] || { echo "release: $conf is missing"; exit 10; }
 # Defaults, overridden by release.conf (a file from the repository, not from the server).
 APP="" MIN_PHP_ID=80100 PHP_EXT="pdo_pgsql" ENTRY="index.php" ENV_FILE=".env" MIGRATE="bin/migrate.php" SNAPSHOT="bin/db-snapshot.php"
-PROTECT=() POST_SWITCH=() PREPARE_SH=() MIGRATE_STEPS=() POST_SWITCH_SH=()
+PROTECT=() POST_SWITCH=() PREPARE_SH=() MIGRATE_STEPS=() POST_SWITCH_SH=() ATOMIC=0 ATOMIC_KEEP=5
 # shellcheck source=/dev/null
 . "$conf"
 [ -n "$APP" ] || { echo "release: release.conf sets no APP"; exit 10; }
 [ -f "$stage/$ENTRY" ] || { echo "release: $stage/$ENTRY is missing — the upload is incomplete"; exit 10; }
 mkdir -p "$live" 2>/dev/null || true
 live="$(cd "$live" 2>/dev/null && pwd)" || exit 11
+# An atomic layout (live is a symlink to a release folder) is switched by atomic-switch.sh only: the rsync or
+# tar switch below would write into the live release folder IN PLACE, the mixed-code deploy ATOMIC=1 ends.
+# Refused before anything runs (no snapshot, no migration).
+if [ "$ATOMIC" != 1 ] && [ -L "$live" ]; then
+  echo "release: $live is a symlink to a release folder (an atomic layout), but release.conf does not set ATOMIC=1;"
+  echo "release: switching in place would write into the live release. Set ATOMIC=1 in release.conf (or put the"
+  echo "release: previous code back with bin/ops/atomic-switch.sh --rollback). Nothing changed."
+  exit 17
+fi
 [ -f "$live/$ENV_FILE" ] || { echo "release: $live/$ENV_FILE does not exist — create it from .env.example first"; exit 11; }
 [ -n "$backup_dir" ] || backup_dir="aicountly-backups/${APP}"
 case "$backup_dir" in /*) ;; *) backup_dir="${HOME}/${backup_dir}" ;; esac
@@ -146,7 +165,20 @@ is_protected() { # ./relative/path
   return 1
 }
 switch_ok=1
-if command -v rsync >/dev/null 2>&1; then
+if [ "$ATOMIC" = 1 ]; then
+  shared_args=()
+  for p in "${PROTECT[@]}"; do shared_args+=(--shared="$p"); done
+  check_args=()
+  [ -n "$check_url" ] && check_args=(--check-url="$check_url")
+  bash "$stage/bin/ops/atomic-switch.sh" --src="$stage" --live="$live" --revision="$revision" \
+    --env-file="$ENV_FILE" --keep="$ATOMIC_KEEP" "${shared_args[@]}" "${check_args[@]}"
+  rc=$?
+  case "$rc" in
+    0) echo "release: live code is now ${revision}" ;;
+    21 | 22) exit "$rc" ;;
+    *) echo "release: the atomic switch failed (exit $rc); the previous code is still live"; exit 17 ;;
+  esac
+elif command -v rsync >/dev/null 2>&1; then
   filters=(--exclude="/$ENV_FILE" --include='/.env.example' --exclude='/.env.*' --exclude='.git*' --exclude='/REVISION')
   # "P /writable/logs/" alone protects only the directory entry: once the stage has a folder of the
   # same name (the migration runs in the stage write writable/logs/), rsync recurses into it and
@@ -168,9 +200,11 @@ if [ "$switch_ok" != 1 ]; then
   echo "release: the switch (stage -> live) failed; the schema is migrated (expand-only), the code may be mixed: re-run the deploy"
   exit 17
 fi
-printf '%s\n' "$revision" > "$live/REVISION.tmp" && mv -f "$live/REVISION.tmp" "$live/REVISION"
-chmod 644 "$live/REVISION" 2>/dev/null || true
-echo "release: live code is now ${revision}"
+if [ "$ATOMIC" != 1 ]; then
+  printf '%s\n' "$revision" > "$live/REVISION.tmp" && mv -f "$live/REVISION.tmp" "$live/REVISION"
+  chmod 644 "$live/REVISION" 2>/dev/null || true
+  echo "release: live code is now ${revision}"
+fi
 
 # One pass of each background job now, so health has a first heartbeat before the post-deploy check.
 # Not fatal: a job reporting work to do (exit 1) is the job working.

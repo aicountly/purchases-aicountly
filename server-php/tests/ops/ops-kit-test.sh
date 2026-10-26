@@ -9,9 +9,10 @@
 # Proves, against PostgreSQL and the product's own migrate/health/jobs code:
 #   1. migrate.php holds an advisory lock: a held lock makes a second run exit 3 changing nothing, and two
 #      concurrent runs on a fresh database both end 0 with every file applied exactly once
-#   2. release.sh: snapshot BEFORE migrate (manifest with exact row counts), migrate from the stage while
+#   2. release.sh (and 2b, the same with ATOMIC=1: a symlinked release folder): snapshot BEFORE migrate (manifest with exact row counts), migrate from the stage while
 #      the live copy still has the old code, switch (live gets the new files, keeps .env, REVISION written),
 #      a first run of the background job, and the crontab block installed (fake crontab) — idempotently
+#      — and, once live is that symlink, a release without ATOMIC=1 is refused (exit 17) with nothing touched
 #   3. a failing migration stops the release with exit 14 and leaves the live code untouched
 #   4. restore-drill.php restores the snapshot into a NEW database and every table's rows match
 #   5. /api/health over real HTTP (php -S on the live copy) reports revision, readiness and job state
@@ -108,6 +109,9 @@ write_env "$WORK/live" "$DB"
 psql "$(dburl "$DB")" -qAt -c "CREATE TABLE kit_payload (id serial primary key, v text); INSERT INTO kit_payload (v) SELECT 'row ' || g FROM generate_series(1, 25) g" >/dev/null
 echo "old" > "$WORK/live/kit-old-file.txt"
 copy_src "$WORK/stage"
+# §2 tests the in-place (rsync) switch whatever the product ships; §2b appends ATOMIC=1 to its own copy. (With the
+# product's ATOMIC=1, §2's first release would convert live and its second, within 130 s, be refused.)
+sed -i '/^ATOMIC=/d' "$WORK/stage/bin/ops/release.conf"
 CRON="$WORK/crontab.txt"; : > "$CRON"
 cat > "$WORK/fakecrontab" <<EOF
 #!/usr/bin/env bash
@@ -144,8 +148,46 @@ bash "$WORK/stage/bin/ops/release.sh" --stage="$WORK/stage" --live="$WORK/live" 
 [ "$before" = "$(cat "$CRON")" ] && [ "$(grep -c '>>> aicountly-' "$CRON")" = 1 ] && ok "second release: crontab unchanged, one block" || no "crontab not idempotent"
 [ "$(ls "$WORK"/backups/"$APP"-*.dump | wc -l)" = 2 ] && ok "second release took its own snapshot" || no "snapshots: $(ls "$WORK"/backups)"
 
+# ---------------------------------------------------------------- 2b. ATOMIC=1: the same release, switched atomically
+# A copy of the stage whose release.conf sets ATOMIC=1: live becomes a symlink to a complete release folder
+# (outside the "document root", under HOME), PROTECT folders shared, .env carried over, REVISION written.
+rm -rf "$WORK/stage-atomic"; cp -a "$WORK/stage" "$WORK/stage-atomic"
+printf '\nATOMIC=1\n' >> "$WORK/stage-atomic/bin/ops/release.conf"
+mkdir -p "$WORK/home"
+for p in $(sed -n 's/^PROTECT=(\(.*\))$/\1/p' "$WORK/stage-atomic/bin/ops/release.conf"); do
+  p="${p#/}"; p="${p%/}"; mkdir -p "$WORK/live/$p" && echo "kept" > "$WORK/live/$p/kit-shared.txt"; first_protect="$p"
+done
+HOME="$WORK/home" bash "$WORK/stage-atomic/bin/ops/release.sh" --stage="$WORK/stage-atomic" --live="$WORK/live" --revision="$REV" \
+  --backup-dir="$WORK/backups" --php="$(command -v php)" --snapshot=skip >"$WORK/release-atomic.out" 2>&1
+rc=$?
+if [ "$rc" = 0 ] && [ -L "$WORK/live" ]; then ok "ATOMIC=1: release.sh exit 0 and live is a symlink to $(basename "$(readlink "$WORK/live")")"
+else no "ATOMIC=1 release exit $rc: $(tail -n 20 "$WORK/release-atomic.out")"; fi
+case "$(readlink "$WORK/live")" in "$WORK/home/aicountly-releases/"*) ok "ATOMIC=1: the release folder is outside the document root" ;; *) no "ATOMIC=1 release folder: $(readlink "$WORK/live")" ;; esac
+[ "$(cat "$WORK/live/REVISION" 2>/dev/null)" = "$REV" ] && ok "ATOMIC=1: REVISION written" || no "ATOMIC=1: REVISION"
+grep -q "DB_NAME=$DB" "$WORK/live/.env" 2>/dev/null && ok "ATOMIC=1: the live .env carried into the release" || no "ATOMIC=1: .env lost"
+if [ -n "${first_protect:-}" ]; then
+  [ -L "$WORK/live/$first_protect" ] && [ "$(cat "$WORK/live/$first_protect/kit-shared.txt" 2>/dev/null)" = kept ] \
+    && ok "ATOMIC=1: PROTECT folders are shared and kept their files ($first_protect)" || no "ATOMIC=1: $first_protect not shared"
+fi
+[ "$(grep -c '>>> aicountly-' "$CRON")" = 1 ] && ok "ATOMIC=1: still one crontab block" || no "ATOMIC=1: crontab blocks $(grep -c '>>> aicountly-' "$CRON")"
+# Once live is an atomic symlink, a release without ATOMIC=1 is refused before anything runs (its rsync would
+# write into the live release folder in place): exit 17, no snapshot, the symlink and its target untouched.
+target_before="$(readlink "$WORK/live")"
+tree_before="$(cd "$target_before" && find . -path ./writable -prune -o -print | LC_ALL=C sort | md5sum)"
+dumps_before="$(ls "$WORK"/backups/"$APP"-*.dump 2>/dev/null | wc -l)"
+echo "kit-not-atomic" > "$WORK/stage/kit-not-atomic.txt"
+bash "$WORK/stage/bin/ops/release.sh" --stage="$WORK/stage" --live="$WORK/live" --revision=feedfacefeedface \
+  --backup-dir="$WORK/backups" --php="$(command -v php)" >"$WORK/release-not-atomic.out" 2>&1; rc=$?
+rm -f "$WORK/stage/kit-not-atomic.txt"
+if [ "$rc" = 17 ] && [ "$(readlink "$WORK/live")" = "$target_before" ] && [ "$(cat "$WORK/live/REVISION")" = "$REV" ] \
+  && [ ! -e "$target_before/kit-not-atomic.txt" ] && [ "$(cd "$target_before" && find . -path ./writable -prune -o -print | LC_ALL=C sort | md5sum)" = "$tree_before" ] \
+  && [ "$(ls "$WORK"/backups/"$APP"-*.dump 2>/dev/null | wc -l)" = "$dumps_before" ] && grep -q 'ATOMIC=1' "$WORK/release-not-atomic.out"; then
+  ok "ATOMIC unset on an atomic layout: refused (exit 17) before the snapshot; the symlink and the live release untouched"
+else no "ATOMIC unset on an atomic layout: exit $rc, live $(readlink "$WORK/live"): $(tail -n 5 "$WORK/release-not-atomic.out")"; fi
+
 # ---------------------------------------------------------------- 3. failing migration leaves live untouched
-cp -r "$WORK/stage" "$WORK/stage-bad"
+# (live is the atomic symlink by now, so the bad stage is the ATOMIC=1 one: release.sh refuses any other.)
+cp -r "$WORK/stage-atomic" "$WORK/stage-bad"
 echo "SELECT * FROM kit_table_that_does_not_exist;" > "$WORK/stage-bad/database/migrations/999_kit_broken.sql"
 echo "marker" > "$WORK/live/kit-marker.txt"
 bash "$WORK/stage-bad/bin/ops/release.sh" --stage="$WORK/stage-bad" --live="$WORK/live" --revision=deadbeefdeadbeef \

@@ -324,7 +324,10 @@ jobs:
 
       # E8-OPS (F096, F159, F160): bin/ops/release.sh, ON THE SERVER — pre-migration snapshot (pg_dump through
       # the app's own connection), migrations FROM THE STAGE while the old code still serves (expand-only),
-      # then the code switch (rsync stage -> api/, keeping api/.env), REVISION, one first run of the
+      # then the ATOMIC code switch (bin/ops/atomic-switch.sh: a complete release folder in
+      # ~/aicountly-releases/<site>-api/releases/, the live api/ a symlink swapped to it by one rename, api/.env
+      # carried over, release.conf PROTECT folders shared; /api/health must answer afterwards or the previous
+      # code is put back at once — exit 21), REVISION, one first run of the
       # background job and the crontab block from bin/ops/jobs.txt. Any failure before the switch leaves
       # the live code untouched. Snapshots: ~/aicountly-backups/purchases-sandbox (newest 14 kept).
       - name: "Release: snapshot, migrate, switch, scheduled jobs"
@@ -340,7 +343,7 @@ jobs:
             echo "Pre-migration snapshot SKIPPED by $GITHUB_ACTOR" >> "$GITHUB_STEP_SUMMARY"
           fi
           rc=0
-          ssh deploy-target "bash .aicountly-deploy/purchases-sandbox/stage/bin/ops/release.sh --stage=.aicountly-deploy/purchases-sandbox/stage --live='$REMOTE_ROOT/api' --revision='$GITHUB_SHA' --backup-dir=aicountly-backups/purchases-sandbox --snapshot=$snapshot ${PHP_BIN:+--php='$PHP_BIN'}" || rc=$?
+          ssh deploy-target "bash .aicountly-deploy/purchases-sandbox/stage/bin/ops/release.sh --stage=.aicountly-deploy/purchases-sandbox/stage --live='$REMOTE_ROOT/api' --revision='$GITHUB_SHA' --backup-dir=aicountly-backups/purchases-sandbox --snapshot=$snapshot --check-url='https://purchase.gh.aicountly.com/api/health' ${PHP_BIN:+--php='$PHP_BIN'}" || rc=$?
           case "$rc" in
             0)  echo "Released $GITHUB_SHA." ;;
             10) echo "::error::The stage upload is incomplete (no index.php or release.conf). Nothing changed."; exit 1 ;;
@@ -352,6 +355,10 @@ jobs:
             16) echo "::error::Another migration run holds the lock. Nothing changed; re-run when it has finished."; exit 1 ;;
             17) echo "::error::The code switch failed after the schema was migrated (expand-only, so the old code still works). Re-run the deploy."; exit 1 ;;
             18) echo "::error::The code is live but the scheduled jobs could not be installed (output above)."; exit 1 ;;
+            19) echo "::error::Preparing the stage failed (output above). Nothing live changed."; exit 1 ;;
+            20) echo "::error::A post-switch hook failed (output above); the new code IS live."; exit 1 ;;
+            21) echo "::error::The new release did not answer https://purchase.gh.aicountly.com/api/health after the switch, so the previous code was put back at once (atomic-switch.sh; output above). The schema is migrated (expand-only). On a FIRST atomic deploy this means the host does not serve api/ through a symlink: the plain folder is back; do not retry, look at the host."; exit 1 ;;
+            22) echo "::error::The new release failed its check AND the previous code could not be put back (output above). The API may be down: act now (bash <stage>/bin/ops/atomic-switch.sh --status / --rollback on the server)."; exit 1 ;;
             *)  echo "::error::Release failed (exit $rc). See the output above."; exit 1 ;;
           esac
 
@@ -368,16 +375,18 @@ jobs:
           # --delete keeps the docroot free of files removed from the build.
           # The excludes below protect paths that are not part of the web build
           # and must survive a deploy:
-          #   api/         — the PHP backend lives inside the document root and
-          #                  is deployed by the next step. Without this exclude
-          #                  this step would delete the entire API.
+          #   /api         — the PHP backend, released by bin/ops/release.sh above. Since atomic
+          #                  deploys api is a SYMLINK to the current release folder: the
+          #                  pattern must be '/api', never 'api/' or '/api/' — a trailing
+          #                  slash matches real folders only, so --delete would remove the
+          #                  symlink and take the whole API down.
           #   .env         — server-side env file, if one is placed there
           #   .well-known/ — Let's Encrypt / AutoSSL validation; deleting it
           #                  breaks certificate renewal
           #   cgi-bin/     — cPanel-managed, present in every docroot
           #   .git*        — never publish repository metadata
           rsync -avz --delete \
-            --exclude='api/' \
+            --exclude='/api' \
             --exclude='.env' \
             --exclude='.env.*' \
             --exclude='.git*' \

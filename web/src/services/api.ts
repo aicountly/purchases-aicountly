@@ -17,6 +17,7 @@ import { AuthError, ensureSesKey, redirectToPortalSso } from '../auth/portal'
 import { clearAllTokens } from '../auth/tokens'
 import { noteApiRefusal } from '../lifecycle/companyLifecycle'
 import { PLAN_LIMIT_CODE, planLimitFromError, planLimitMessage } from './planLimit'
+import { messageWithRef, newRequestId, requestIdOf } from './requestRef'
 
 export interface CompanyScope {
   cmp_id: number
@@ -50,6 +51,8 @@ export class ApiError extends Error {
     readonly code: string,
     message: string,
     readonly details: Record<string, unknown> = {},
+    /** The reference the server logged this request under (X-Request-Id); quoted on a 5xx. */
+    readonly requestId: string = '',
   ) {
     super(message)
     this.name = 'ApiError'
@@ -113,10 +116,13 @@ async function send<T>(path: string, options: RequestOptions, sesKey: string): P
   const scoped = options.scoped !== false
   const method = options.method ?? 'GET'
 
+  // A fresh reference per call: the API logs a failure under it and the 5xx message quotes it.
+  const sentRequestId = newRequestId()
   const headers: Record<string, string> = {
     ...(options.headers ?? {}),
     Accept: 'application/json',
     Authorization: `Bearer ${sesKey}`,
+    'X-Request-Id': sentRequestId,
   }
 
   let body: string | FormData | undefined
@@ -167,11 +173,13 @@ async function send<T>(path: string, options: RequestOptions, sesKey: string): P
     if (planLimit) {
       throw new ApiError(response.status, PLAN_LIMIT_CODE, planLimitMessage(planLimit), envelope?.error?.details ?? {})
     }
+    const requestId = requestIdOf(parsed, response.headers, sentRequestId)
     throw new ApiError(
       response.status,
       envelope?.error?.code ?? 'error',
-      envelope?.error?.message ?? envelope?.message ?? `Request failed (${response.status})`,
+      messageWithRef(response.status, envelope?.error?.message ?? envelope?.message, requestId, 'Purchases'),
       envelope?.error?.details ?? {},
+      requestId,
     )
   }
 
@@ -293,10 +301,11 @@ export const api = {
   download: async (path: string, filename: string, params?: QueryParams): Promise<void> => {
     const sesKey = await ensureSesKey()
 
+    const sentRequestId = newRequestId()
     const pull = async (key: string): Promise<Response> =>
       fetch(buildUrl(path, params, true), {
         method: 'GET',
-        headers: { Authorization: `Bearer ${key}`, Accept: '*/*' },
+        headers: { Authorization: `Bearer ${key}`, Accept: '*/*', 'X-Request-Id': sentRequestId },
       })
 
     let response = await pull(sesKey)
@@ -307,13 +316,16 @@ export const api = {
     if (!response.ok) {
       const text = await response.text()
       let message = `That export could not be produced (${response.status}).`
+      let parsed: unknown = null
       try {
-        const envelope = JSON.parse(text) as { error?: { message?: string }; message?: string }
+        parsed = JSON.parse(text)
+        const envelope = parsed as { error?: { message?: string }; message?: string }
         message = envelope?.error?.message ?? envelope?.message ?? message
       } catch {
         /* a non-JSON error body is not worth showing raw */
       }
-      throw new ApiError(response.status, 'export_failed', message, {})
+      const requestId = requestIdOf(parsed, response.headers, sentRequestId)
+      throw new ApiError(response.status, 'export_failed', messageWithRef(response.status, message, requestId, 'Purchases'), {}, requestId)
     }
 
     const blob = await response.blob()
