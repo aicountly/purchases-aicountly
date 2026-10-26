@@ -45,20 +45,50 @@ together, with two SSH sessions and two sets of runner setup instead of one.
 
 The web deploy step runs `rsync --delete` against the document root, which
 would otherwise remove everything not in the build — including `api/`, since
-the API lives inside the document root. That step therefore excludes `api/`
-explicitly. **Removing that exclude would delete the entire backend on the
+the API lives inside the document root. That step therefore excludes `/api`
+explicitly (anchored, no trailing slash: `api` is a symlink since atomic releases, see below). **Removing that exclude would delete the entire backend on the
 next deploy.**
 
 ### Why the API's .env survives the API deploy step
 
-The API deploy step also runs `rsync --delete`, this time against `api/`. The
-API's `.env` is created once by hand on the server and exists nowhere else, so
-both `--exclude='.env'` and `--exclude='.env.*'` are what keep it alive.
-Removing them would wipe the live configuration on the next deploy.
+The API is uploaded to a stage folder outside the document root
+(`--exclude='.env'` and `--exclude='.env.*'` keep any local one out of it), and
+released atomically (below): the API's `.env`, created once by hand on the
+server, is copied from the current release into each new one, so edits made
+on the server are kept.
 
 Neither `.env` is ever uploaded either: `.gitignore` keeps them out of the
 repository, and the workflow fails the build outright if a committed `.env`
 appears under `server-php/`.
+
+## Atomic releases, the production deploy window and Ref lookup (2026-10-26)
+
+Owner's decision for every product (console-react-app `ops/estate/kit/DEPLOY_SAFETY.md`):
+
+- **Atomic API releases.** `bin/ops/release.conf` sets `ATOMIC=1`. `bin/ops/release.sh` no longer rsyncs
+  the stage over the live `api/` folder (a request could load half old, half new files and die with an
+  empty 500). `bin/ops/atomic-switch.sh` builds a complete release folder in
+  `~/aicountly-releases/<site>-api/releases/<time>-<sha>/` (outside the document root), carries the live
+  `.env` into it, shares the `PROTECT` folders through `~/aicountly-releases/<site>-api/shared/`, and points
+  `<docroot>/api` (now a **symlink**) at it with one rename. `/api/health` must answer afterwards, or the
+  previous code is put back at once (release exit 21). The first deploy converts the plain folder (the old
+  one is kept as `releases/<time>-pre-atomic`) and must run on **sandbox first**: look for
+  `atomic-switch: … (converted from a plain folder)` and the `check … answered 200` line in the log, then
+  run *Verify live app*. Releases replaced less than 10 minutes ago are never pruned; 5 are kept.
+  On the server: `bash ~/.aicountly-deploy/purchases-<env>/stage/bin/ops/atomic-switch.sh --status --live=<docroot>/api`
+  lists them and `--rollback` puts the previous one back (code only; migrations are expand-only).
+- **The entry guard.** `index.php` starts with the block from `bin/ops/atomic-entry.php.txt`: a PHP worker
+  whose path cache still names the previous release hands the request to the current release's
+  `index.php`. For that, `index.php` must declare no function or class itself — its helpers are in
+  `src/front_helpers.php` (`server-php/tests/ops/atomic-entry-test.sh` proves both, through two releases).
+- **The web deploy step** excludes `'/api'` — never `'api/'` or `'/api/'`: with a trailing slash the
+  pattern matches real folders only, so `rsync --delete` would delete the `api` symlink and with it the API.
+- **Production deploy window.** *Deploy to cPanel Production* runs between 20:00 and 08:00 IST. In business
+  hours it is refused unless `business_hours_reason` says who allowed it and why (an exigency the owner
+  approved; recorded in the job summary). Sandbox deploys run at any time, and always before production.
+- **Ref lookup.** An error the API could not handle is logged with a reference (the `X-Request-Id` the screen
+  sent with the call) and the screen shows it as `(Ref: …)`. *Actions → Find a support reference* (manual,
+  read-only) prints the log lines carrying it, for production or sandbox, with secrets masked.
 
 ## Configuration: two different mechanisms
 
