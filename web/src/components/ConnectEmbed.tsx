@@ -1,7 +1,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { MessagesSquare } from 'lucide-react'
-import { ensureSesKey } from '../auth/portal'
+import { sesKeyForEmbed } from '../auth/portal'
 import { usePurchases } from '../context/PurchasesContext'
 import { buildAppLaunchUrl, getAppById, launchApp } from '../services/appLauncher'
 import {
@@ -36,14 +36,9 @@ export function ConnectEmbed() {
       const current = latest.current.scope
       const mounted = await Promise.resolve().then(() => api.init({
         // The person's own session, and only theirs. A signed-out person gets null, and Connect
-        // shows its own "Sign in to use Connect" rather than sending anyone anywhere.
-        getSesKey: async (forceRefresh) => {
-          try {
-            return await ensureSesKey(forceRefresh)
-          } catch {
-            return null
-          }
-        },
+        // shows its own "Sign in to use Connect" rather than sending anyone anywhere. Its refresh
+        // never drops the key Purchases is using.
+        getSesKey: sesKeyForEmbed,
         product: 'purchases',
         companyId: current?.cmp_id ?? null,
         fyId: current?.fy_id ?? null,

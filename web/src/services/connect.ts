@@ -4,7 +4,8 @@
  * Connect ships one script (`/embed/v1/loader.js`) that mounts its widget in a shadow root:
  * conversations, company contacts from Aicountly Contacts, audio/video calling, AI Pulse pinned
  * first, and an Advisor link. This product only loads it, hands it the signed-in person's own
- * session and company scope, and asks it to open with a Purchases document to discuss.
+ * session and company scope, and asks it to open with a Purchases document to discuss, or on
+ * AI Pulse with a question.
  *
  * Nothing here may break Purchases: a Connect that is down, blocked or not deployed simply means
  * no widget and no "Discuss in Connect" button.
@@ -12,7 +13,7 @@
  * Contract: connect-aicountly docs/EMBED_SDK.md (Embed SDK v1).
  */
 import { isSandboxHost } from '../auth/hostnames'
-import { getAppById, resolveAppOrigin } from './appLauncher'
+import { getAppById, launchApp, resolveAppOrigin } from './appLauncher'
 
 /** Purchases documents Connect can verify with this product before attaching them. */
 export type ConnectEntityType = 'purchase_order' | 'purchase_bill' | 'purchase_return' | 'claim' | 'requisition' | 'rfq'
@@ -41,7 +42,7 @@ export interface ConnectOptions {
 interface ConnectApi {
   init(options: ConnectOptions): Promise<boolean>
   update(patch: Partial<ConnectOptions>): void
-  open(options: { conversationId?: string; shareContext?: ConnectShareContext }): void
+  open(options: { conversationId?: string; shareContext?: ConnectShareContext; pulse?: { prompt?: string; send?: boolean } }): void
   close(): void
   destroy(): void
   isReady(): boolean
@@ -145,4 +146,25 @@ export function discussInConnect(entityType: ConnectEntityType, entityId: number
   if (!api || !ready) return false
   api.open({ shareContext: { product: 'purchases', entityType, entityId } })
   return true
+}
+
+/**
+ * Ask AI Pulse: the thread Connect pins first, in the widget's company scope, with `prompt` in its
+ * composer for the person to read and send — nothing is sent for them. Without Connect, AI Pulse's
+ * own app in a new tab through the portal's SSO jump; the question does not travel there.
+ */
+export function askAiPulse(prompt: string): 'widget' | 'tab' | 'none' {
+  const api = connectApi()
+  if (api && ready) {
+    try {
+      api.open({ pulse: { prompt } })
+      return 'widget'
+    } catch {
+      /* the widget's problem — Pulse's own app still gets the person there */
+    }
+  }
+  const pulse = getAppById('buddy')
+  if (!pulse) return 'none'
+  launchApp(pulse, { newTab: true })
+  return 'tab'
 }
