@@ -537,3 +537,71 @@
 @media (prefers-reduced-motion: reduce) {
   .app-shell__sidebar { transition: none; }
 }
+
+/* ------------------------------------------------------------------ *
+ * Analytics consent card (shell/AnalyticsConsentBanner.tsx)
+ * ------------------------------------------------------------------ */
+
+/* Bottom-left and non-blocking: above the page but just under the sticky header (20), whose
+   layer the company, branch and year pickers open in — so under those, the navigation scrim
+   and drawer (40, 50) and every dialog (60+). On desktop it starts right of the sidebar, whose
+   legal links sit at its foot. The Connect launcher keeps the bottom-right corner: on phones
+   the card leaves at least 88px free on the right and sits above the launcher's row. The
+   sign-in page has no .app-shell, hence the fallbacks. */
+.aic-consent-banner {
+  position: fixed;
+  left: calc(var(--aic-consent-left, 0px) + 16px);
+  bottom: 16px;
+  z-index: 19;
+  box-sizing: border-box;
+  width: calc(100vw - var(--aic-consent-left, 0px) - 32px);
+  max-width: 360px;
+  padding: 12px;
+  background: var(--shell-surface, #ffffff);
+  color: var(--shell-ink, #0f172a);
+  border: 1px solid var(--shell-border, #e2e8e5);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(16, 24, 20, 0.14);
+  font-size: 0.82rem;
+}
+.aic-consent-banner:focus { outline: none; }
+.aic-consent-banner:focus-visible { outline: 2px solid var(--shell-brand-strong, #087a45); outline-offset: 2px; }
+.aic-consent-banner__text { margin: 0; line-height: 1.45; }
+.aic-consent-banner__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.aic-consent-banner__allow,
+.aic-consent-banner__decline {
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+.aic-consent-banner__allow { background: var(--shell-brand-strong, #087a45); border: 1px solid var(--shell-brand-strong, #087a45); color: #fff; }
+.aic-consent-banner__decline { background: var(--shell-surface, #ffffff); border: 1px solid var(--shell-border, #e2e8e5); color: var(--shell-ink, #0f172a); }
+.aic-consent-banner__link { margin-left: auto; font-size: 0.75rem; color: var(--shell-muted, #64748b); text-decoration: underline; text-underline-offset: 2px; }
+@media (min-width: 981px) {
+  body:has(.app-shell__sidebar) { --aic-consent-left: 228px; }
+}
+@media (max-width: 639.98px) {
+  .aic-consent-banner {
+    left: 16px;
+    width: calc(100vw - 16px - 88px);
+    bottom: 76px;
+  }
+}
+@media print {
+  .aic-consent-banner { display: none; }
+}
+
+/* "Analytics preferences" among the legal links: a button that reads as one of them. */
+.app-shell__legal-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--shell-faint);
+  cursor: pointer;
+}
+.app-shell__legal-button:hover,
+.app-shell__legal-button:focus-visible { color: var(--shell-ink); text-decoration: underline; }

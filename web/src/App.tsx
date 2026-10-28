@@ -20,6 +20,7 @@ import Settings from './pages/Settings'
 import { CompanyAccessRequired } from './shell/CompanyAccessRequired'
 import { Button, Notice } from './ui'
 import { initAnalytics, trackPageView } from './utils/analytics'
+import { AnalyticsConsentBanner } from './shell/AnalyticsConsentBanner'
 
 /**
  * The profile workspace is loaded when somebody opens it.
@@ -61,7 +62,7 @@ const AuditLog = lazy(() => import('./pages/AuditLog'))
 function PageViews() {
   const location = useLocation()
   useEffect(() => {
-    trackPageView(location.pathname, document.title)
+    trackPageView(location.pathname)
   }, [location.pathname])
 
   return null
@@ -127,7 +128,15 @@ function Framed() {
 export default function App() {
   const { status } = useAuth()
 
-  if (status === 'signed-out') return <SignIn />
+  // The consent card goes where the tag runs (the app and the sign-in page), not while signing in.
+  if (status === 'signed-out') {
+    return (
+      <>
+        <SignIn />
+        <AnalyticsConsentBanner />
+      </>
+    )
+  }
 
   if (status !== 'authenticated') {
     return (
@@ -257,6 +266,7 @@ export default function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      <AnalyticsConsentBanner />
       </DeepLinkScopeGate>
     </PurchasesProvider>
   )

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { COPYRIGHT, GRIEVANCE_OFFICER, LEGAL_LINKS } from './legal'
+import { isAnalyticsConfigured } from '../utils/analytics'
+import { showAnalyticsPreferences } from '../utils/analyticsConsent'
 import {
   AlertTriangle,
   Bell,
@@ -249,6 +251,19 @@ export function AppShell() {
                 {link.label}
               </a>
             ))}
+            {isAnalyticsConfigured() ? (
+              // The consent banner again, to change the analytics choice made for every AICOUNTLY app.
+              <button
+                type="button"
+                className="app-shell__legal-button"
+                onClick={() => {
+                  setNavOpen(false)
+                  showAnalyticsPreferences()
+                }}
+              >
+                Analytics preferences
+              </button>
+            ) : null}
             <span className="app-shell__legal-note" title={`Grievance officer: ${GRIEVANCE_OFFICER.name}, ${GRIEVANCE_OFFICER.email}`}>
               {COPYRIGHT}
             </span>
