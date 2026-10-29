@@ -63,8 +63,10 @@ foreach ($calls as [, $method, $path]) {
 foreach (['accept', 'decline', 'exit'] as $action) {
     $check("POST v1/workspaces/3/{$action} is relayed", ManageRelay::isRelayed('POST', 'v1/workspaces/3/' . $action));
 }
-// The fleet alignment (FLEET_CONTRACT B): company-access 1.2.0 and the plan reads, by name, so a
-// later client that stops calling one does not silently drop it from the relay.
+// The fleet alignment (FLEET_CONTRACT B): company-access 1.2.0 and 1.3.0 and the plan reads, by name, so a
+// later client that stops calling one does not silently drop it from the relay. 1.4.0 adds none: one set of
+// team permissions for several people, or several Company users moved to the team, is the per-person
+// PATCH …/members/{ref} or POST …/members/{ref}/move, made once per person.
 foreach ([
     ['GET', 'v1/app-roles'],
     ['GET', 'v1/company-creation-targets'],
@@ -74,6 +76,10 @@ foreach ([
     ['GET', 'v1/companies/74/plan'],
     ['GET', 'v1/me/plan'],
     ['GET', 'v1/me/pending'],
+    // 1.3.0: the Workspace team and Company users.
+    ['GET', 'v1/workspaces/3/company-users'],
+    ['POST', 'v1/workspaces/3/members/1f2e-uuid/move'],
+    ['DELETE', 'v1/companies/74/members/1f2e-uuid'],
 ] as [$method, $path]) {
     $check("{$method} {$path} is relayed", ManageRelay::isRelayed($method, $path));
 }
@@ -99,6 +105,27 @@ $refused = [
     ['GET', 'manage/v1//applications', 'an empty segment'],
     ['GET', 'manage', 'the bare prefix'],
     ['GET', 'global/v1/applications', 'another prefix'],
+    // The three 1.3.0 routes and nothing wider: another method, a level more or less, an id that is not one.
+    ['GET', 'manage/v1/workspaces/3/members/1f2e/move', 'a move is a POST'],
+    ['PATCH', 'manage/v1/workspaces/3/members/1f2e/move', 'a move is a POST, never a PATCH'],
+    ['POST', 'manage/v1/workspaces/3/company-users', 'Company users are read here, never written'],
+    ['DELETE', 'manage/v1/workspaces/3/company-users', 'Company users are never removed all at once'],
+    ['GET', 'manage/v1/companies/74/members/1f2e', 'a company member is removed here, never read'],
+    ['POST', 'manage/v1/companies/74/members/1f2e', 'a company member is removed here, never added'],
+    ['DELETE', 'manage/v1/companies/74/members', 'one person at a time, never every member'],
+    ['POST', 'manage/v1/workspaces/3/members/move', 'a move names the person'],
+    ['POST', 'manage/v1/workspaces/3/members/1f2e/move/now', 'an extra level after a move'],
+    ['GET', 'manage/v1/workspaces/3/company-users/1f2e', 'an extra level under Company users'],
+    ['DELETE', 'manage/v1/companies/74/members/1f2e/apps', 'an extra level under a company member'],
+    ['GET', 'manage/v1/companies/74/company-users', 'Company users are listed per workspace, not per company'],
+    ['POST', 'manage/v1/companies/74/members/1f2e/move', 'a move is within a workspace, never a company'],
+    ['GET', 'manage/v1/workspaces/abc/company-users', 'a workspace id is a number'],
+    ['POST', 'manage/v1/workspaces/3x/members/1f2e/move', 'a workspace id is a number'],
+    ['DELETE', 'manage/v1/companies/me/members/1f2e', 'a company id is a number'],
+    ['DELETE', 'manage/v1/companies/74/members/.hidden', 'a person reference never starts with a dot'],
+    ['DELETE', 'manage/v1/companies/74/members/%2E%2E', 'an encoded `..` as the person'],
+    ['POST', 'manage/v1/workspaces/3/members/..%2F..%2Fbilling/move', 'an encoded slash in a move'],
+    ['POST', 'manage/v1/workspaces/3/members/../move', 'a traversal in a move'],
 ];
 foreach ($refused as [$method, $path, $why]) {
     $check("refused: {$method} {$path} ({$why})", ManageRelay::upstreamUrl($method, $path, '', 'https://manage.example') === null);
@@ -214,12 +241,31 @@ try {
     $r = $http($apiPort, 'DELETE', 'manage/v1/workspaces/3/members/1f2e', ['Content-Type: application/json'], '{"revoke_company_access":true}');
     $check('DELETE is relayed with its body', ($r['json']['method'] ?? '') === 'DELETE' && ($r['json']['body'] ?? '') === '{"revoke_company_access":true}', $r['raw']);
 
+    // company-access 1.3.0 through index.php: Company users, a move (its body intact, the person one encoded
+    // segment) and ending one person's share of one company.
+    $r = $http($apiPort, 'GET', 'manage/v1/workspaces/3/company-users', ['Authorization: Bearer person-ses-key']);
+    $check('GET v1/workspaces/{id}/company-users is relayed', $r['status'] === 200 && ($r['json']['method'] ?? '') === 'GET'
+        && str_ends_with((string) ($r['json']['uri'] ?? ''), '/v1/workspaces/3/company-users'), $r['raw']);
+    $move = '{"to":"team","settings":{"all_companies_access":{"purchases":"buyer"}}}';
+    $r = $http($apiPort, 'POST', 'manage/v1/workspaces/3/members/1f2e%3Apurchases/move', [
+        'Authorization: Bearer person-ses-key', 'Content-Type: application/json',
+    ], $move);
+    $check('POST v1/workspaces/{id}/members/{ref}/move is relayed with its body, the person still one encoded segment',
+        ($r['json']['method'] ?? '') === 'POST' && ($r['json']['body'] ?? '') === $move
+        && str_ends_with((string) ($r['json']['uri'] ?? ''), '/v1/workspaces/3/members/1f2e%3Apurchases/move'), $r['raw']);
+    $r = $http($apiPort, 'DELETE', 'manage/v1/companies/74/members/1f2e', ['Authorization: Bearer person-ses-key', 'Content-Type: application/json'], '{}');
+    $check('DELETE v1/companies/{id}/members/{ref} is relayed', ($r['json']['method'] ?? '') === 'DELETE'
+        && str_ends_with((string) ($r['json']['uri'] ?? ''), '/v1/companies/74/members/1f2e'), $r['raw']);
+
     foreach ([
         ['DELETE', 'manage/v1/companies/74/permissions'],
         ['GET', 'manage/v1/audit-log'],
         ['GET', 'manage/companies'],
         ['DELETE', 'manage/v1/workspaces/3/members/..%2F..%2Fbilling'],
         ['DELETE', 'manage/v1/companies/74/permissions/%2e%2e'],
+        ['GET', 'manage/v1/workspaces/3/members/1f2e/move'],
+        ['DELETE', 'manage/v1/companies/74/members'],
+        ['POST', 'manage/v1/workspaces/3/company-users'],
     ] as [$method, $path]) {
         $r = $http($apiPort, $method, $path, ['Authorization: Bearer person-ses-key']);
         $check("over HTTP, {$method} {$path} is 404 and Manage is not called", $r['status'] === 404 && !isset($r['json']['method']), $r['status'] . ' ' . $r['raw']);
