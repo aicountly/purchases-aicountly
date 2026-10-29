@@ -56,13 +56,22 @@ application. Purchases' catalog key is **`purchases`**.
 - **Client.** `web/src/services/companyRegistry.ts` reaches Manage's `/api/v1/*` through Purchases'
   own same-origin relay (`/api/manage/v1/*`, `server-php/src/ManageRelay.php`) with the person's
   session key — never cross-site, which the host's bot shield breaks on some networks. The shared
-  screens are vendored verbatim in `web/src/company-access/` (package 1.2.0, copied from
-  manage-aicountly `Saas Common Handler/company-access`; change them there, copy again).
+  screens are vendored verbatim in `web/src/company-access/` (package 1.4.0, copied from
+  manage-aicountly `Saas Common Handler/company-access` with Manage's
+  `node scripts/sync-shared.mjs --to ../purchases-aicountly --as books` — `--as books` only picks the
+  `web/src/company-access` path, `--check` reports drift, the stamp is `.shared-stamp.json`; change them
+  there, copy again). Their styles come from `company-access.css`, imported once in `web/src/main.tsx`
+  after `index.css`, so the package injects no `<style>` element. The relay passes the calls 1.3.0 added
+  for the Workspace team and Company users (`GET v1/workspaces/{id}/company-users`,
+  `POST v1/workspaces/{id}/members/{ref}/move`, `DELETE v1/companies/{cmp}/members/{ref}`); 1.4.0's
+  bulk actions make those per-person calls and add none (`server-php/tests/manage_relay.php`).
 - **Company picker.** The choose-company page has "Browse all workspace companies", listing every
   company of the person's workspaces; a company restricted in Purchases is badged and shows
   "Request access" instead of opening.
 - **Users & Access.** Administration → Users & Access (`/users-access`): the owner grants, changes
   and revokes access to this company in Purchases and reviews requests, with no redirect to Manage.
+  In their workspace they see the Workspace team and the Company users apart, move people between
+  them, remove someone from one company and give one set of team permissions to several people at once.
   Administration → Access (Purchases permission profiles) is unchanged and still decides what a
   person may *do* in Purchases.
 - **Discovery is not access.** Seeing a company in the directory never opens it; the server check
