@@ -55,7 +55,14 @@ final class PurchaseOrdersController extends Controller
     public static function create(): void
     {
         [$auth, $ctx] = self::enter();
-        Http::data((new PurchaseOrderService($ctx, $auth))->create(Http::body()), 201);
+        $created = (new PurchaseOrderService($ctx, $auth))->create(Http::body());
+
+        // Estate analytics: Purchases' activation event.
+        $poId = (int) ($created['po_id'] ?? $created['purchase_order_id'] ?? $created['id'] ?? 0);
+        EstateAnalytics::forContext($ctx, $auth, 'purchase_order.created',
+            $poId > 0 ? ['idempotency_key' => 'purchases:po:' . $poId] : []);
+
+        Http::data($created, 201);
     }
 
     public static function submit(string $id): void
@@ -113,7 +120,15 @@ final class PurchaseOrdersController extends Controller
     public static function receive(string $id): void
     {
         [$auth, $ctx] = self::enter();
-        Http::data((new ReceiptService($ctx, $auth))->request((int) $id, Http::body(), true));
+        $receipt = (new ReceiptService($ctx, $auth))->request((int) $id, Http::body(), true);
+
+        // Estate analytics: goods received against a PO is Purchases' recurring outcome — the
+        // signal that the product is still doing work for this company, not just holding data.
+        EstateAnalytics::forContext($ctx, $auth, 'grn.matched', [
+            'idempotency_key' => 'purchases:grn:' . (int) $id . ':' . (int) ($receipt['receipt_id'] ?? 0),
+        ]);
+
+        Http::data($receipt);
     }
 
     public static function retryReceipt(string $id): void
