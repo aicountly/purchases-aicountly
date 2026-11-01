@@ -9,6 +9,7 @@ use Aicountly\Api\Domain\ReceiptLedger;
 use Aicountly\Api\Domain\ReceiptReturnService;
 use Aicountly\Api\Domain\ReceiptService;
 use Aicountly\Api\Domain\RegisterFilter;
+use Aicountly\Api\EstateAnalytics;
 use Aicountly\Api\Http;
 use Aicountly\Api\Permissions;
 

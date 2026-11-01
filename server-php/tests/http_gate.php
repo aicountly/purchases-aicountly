@@ -180,7 +180,22 @@ for ($i = 0; $i < 60; $i++) {
 // Manage's signed company-lifecycle events (docs/COMPANY_LIFECYCLE.md) take no session and no company: the
 // HMAC is the only credential. Checked on their own below rather than as a session route.
 const MANAGE_SIGNED = ['POST internal/manage/company-lifecycle', 'POST internal/manage/seats'];
-$routes = array_values(array_filter(routes(), static fn (array $r): bool => !in_array($r[0] . ' ' . $r[1], MANAGE_SIGNED, true)));
+
+// The operator maintenance switch (console-react-app ops/estate/kit, byte-identical in every
+// product): no session and no company either — its credential is PURCHASES_CONTROL_KEY, which the
+// server reads from api/.env, and it answers before the API is bootstrapped so that it still works
+// when the database is down. Nothing here configures a key, so every call below must be refused.
+// Swept on its own, not with the session routes.
+const CONTROL_KEYED = ['GET internal/maintenance', 'POST internal/maintenance'];
+
+// Estate analytics' only browser destination. It authenticates exactly like every other route —
+// session Auth resolved, company Context verified against Manage — but by design it ALWAYS answers
+// 204 and never says why: analytics is never a reason for a screen to show an error, and a status
+// that varied would tell a foreign page whether a session or a company was real. So it cannot be
+// swept with the routes that must answer 401/403; it is checked on its own instead.
+const ALWAYS_NO_CONTENT = ['POST v1/analytics/collect'];
+
+$routes = array_values(array_filter(routes(), static fn (array $r): bool => !in_array($r[0] . ' ' . $r[1], array_merge(MANAGE_SIGNED, CONTROL_KEYED, ALWAYS_NO_CONTENT), true)));
 $owner = ['Authorization' => 'Bearer stub-ses-key.role-1.as-user-owner'];
 $noSeat = ['Authorization' => 'Bearer stub-ses-key.role-3.as-user-noseat'];
 $stranger = ['Authorization' => 'Bearer stub-ses-key.role-none.as-user-stranger'];
@@ -216,6 +231,45 @@ check('Manage\'s signed seat route: no signature is never accepted, whatever ses
         if (!in_array($r['status'], [401, 503], true)) {
             throw new \RuntimeException('unsigned seat event -> ' . $r['status'] . ' ' . $r['raw']);
         }
+    }
+});
+
+check('the maintenance switch takes no session: it is refused with no control key, whatever session rides along', function () use ($api, $owner) {
+    foreach (CONTROL_KEYED as $route) {
+        [$method, $path] = explode(' ', $route, 2);
+        foreach ([[], $owner] as $who) {
+            $r = call($method, $api . '/' . $path . SCOPE, $who, $method === 'GET' ? null : ['action' => 'on']);
+            // 503 while no control key is configured here (the switch fails closed and says so),
+            // or 401 for a key that does not match — never a 2xx, and never a session's word for it.
+            if (!in_array($r['status'], [401, 503], true)) {
+                throw new \RuntimeException($route . ' -> ' . $r['status'] . ' ' . $r['raw']);
+            }
+        }
+    }
+});
+
+check('estate analytics collect: dropped or refused, never an answer that carries anything', function () use ($api, $owner, $noSeat, $stranger, $revoked) {
+    $wrong = [];
+    foreach (ALWAYS_NO_CONTENT as $route) {
+        [$method, $path] = explode(' ', $route, 2);
+        foreach (['none' => [], 'owner' => $owner, 'no seat' => $noSeat, 'stranger' => $stranger, 'revoked' => $revoked] as $who => $headers) {
+            $r = call($method, $api . '/' . $path . SCOPE, $headers, ['events' => [['event' => 'probe']]]);
+            // Two outcomes, both fine, and nothing else. 204 with an empty body: the controller
+            // took the events or dropped them and says nothing either way, which is the point —
+            // analytics is never a reason for a screen to show an error. 401 / 403: the gate
+            // refused before the controller ran, which is what the stranger gets here, because
+            // CompanyAccessFilter checks cmp_id with Manage ahead of every route alike and this
+            // one is not exempt from that. What must never happen is a 2xx carrying content (the
+            // route would be answering questions) or a 5xx (a browser retrying analytics).
+            $ok = ($r['status'] === 204 && trim((string) $r['raw']) === '')
+                || in_array($r['status'], [401, 403], true);
+            if (!$ok) {
+                $wrong[] = "{$route} as {$who} -> {$r['status']} " . $r['raw'];
+            }
+        }
+    }
+    if ($wrong !== []) {
+        throw new \RuntimeException(implode("\n", $wrong));
     }
 });
 
