@@ -49,6 +49,11 @@ final class Routes
         // profile, or revoke. Signed exactly like company-lifecycle; outside every session and company
         // check. ManageSeats.
         $router->post('internal/manage/seats', [ManageSeats::class, 'receive']);
+        // --- estate maintenance endpoint: Console switches this site into or out of maintenance (estate kit).
+        // Outside every session and company check, like the Manage receivers above: its
+        // only credential is CONSOLE_CONTROL_KEY, checked inside the handler itself.
+        $router->post('internal/maintenance', [\Aicountly\Api\Ops\MaintenanceEndpoint::class, 'handle']);
+        $router->get('internal/maintenance', [\Aicountly\Api\Ops\MaintenanceEndpoint::class, 'handle']);
 
         // Books tells us it cancelled or edited one of our bills (E8-BK-POST A16). Books' key and signature only.
         $router->post('v1/integration/books/voucher-events', [BooksEventsController::class, 'voucherEvents']);
