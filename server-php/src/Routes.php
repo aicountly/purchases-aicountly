@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Aicountly\Api;
 
+use Aicountly\Api\Controllers\AnalyticsCollectController;
 use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\AnalyticsController;
 use Aicountly\Api\Controllers\AuditController;
@@ -34,6 +35,12 @@ final class Routes
 {
     public static function register(Router $router): void
     {
+        // Estate analytics: the SPA's only destination for behavioural events. No permission is
+        // asserted — recording that a screen was opened is not an action a role grants — but a
+        // session and a company context verified against Manage are both required, and the
+        // identity is taken from them rather than from the payload. Answers 204 on every path.
+        $router->post('v1/analytics/collect', [AnalyticsCollectController::class, 'collect']);
+
         // Manage's company lifecycle events (docs/COMPANY_LIFECYCLE.md): restricted / unrestricted / purge.
         // Outside every session and company check — Manage's HMAC signature is its only credential.
         $router->post('internal/manage/company-lifecycle', [CompanyLifecycle::class, 'receive']);
