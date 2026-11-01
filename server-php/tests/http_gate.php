@@ -254,15 +254,15 @@ check('estate analytics collect: dropped or refused, never an answer that carrie
         [$method, $path] = explode(' ', $route, 2);
         foreach (['none' => [], 'owner' => $owner, 'no seat' => $noSeat, 'stranger' => $stranger, 'revoked' => $revoked] as $who => $headers) {
             $r = call($method, $api . '/' . $path . SCOPE, $headers, ['events' => [['event' => 'probe']]]);
-            // Two outcomes, both fine, and nothing else. 204 with an empty body: the controller
-            // took the events or dropped them and says nothing either way, which is the point —
-            // analytics is never a reason for a screen to show an error. 401 / 403: the gate
-            // refused before the controller ran, which is what the stranger gets here, because
-            // CompanyAccessFilter checks cmp_id with Manage ahead of every route alike and this
-            // one is not exempt from that. What must never happen is a 2xx carrying content (the
-            // route would be answering questions) or a 5xx (a browser retrying analytics).
-            $ok = ($r['status'] === 204 && trim((string) $r['raw']) === '')
-                || in_array($r['status'], [401, 403], true);
+            // The stranger is the case that matters: a company Manage says they may not open is
+            // REFUSED, not swallowed as a 204. CompanyAccessFilter checks cmp_id ahead of every
+            // route alike and this one is not exempt, which is the whole reason it can be trusted
+            // to attribute events to a company. Everyone else gets 204 with an empty body —
+            // analytics is never a reason for a screen to show an error — and a 2xx carrying
+            // content or a 5xx is wrong for all of them.
+            $ok = $who === 'stranger'
+                ? in_array($r['status'], [401, 403], true)
+                : ($r['status'] === 204 && trim((string) $r['raw']) === '');
             if (!$ok) {
                 $wrong[] = "{$route} as {$who} -> {$r['status']} " . $r['raw'];
             }
