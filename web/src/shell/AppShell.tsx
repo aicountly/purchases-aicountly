@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { COPYRIGHT, GRIEVANCE_OFFICER, LEGAL_LINKS } from './legal'
@@ -35,13 +35,17 @@ import {
   BarChart3,
   FileSpreadsheet,
   X,
+  UserPlus,
+  Users,
+  ExternalLink,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
-import { manageProfileUrl } from '../services/appLauncher'
+import { manageAccountUrl, manageProfileUrl } from '../services/appLauncher'
 import { ConnectEmbed } from '../components/ConnectEmbed'
 import { usePurchases } from '../context/PurchasesContext'
+import { canAddAccount, readAccountRoster, type RosterAccount } from '../auth/accounts'
 import { AccessNotice } from './AccessNotice'
 import { CompanyIdTag } from '../components/CompanyIdTag'
 import { useScopeLabels } from './useScopeLabels'
@@ -122,8 +126,167 @@ function initials(name: string): string {
   return (parts[0][0] ?? '') + (parts[parts.length - 1][0] ?? '')
 }
 
+/**
+ * The account menu — who you are, the accounts signed in on this browser, and
+ * the way out.
+ *
+ * Purchases had no account menu at all: a strip with the name and two icon
+ * buttons, so there was nowhere to put the roster and nothing matched the rest
+ * of the suite. This is the layout every AICOUNTLY product shares
+ * (AICOUNTLY_ACCOUNT_MENU.md in the Saas Common Handler): identity → accounts
+ * → links → sign out.
+ */
+function AccountMenu() {
+  const { signOut, switchAccount } = useAuth()
+  const { session } = usePurchases()
+  const [open, setOpen] = useState(false)
+  const [roster, setRoster] = useState<RosterAccount[]>([])
+  const wrap = useRef<HTMLDivElement | null>(null)
+  const trigger = useRef<HTMLButtonElement | null>(null)
+
+  // Read when the menu opens, not on every render: only a full page load can
+  // change the cookie, because the portal is what writes it.
+  useEffect(() => {
+    if (open) setRoster(readAccountRoster())
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        trigger.current?.focus()
+      }
+    }
+    const onClick = (event: MouseEvent) => {
+      if (wrap.current && !wrap.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('mousedown', onClick)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('mousedown', onClick)
+    }
+  }, [open])
+
+  const name = session?.display_name ?? 'Signed in'
+  const custId = session?.kind === 'user' && session.uuid ? String(session.uuid) : ''
+  const activeEntry =
+    roster.find((account) => account.active && String(account.uuid) === custId) ??
+    roster.find((account) => account.active) ??
+    null
+  const others = roster.filter((account) => !account.active)
+
+  return (
+    <div className="app-shell__account" ref={wrap}>
+      <button
+        type="button"
+        ref={trigger}
+        className="app-shell__account-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`${name}: account menu`}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <span className="app-shell__avatar" aria-hidden>
+          {session?.display_name ? initials(session.display_name) : '\u2022'}
+        </span>
+        <span className="app-shell__user-name" title={session?.display_name ?? undefined}>
+          {name}
+        </span>
+        <ChevronDown size={14} aria-hidden />
+      </button>
+
+      {open && (
+        <div className="app-shell__account-menu" role="menu">
+          <div className="app-shell__account-head">
+            <strong>{name}</strong>
+            {activeEntry?.maskedEmail && <span>{activeEntry.maskedEmail}</span>}
+            {activeEntry?.maskedMobile && (
+              <span title="Your registered mobile number">{activeEntry.maskedMobile}</span>
+            )}
+            {custId && (
+              <span title="Your AICOUNTLY customer ID">
+                Cust ID: <b>{custId}</b>
+              </span>
+            )}
+          </div>
+
+          {(others.length > 0 || canAddAccount(roster)) && (
+            <>
+              <p className="app-shell__account-section">Accounts</p>
+              {others.map((account) => (
+                <button
+                  key={account.uuid}
+                  type="button"
+                  role="menuitem"
+                  className="app-shell__account-item"
+                  onClick={() => {
+                    setOpen(false)
+                    switchAccount(account.uuid)
+                  }}
+                >
+                  <Users size={15} aria-hidden />
+                  <span>{account.name || account.maskedEmail || `Account ${account.uuid}`}</span>
+                </button>
+              ))}
+              {canAddAccount(roster) && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="app-shell__account-item"
+                  onClick={() => {
+                    setOpen(false)
+                    switchAccount()
+                  }}
+                >
+                  <UserPlus size={15} aria-hidden />
+                  <span>Use another account</span>
+                </button>
+              )}
+            </>
+          )}
+
+          <button
+            type="button"
+            role="menuitem"
+            className="app-shell__account-item"
+            title="Opens your profile in Manage in a new tab"
+            onClick={() => {
+              setOpen(false)
+              window.open(manageProfileUrl(), '_blank', 'noopener,noreferrer')
+            }}
+          >
+            <UserCog size={15} aria-hidden />
+            <span>Manage profile</span>
+            <ExternalLink size={12} aria-hidden />
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="app-shell__account-item"
+            title="Opens your account settings in Manage in a new tab"
+            onClick={() => {
+              setOpen(false)
+              window.open(manageAccountUrl(), '_blank', 'noopener,noreferrer')
+            }}
+          >
+            <Users size={15} aria-hidden />
+            <span>Manage Account</span>
+            <ExternalLink size={12} aria-hidden />
+          </button>
+
+          <button type="button" role="menuitem" className="app-shell__account-item" onClick={signOut}>
+            <LogOut size={15} aria-hidden />
+            <span>Sign out</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function AppShell() {
-  const { signOut } = useAuth()
   const { session, can, scope, setCompanyScope } = usePurchases()
   const labels = useScopeLabels(scope)
   // "Set as default": the star only needs a re-render after a save; the default itself is read below.
@@ -269,31 +432,7 @@ export function AppShell() {
             </span>
           </nav>
 
-          <div className="app-shell__user">
-            <span className="app-shell__avatar" aria-hidden>
-              {session?.display_name ? initials(session.display_name) : '•'}
-            </span>
-            <span className="app-shell__user-name" title={session?.display_name ?? undefined}>
-              {session?.display_name ?? 'Signed in'}
-              {session?.kind === 'user' && session.uuid && (
-                <small className="app-shell__cust-id" title="Your AICOUNTLY customer ID">
-                  Cust ID: {session.uuid}
-                </small>
-              )}
-            </span>
-            <button
-              type="button"
-              className="app-shell__signout"
-              onClick={() => window.open(manageProfileUrl(), '_blank', 'noopener,noreferrer')}
-              aria-label="Manage profile (opens in a new tab)"
-              title="Manage profile"
-            >
-              <UserCog size={15} aria-hidden />
-            </button>
-            <button type="button" className="app-shell__signout" onClick={signOut} aria-label="Log out">
-              <LogOut size={15} aria-hidden />
-            </button>
-          </div>
+          <AccountMenu />
         </div>
       </aside>
 

@@ -209,6 +209,82 @@
 .app-shell__legal a:focus-visible { color: var(--shell-ink); text-decoration: underline; }
 .app-shell__legal-note { flex-basis: 100%; color: var(--shell-faint); }
 
+/* The account menu: who you are, the accounts signed in on this browser, and
+   the way out. Replaces the old name-plus-two-icons strip. */
+.app-shell__account { position: relative; margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid var(--shell-border); }
+
+.app-shell__account-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.3rem 0.35rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  min-width: 0;
+}
+.app-shell__account-trigger:hover { background: var(--shell-hover, rgba(0, 0, 0, 0.04)); }
+
+.app-shell__account-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  padding: 0.35rem;
+  background: var(--shell-surface, #fff);
+  border: 1px solid var(--shell-border);
+  border-radius: 0.6rem;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+}
+
+.app-shell__account-head { padding: 0.4rem 0.5rem 0.5rem; border-bottom: 1px solid var(--shell-border); min-width: 0; }
+.app-shell__account-head strong { display: block; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-shell__account-head span {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.7rem;
+  color: var(--shell-muted, #6b7280);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-shell__account-head b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.app-shell__account-section {
+  margin: 0.4rem 0 0.15rem;
+  padding: 0 0.5rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shell-muted, #6b7280);
+}
+
+.app-shell__account-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0.45rem;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  min-width: 0;
+}
+.app-shell__account-item:hover { background: var(--shell-hover, rgba(0, 0, 0, 0.04)); }
+.app-shell__account-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .app-shell__user {
   display: flex;
   align-items: center;

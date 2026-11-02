@@ -37,9 +37,25 @@ export function manageProfilePath(): string {
   return '/profile'
 }
 
+/**
+ * Manage page for the account itself — security, sessions, closure.
+ *
+ * Distinct from the profile page: "Manage profile" is the person's own
+ * details, "Manage Account" is the subscription behind them. Both sit in the
+ * suite-wide account menu, in that order.
+ */
+export function manageAccountPath(): string {
+  return '/account'
+}
+
 /** Manage's profile page (hash route); Manage signs the person in itself when needed. */
 export function manageProfileUrl(sandbox: boolean = isSandboxHost()): string {
   return `${getManageApiOrigin(sandbox)}/#${manageProfilePath()}`
+}
+
+/** The Manage account page, as manageProfileUrl() builds the profile one. */
+export function manageAccountUrl(sandbox: boolean = isSandboxHost()): string {
+  return `${getManageApiOrigin(sandbox)}/#${manageAccountPath()}`
 }
 
 /** Central product icons live behind Console — one origin regardless of sandbox/production. */
