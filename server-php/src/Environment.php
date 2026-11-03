@@ -23,8 +23,9 @@ namespace Aicountly\Api;
  *   sandbox | staging | development | dev | local | testing    -> sandbox (a non-production
  *                                                                 deployment never reaches production
  *                                                                 by default)
- *   unset                                                      -> production, reported by /api/health
- *                                                                 as `environment.source = default`
+ *   unset                                                      -> NOT CONFIGURED, exactly as an
+ *                                                                 unrecognised value: derived bases are
+ *                                                                 refused and health says so.
  *   anything else                                              -> NOT CONFIGURED: derived bases are
  *                                                                 refused (fail closed) and health says so.
  *
@@ -55,7 +56,7 @@ final class Environment
 
     /**
      * @return array{name: ?string, source: string, variable: ?string}
-     *         source: aic_environment | app_env | default | unrecognised
+     *         source: aic_environment | app_env | unset | unrecognised
      */
     public static function resolve(): array
     {
@@ -74,7 +75,23 @@ final class Environment
             return ['name' => null, 'source' => 'unrecognised', 'variable' => $variable];
         }
 
-        return ['name' => self::PRODUCTION, 'source' => 'default', 'variable' => null];
+        // UNSET IS NOT CONFIGURED. This used to return PRODUCTION, which met the goal above — an
+        // unconfigured deployment must never reach sandbox with production data — but met it by
+        // guessing, and the guess was silent. A test suite driving its own loopback stand-in was
+        // told it was production, so Environment::baseProblem() refused every call to 127.0.0.1
+        // before it left the process (library-aicountly's whole delegation file could not pass on
+        // any machine, and read as eight product failures).
+        //
+        // Refusing is the same guarantee without the guess: `pick()` chooses no base, bases are
+        // refused as `environment_not_configured`, and health names it. Nothing reaches sandbox
+        // because nothing reaches anywhere. An operator sees which variable to set instead of
+        // discovering months later which environment they were talking to.
+        //
+        // This is the behaviour appointments, voice, helpdesk and messaging already ship — "an
+        // unset or unrecognised APP_ENV is NOT a default" — so it converges the estate rather than
+        // adding a fifteenth opinion. Every .env.example here sets APP_ENV, so a deployment seeded
+        // from the template is unaffected; this path is reached by test suites and ad-hoc CLI runs.
+        return ['name' => null, 'source' => 'unset', 'variable' => null];
     }
 
     /**
@@ -141,7 +158,14 @@ final class Environment
         $resolved = self::resolve();
         $problems = [];
         if ($resolved['name'] === null) {
-            $problems[] = ['variable' => (string) $resolved['variable'], 'problem' => 'environment_unrecognised'];
+            // Two different operator actions, so two different codes: `environment_not_set` means
+            // nobody has said what this deployment is, `environment_unrecognised` means somebody
+            // said something this code does not know. Reusing one code for both would send the
+            // reader looking for a typo that is not there.
+            $problems[] = [
+                'variable' => (string) ($resolved['variable'] ?? 'AIC_ENVIRONMENT'),
+                'problem'  => $resolved['source'] === 'unset' ? 'environment_not_set' : 'environment_unrecognised',
+            ];
         }
         foreach ($bases as $variable => $base) {
             $problem = self::baseProblem($base);
