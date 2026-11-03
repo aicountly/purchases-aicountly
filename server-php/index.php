@@ -11,6 +11,7 @@ declare(strict_types=1);
  * Routes:
  *   GET  /api/health          liveness + which environment answered
  *   POST /api/global/{path}   allow-listed relay to the portal auth API
+ *   GET  /api/global/user/logo  the signed-in person's profile photo, relayed read-only
  *   *    /api/manage/v1/...   allow-listed relay to Manage's company registry (src/ManageRelay.php)
  *   GET  /api/session         who the caller is, per the portal
  *   *    /api/v1/...          the Purchases API proper — see src/Routes.php
@@ -62,6 +63,20 @@ const RELAYED_PATHS = [
     // hosting's bot shield distrusts that cross-site call got a challenge page with no CORS
     // headers and failed, leaving the portal token alive. Same-origin through here, it passes.
     'logout',
+];
+
+/**
+ * Portal paths relayed for a GET only — read-only, nothing to send.
+ *
+ * `user/logo` is the signed-in person's profile photo (image bytes, the caller's own ses_key).
+ * The account menu shows it (AICOUNTLY_ACCOUNT_MENU.md §1/§6) and browser code cannot ask the
+ * portal for it: the portal's CORS allowlist does not name product domains. It is listed apart
+ * from RELAYED_PATHS, not added to it, so this one path can never be reached with a POST, PUT or
+ * DELETE — a read of the person's own photo is all this relay is for, and it must not become a
+ * general door onto the portal's API carrying somebody else's token.
+ */
+const RELAYED_READ_PATHS = [
+    'user/logo',
 ];
 
 // ---------------------------------------------------------------------------
@@ -128,7 +143,9 @@ try {
     if (strpos($path, 'global/') === 0) {
         $portalPath = substr($path, strlen('global/'));
 
-        if (!in_array($portalPath, RELAYED_PATHS, true)) {
+        $relayed = in_array($portalPath, RELAYED_PATHS, true)
+            || ($method === 'GET' && in_array($portalPath, RELAYED_READ_PATHS, true));
+        if (!$relayed) {
             send_json(404, ['message' => 'This path is not relayed. Call the portal API directly.']);
         }
 

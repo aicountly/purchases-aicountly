@@ -243,7 +243,17 @@
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
 }
 
-.app-shell__account-head { padding: 0.4rem 0.5rem 0.5rem; border-bottom: 1px solid var(--shell-border); min-width: 0; }
+/* The photo (or initials) beside the name, e-mail, mobile and Cust ID. */
+.app-shell__account-head {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.4rem 0.5rem 0.5rem;
+  border-bottom: 1px solid var(--shell-border);
+  min-width: 0;
+}
+/* min-width: 0 or a long e-mail stretches the menu instead of truncating. */
+.app-shell__account-who { flex: 1; min-width: 0; }
 .app-shell__account-head strong { display: block; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app-shell__account-head span {
   display: block;
@@ -283,6 +293,8 @@
   min-width: 0;
 }
 .app-shell__account-item:hover { background: var(--shell-hover, rgba(0, 0, 0, 0.04)); }
+/* A recent company reads as a reference under "Switch company", not as its equal. */
+.app-shell__account-item--quiet { padding: 0.3rem 0.5rem 0.3rem 1.1rem; font-size: 0.76rem; color: var(--shell-muted, #6b7280); }
 .app-shell__account-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .app-shell__user {
@@ -519,6 +531,7 @@
 .app-shell__avatar {
   width: 34px;
   height: 34px;
+  overflow: hidden;
   border-radius: 50%;
   background: #eceeed;
   color: #40484a;
@@ -681,3 +694,7 @@
 }
 .app-shell__legal-button:hover,
 .app-shell__legal-button:focus-visible { color: var(--shell-ink); text-decoration: underline; }
+
+/* The profile photo, where the portal has one. The initials sit in the same circle. */
+.app-shell__avatar--lg { width: 40px; height: 40px; font-size: 0.85rem; }
+.app-shell__avatar-photo { width: 100%; height: 100%; object-fit: cover; }
