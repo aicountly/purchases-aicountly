@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { COPYRIGHT, GRIEVANCE_OFFICER, LEGAL_LINKS } from './legal'
@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ClipboardList,
   FileSearch,
+  GitBranch,
   History,
   KeyRound,
   LayoutDashboard,
@@ -20,6 +21,7 @@ import {
   MapPin,
   Menu,
   PackageCheck,
+  Pencil,
   Receipt,
   RotateCcw,
   Scale,
@@ -35,13 +37,19 @@ import {
   BarChart3,
   FileSpreadsheet,
   X,
+  UserPlus,
+  Users,
+  ExternalLink,
   type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthProvider'
 import { AppLauncher } from '../components/AppLauncher'
-import { manageProfileUrl } from '../services/appLauncher'
+import { manageAccountUrl, manageBranchesUrl, manageCompanyEditUrl, manageProfileUrl } from '../services/appLauncher'
 import { ConnectEmbed } from '../components/ConnectEmbed'
 import { usePurchases } from '../context/PurchasesContext'
+import { canAddAccount, readAccountRoster, type RosterAccount } from '../auth/accounts'
+import { fetchUserPhotoUrl } from '../services/userPhoto'
+import { recentCompaniesForMenu, type RecentEntry } from '../company/recentCompanies'
 import { AccessNotice } from './AccessNotice'
 import { CompanyIdTag } from '../components/CompanyIdTag'
 import { useScopeLabels } from './useScopeLabels'
@@ -122,8 +130,289 @@ function initials(name: string): string {
   return (parts[0][0] ?? '') + (parts[parts.length - 1][0] ?? '')
 }
 
+/**
+ * The signed-in person's photo, read through this product's own API.
+ *
+ * The portal owns the photo and will not answer the browser directly, so it comes through
+ * `/api/global/user/logo` (services/userPhoto.ts). Nothing here can fail loudly: no photo, a
+ * relay that is down and a body that is not an image all mean "initials", the object URL is
+ * revoked when the menu goes away, and the menu renders before the answer arrives.
+ */
+function useUserPhoto(): string | null {
+  const [photo, setPhoto] = useState<string | null>(null)
+
+  useEffect(() => {
+    let objectUrl: string | null = null
+    let cancelled = false
+
+    void fetchUserPhotoUrl().then((next) => {
+      if (cancelled) {
+        if (next !== null) URL.revokeObjectURL(next)
+        return
+      }
+      objectUrl = next
+      setPhoto(next)
+    })
+
+    return () => {
+      cancelled = true
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl)
+      setPhoto(null)
+    }
+  }, [])
+
+  return photo
+}
+
+/** The photo where there is one, the initials where there is not. */
+function Avatar({ initials: fallback, photo, large = false }: { initials: string; photo: string | null; large?: boolean }) {
+  return (
+    <span className={large ? 'app-shell__avatar app-shell__avatar--lg' : 'app-shell__avatar'} aria-hidden>
+      {photo !== null ? <img src={photo} alt="" className="app-shell__avatar-photo" /> : fallback}
+    </span>
+  )
+}
+
+/**
+ * The account menu — who you are, the accounts signed in on this browser, the
+ * company you are in, and the way out.
+ *
+ * Purchases had no account menu at all: a strip with the name and two icon
+ * buttons, so there was nowhere to put the roster and nothing matched the rest
+ * of the suite. This is the layout every AICOUNTLY product shares
+ * (AICOUNTLY_ACCOUNT_MENU.md in the Saas Common Handler): identity → accounts
+ * → company → links → sign out.
+ */
+function AccountMenu() {
+  const { signOut, switchAccount } = useAuth()
+  const { session, scope } = usePurchases()
+  const navigate = useNavigate()
+  const [open, setOpen] = useState(false)
+  const [roster, setRoster] = useState<RosterAccount[]>([])
+  const [recent, setRecent] = useState<RecentEntry[]>([])
+  const photo = useUserPhoto()
+  const wrap = useRef<HTMLDivElement | null>(null)
+  const trigger = useRef<HTMLButtonElement | null>(null)
+
+  // Read when the menu opens, not on every render: only a full page load can
+  // change the cookie, because the portal is what writes it.
+  useEffect(() => {
+    if (!open) return
+    setRoster(readAccountRoster())
+    // The recent companies are read on open for the same reason: the picker writes them, so
+    // between two openings of this menu they can only have changed on another screen.
+    setRecent(recentCompaniesForMenu())
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return undefined
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        trigger.current?.focus()
+      }
+    }
+    const onClick = (event: MouseEvent) => {
+      if (wrap.current && !wrap.current.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('mousedown', onClick)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('mousedown', onClick)
+    }
+  }, [open])
+
+  const name = session?.display_name ?? 'Signed in'
+  const custId = session?.kind === 'user' && session.uuid ? String(session.uuid) : ''
+  const activeEntry =
+    roster.find((account) => account.active && String(account.uuid) === custId) ??
+    roster.find((account) => account.active) ??
+    null
+  const others = roster.filter((account) => !account.active)
+
+  return (
+    <div className="app-shell__account" ref={wrap}>
+      <button
+        type="button"
+        ref={trigger}
+        className="app-shell__account-trigger"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`${name}: account menu`}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <Avatar initials={session?.display_name ? initials(session.display_name) : '\u2022'} photo={photo} />
+        <span className="app-shell__user-name" title={session?.display_name ?? undefined}>
+          {name}
+        </span>
+        <ChevronDown size={14} aria-hidden />
+      </button>
+
+      {open && (
+        <div className="app-shell__account-menu" role="menu">
+          {/* Who you are — the photo belongs HERE, not only on the trigger (§1). */}
+          <div className="app-shell__account-head">
+            <Avatar initials={session?.display_name ? initials(session.display_name) : '\u2022'} photo={photo} large />
+            <div className="app-shell__account-who">
+              <strong>{name}</strong>
+              {activeEntry?.maskedEmail && <span>{activeEntry.maskedEmail}</span>}
+              {activeEntry?.maskedMobile && (
+                <span title="Your registered mobile number">{activeEntry.maskedMobile}</span>
+              )}
+              {custId && (
+                <span title="Your AICOUNTLY customer ID">
+                  Cust ID: <b>{custId}</b>
+                </span>
+              )}
+            </div>
+          </div>
+
+          {(others.length > 0 || canAddAccount(roster)) && (
+            <>
+              <p className="app-shell__account-section">Accounts</p>
+              {others.map((account) => (
+                <button
+                  key={account.uuid}
+                  type="button"
+                  role="menuitem"
+                  className="app-shell__account-item"
+                  onClick={() => {
+                    setOpen(false)
+                    switchAccount(account.uuid)
+                  }}
+                >
+                  <Users size={15} aria-hidden />
+                  <span>{account.name || account.maskedEmail || `Account ${account.uuid}`}</span>
+                </button>
+              ))}
+              {canAddAccount(roster) && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="app-shell__account-item"
+                  onClick={() => {
+                    setOpen(false)
+                    switchAccount()
+                  }}
+                >
+                  <UserPlus size={15} aria-hidden />
+                  <span>Use another account</span>
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Company. Purchases is company-scoped — every order, bill and claim hangs off
+              `cmp_id` — so this block is mandatory, in Books' order, and the picker in the top
+              bar is no reason to leave it out (§3). Switch company → Recent → Edit company →
+              Manage branches. Manage owns the company and its branches, so the last two open
+              Manage in a new tab rather than a company editor this product does not have. */}
+          <p className="app-shell__account-section">Company</p>
+          <button
+            type="button"
+            role="menuitem"
+            className="app-shell__account-item"
+            onClick={() => {
+              setOpen(false)
+              navigate('/choose-company')
+            }}
+          >
+            <Building2 size={15} aria-hidden />
+            <span>Switch company</span>
+          </button>
+
+          {recent.length > 0 && (
+            <>
+              <p className="app-shell__account-section">Recent</p>
+              {recent.map((row) => (
+                <button
+                  key={row.cmpId}
+                  type="button"
+                  role="menuitem"
+                  className="app-shell__account-item app-shell__account-item--quiet"
+                  title={`Open the company picker on ${row.name}`}
+                  onClick={() => {
+                    setOpen(false)
+                    navigate('/choose-company')
+                  }}
+                >
+                  <span>{row.name}</span>
+                  <CompanyIdTag id={row.cmpId} />
+                </button>
+              ))}
+            </>
+          )}
+
+          <button
+            type="button"
+            role="menuitem"
+            className="app-shell__account-item"
+            title="Opens this company in Manage in a new tab"
+            onClick={() => {
+              setOpen(false)
+              window.open(manageCompanyEditUrl(scope?.cmp_id), '_blank', 'noopener,noreferrer')
+            }}
+          >
+            <Pencil size={15} aria-hidden />
+            <span>Edit company</span>
+            <ExternalLink size={12} aria-hidden />
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="app-shell__account-item"
+            title="Opens this company's branches in Manage in a new tab"
+            onClick={() => {
+              setOpen(false)
+              window.open(manageBranchesUrl(scope?.cmp_id), '_blank', 'noopener,noreferrer')
+            }}
+          >
+            <GitBranch size={15} aria-hidden />
+            <span>Manage branches</span>
+            <ExternalLink size={12} aria-hidden />
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            className="app-shell__account-item"
+            title="Opens your profile in Manage in a new tab"
+            onClick={() => {
+              setOpen(false)
+              window.open(manageProfileUrl(), '_blank', 'noopener,noreferrer')
+            }}
+          >
+            <UserCog size={15} aria-hidden />
+            <span>Manage profile</span>
+            <ExternalLink size={12} aria-hidden />
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="app-shell__account-item"
+            title="Opens your account settings in Manage in a new tab"
+            onClick={() => {
+              setOpen(false)
+              window.open(manageAccountUrl(), '_blank', 'noopener,noreferrer')
+            }}
+          >
+            <Users size={15} aria-hidden />
+            <span>Manage Account</span>
+            <ExternalLink size={12} aria-hidden />
+          </button>
+
+          <button type="button" role="menuitem" className="app-shell__account-item" onClick={signOut}>
+            <LogOut size={15} aria-hidden />
+            <span>Sign out</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function AppShell() {
-  const { signOut } = useAuth()
   const { session, can, scope, setCompanyScope } = usePurchases()
   const labels = useScopeLabels(scope)
   // "Set as default": the star only needs a re-render after a save; the default itself is read below.
@@ -269,31 +558,7 @@ export function AppShell() {
             </span>
           </nav>
 
-          <div className="app-shell__user">
-            <span className="app-shell__avatar" aria-hidden>
-              {session?.display_name ? initials(session.display_name) : '•'}
-            </span>
-            <span className="app-shell__user-name" title={session?.display_name ?? undefined}>
-              {session?.display_name ?? 'Signed in'}
-              {session?.kind === 'user' && session.uuid && (
-                <small className="app-shell__cust-id" title="Your AICOUNTLY customer ID">
-                  Cust ID: {session.uuid}
-                </small>
-              )}
-            </span>
-            <button
-              type="button"
-              className="app-shell__signout"
-              onClick={() => window.open(manageProfileUrl(), '_blank', 'noopener,noreferrer')}
-              aria-label="Manage profile (opens in a new tab)"
-              title="Manage profile"
-            >
-              <UserCog size={15} aria-hidden />
-            </button>
-            <button type="button" className="app-shell__signout" onClick={signOut} aria-label="Log out">
-              <LogOut size={15} aria-hidden />
-            </button>
-          </div>
+          <AccountMenu />
         </div>
       </aside>
 

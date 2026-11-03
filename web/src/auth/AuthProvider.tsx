@@ -15,6 +15,8 @@ import {
   redirectToPortalSso,
 } from './portal'
 import { clearAllTokens, getAuthToken, setAuthToken } from './tokens'
+import { buildAddAccountUrl, buildSwitchAccountUrl } from './accounts'
+import { clearStoredScope } from '../context/PurchasesContext'
 
 /**
  * `loading` covers both "starting up" and "leaving for the portal" — in the
@@ -31,6 +33,11 @@ interface AuthState {
 interface AuthContextValue extends AuthState {
   signIn: () => void
   signOut: () => void
+  /**
+   * Leave for the portal to use another of the accounts signed in on this
+   * browser, or — with no uuid — to add one (auth/accounts.ts).
+   */
+  switchAccount: (uuid?: number) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -136,6 +143,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     signOut: () => {
       setState({ status: 'loading', message: null })
       performLogout()
+    },
+    switchAccount: (uuid?: number) => {
+      // Switching is not a sign-out and nothing is revoked, but the chosen
+      // company, year and branch belong to the account being left.
+      //
+      // The tokens are deliberately NOT cleared: the portal replaces them on
+      // the way back, so backing out of the chooser returns the person to the
+      // account they already had rather than stranding them at a login form.
+      clearStoredScope()
+      setState({ status: 'loading', message: null })
+      window.location.assign(
+        typeof uuid === 'number' ? buildSwitchAccountUrl(uuid) : buildAddAccountUrl(),
+      )
     },
   }
 

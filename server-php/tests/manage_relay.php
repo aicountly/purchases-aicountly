@@ -300,6 +300,24 @@ try {
 
     $r = $http($apiPort, 'POST', 'global/logout', ['Authorization: Bearer portal-auth-token']);
     $check('logout names the visitor too', (($seen($r))['x-aicountly-client-ip'] ?? '') === '127.0.0.1', $r['raw']);
+
+    // The account menu's profile photo (AICOUNTLY_ACCOUNT_MENU.md §6). Read-only: the browser
+    // cannot ask the portal itself (its CORS allowlist does not name product domains), so this
+    // one path is relayed for a GET and for nothing else.
+    $r = $http($apiPort, 'GET', 'global/user/logo', ['Authorization: Bearer person-ses-key']);
+    $h = $seen($r);
+    $check('GET /global/user/logo reaches the portal\'s /api/user/logo with the caller\'s token', $r['status'] === 200
+        && ($r['json']['method'] ?? '') === 'GET' && ($r['json']['uri'] ?? '') === '/api/user/logo'
+        && ($h['authorization'] ?? '') === 'Bearer person-ses-key', $r['raw']);
+    $check('the portal\'s content type comes back, so an <img> gets the image it was sent',
+        stripos($r['headers']['content-type'] ?? '', 'application/vnd.test+json') === 0, (string) ($r['headers']['content-type'] ?? ''));
+    foreach (['POST', 'PUT', 'DELETE'] as $method) {
+        $r = $http($apiPort, $method, 'global/user/logo', ['Authorization: Bearer person-ses-key', 'Content-Type: application/json'], '{}');
+        $check("the photo relay is read-only: {$method} /global/user/logo is 404 and the portal is not called",
+            $r['status'] === 404 && !isset($r['json']['method']), $r['status'] . ' ' . $r['raw']);
+    }
+    $r = $http($apiPort, 'GET', 'global/user/profile', ['Authorization: Bearer person-ses-key']);
+    $check('and it widened nothing: GET /global/user/profile is still 404', $r['status'] === 404 && !isset($r['json']['method']), $r['raw']);
 } finally {
     foreach ($procs as $p) {
         proc_terminate($p);

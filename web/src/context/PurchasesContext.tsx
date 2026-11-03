@@ -51,6 +51,22 @@ const PurchasesContextObject = createContext<PurchasesContextValue | null>(null)
 
 const SCOPE_KEY = 'purchases:scope'
 
+/**
+ * Forget the chosen company, year and branch.
+ *
+ * Called when leaving for another account (auth/AuthProvider.tsx): the scope
+ * belongs to the account being left, and the next one almost certainly cannot
+ * open that company — Purchases would come back and immediately ask the API
+ * for orders it has no access to.
+ */
+export function clearStoredScope(): void {
+  try {
+    window.localStorage.removeItem(SCOPE_KEY)
+  } catch {
+    /* storage refused (private mode): there is nothing stored to clear */
+  }
+}
+
 function readStoredScope(): CompanyScope | null {
   try {
     const raw = window.localStorage.getItem(SCOPE_KEY)

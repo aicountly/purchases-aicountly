@@ -37,9 +37,60 @@ export function manageProfilePath(): string {
   return '/profile'
 }
 
+/**
+ * Manage page for the account itself — security, sessions, closure.
+ *
+ * Distinct from the profile page: "Manage profile" is the person's own
+ * details, "Manage Account" is the subscription behind them. Both sit in the
+ * suite-wide account menu, in that order.
+ */
+export function manageAccountPath(): string {
+  return '/account'
+}
+
 /** Manage's profile page (hash route); Manage signs the person in itself when needed. */
 export function manageProfileUrl(sandbox: boolean = isSandboxHost()): string {
   return `${getManageApiOrigin(sandbox)}/#${manageProfilePath()}`
+}
+
+/** The Manage account page, as manageProfileUrl() builds the profile one. */
+export function manageAccountUrl(sandbox: boolean = isSandboxHost()): string {
+  return `${getManageApiOrigin(sandbox)}/#${manageAccountPath()}`
+}
+
+/**
+ * Manage pages for the company itself.
+ *
+ * Manage owns the company, its branches and its financial years; this product stores `cmp_id`,
+ * `bo_id` and `fy_id` as bare references. So "Edit company" and "Manage branches" in the account
+ * menu (AICOUNTLY_ACCOUNT_MENU.md §3) open Manage, in a new tab, rather than pretending to a
+ * company editor this product does not have. Without a company chosen, Edit company opens the
+ * company list instead of a nonsense id.
+ */
+export function manageCompanyListPath(): string {
+  return '/company'
+}
+
+export function manageCompanyEditPath(cmpId: number | string): string {
+  return `/company/${encodeURIComponent(String(cmpId))}/edit`
+}
+
+export function manageBranchListPath(cmpId: number | string): string {
+  return `/branch/${encodeURIComponent(String(cmpId))}`
+}
+
+export function manageCompanyEditUrl(cmpId: number | null | undefined, sandbox: boolean = isSandboxHost()): string {
+  const path = cmpId === null || cmpId === undefined || cmpId <= 0
+    ? manageCompanyListPath()
+    : manageCompanyEditPath(cmpId)
+  return `${getManageApiOrigin(sandbox)}/#${path}`
+}
+
+export function manageBranchesUrl(cmpId: number | null | undefined, sandbox: boolean = isSandboxHost()): string {
+  const path = cmpId === null || cmpId === undefined || cmpId <= 0
+    ? manageCompanyListPath()
+    : manageBranchListPath(cmpId)
+  return `${getManageApiOrigin(sandbox)}/#${path}`
 }
 
 /** Central product icons live behind Console — one origin regardless of sandbox/production. */

@@ -49,6 +49,7 @@ import { AppLauncher } from '../components/AppLauncher'
 import { CompanyIdTag } from '../components/CompanyIdTag'
 import { usePurchases } from '../context/PurchasesContext'
 import { resolveCompanyScope } from '../company/companyContextResolver'
+import { readRecentCompanies, rememberOpened, type RecentEntry } from '../company/recentCompanies'
 import { ApiError } from '../services/api'
 import { fetchAllCompanies, fetchCompanyInfo } from '../services/manage'
 import type { CompanyListOption } from '../services/manage'
@@ -101,14 +102,6 @@ function restrictedRow(c: CompanyListOption): DirectoryCompany {
 }
 
 const DEFAULT_KEY = 'purchases:default-company'
-const RECENT_KEY = 'purchases:recent-companies'
-const RECENT_LIMIT = 4
-
-interface RecentEntry {
-  cmpId: number
-  name: string
-  at: number
-}
 
 /** Browser storage that never throws and never blocks a render. */
 function readStore<T>(key: string, fallback: T): T {
@@ -128,11 +121,6 @@ function writeStore(key: string, value: unknown): void {
   }
 }
 
-export function rememberOpened(cmpId: number, name: string): void {
-  const rest = readStore<RecentEntry[]>(RECENT_KEY, []).filter((r) => r.cmpId !== cmpId)
-  writeStore(RECENT_KEY, [{ cmpId, name, at: Date.now() }, ...rest].slice(0, RECENT_LIMIT))
-}
-
 export default function ChooseCompany() {
   const { signOut } = useAuth()
   const { scope, setCompanyScope } = usePurchases()
@@ -149,7 +137,7 @@ export default function ChooseCompany() {
   const [openError, setOpenError] = useState<{ name: string; message: string } | null>(null)
 
   const [defaultId, setDefaultId] = useState<number | null>(() => readStore<number | null>(DEFAULT_KEY, null))
-  const [recent] = useState<RecentEntry[]>(() => readStore<RecentEntry[]>(RECENT_KEY, []))
+  const [recent] = useState<RecentEntry[]>(() => readRecentCompanies())
 
   const infoAbort = useRef<AbortController | null>(null)
   const openErrorRef = useRef<HTMLDivElement | null>(null)
