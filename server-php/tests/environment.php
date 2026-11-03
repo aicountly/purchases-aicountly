@@ -162,11 +162,38 @@ check('AIC_ENVIRONMENT (the estate-wide name) wins over APP_ENV', function (): v
     }
 });
 
-check('unset APP_ENV is production (reported by health as source=default); a CLI with no Host never reaches sandbox', function (): void {
-    foreach (clients() as $client) {
-        same((string) call($client, 'productionBase'), $client->base(), $client->service());
+check('unset APP_ENV is NOT CONFIGURED: no base, nothing sent, and health names the variable', function (): void {
+    // This used to assert that unset meant production. The goal behind that — a CLI with no Host
+    // must never reach sandbox with production data — is unchanged and is met more strictly here:
+    // an unconfigured deployment reaches NOTHING, rather than being guessed into production.
+    //
+    // The guess was silent, and silence is what made it wrong. A test suite driving its own
+    // loopback stand-in was told it was production, so every call to 127.0.0.1 was refused before
+    // it left the process and read as a product failure instead of as missing configuration.
+    $calls = 0;
+    if (method_exists(ApiClient::class, 'intercept')) {
+        ApiClient::intercept(function () use (&$calls) {
+            $calls++;
+
+            return ['ok' => true, 'status' => 200, 'body' => [], 'error' => null];
+        });
     }
-    same('default', Environment::resolve()['source'], 'source');
+    same('unset', Environment::resolve()['source'], 'source');
+    same(null, Environment::resolve()['name'], 'no environment is claimed');
+    foreach (clients() as $client) {
+        same('', $client->base(), $client->service() . ' base');
+        same('environment_not_configured', Environment::baseProblem($client->base()), $client->service() . ' problem');
+        $r = $client->request('GET', 'anything');
+        same(false, $r['ok'], $client->service() . ' refused');
+        same(0, $r['status'], $client->service() . ' status (unavailable, never a refusal)');
+    }
+    same(0, $calls, 'nothing was sent');
+    // A distinct code from an unrecognised value: nobody has said what this deployment is, which
+    // is a different operator action from having said something unknown.
+    $report = Environment::report(['X_API_BASE' => null]);
+    same(false, $report['ok'], 'health is not ok');
+    same('environment_not_set', $report['problems'][0]['problem'], 'health names the problem');
+    same('AIC_ENVIRONMENT', $report['problems'][0]['variable'], 'and the variable to set');
 });
 
 check('an unrecognised APP_ENV fails closed: no base, and request() refuses without touching the network', function (): void {
