@@ -47,7 +47,7 @@ import { AppLauncher } from '../components/AppLauncher'
 import { manageAccountUrl, manageBranchesUrl, manageCompanyEditUrl, manageProfileUrl } from '../services/appLauncher'
 import { ConnectEmbed } from '../components/ConnectEmbed'
 import { usePurchases } from '../context/PurchasesContext'
-import { canAddAccount, readAccountRoster, type RosterAccount } from '../auth/accounts'
+import { activeAccountFirstName, canAddAccount, readAccountRoster, type RosterAccount } from '../auth/accounts'
 import { fetchUserPhotoUrl } from '../services/userPhoto'
 import { recentCompaniesForMenu, type RecentEntry } from '../company/recentCompanies'
 import { AccessNotice } from './AccessNotice'
@@ -223,7 +223,7 @@ function AccountMenu() {
     }
   }, [open])
 
-  const name = session?.display_name ?? 'Signed in'
+  const name = activeAccountFirstName() || (session?.display_name ?? 'Signed in')
   const custId = session?.kind === 'user' && session.uuid ? String(session.uuid) : ''
   const activeEntry =
     roster.find((account) => account.active && String(account.uuid) === custId) ??
