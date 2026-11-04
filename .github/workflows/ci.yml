@@ -53,6 +53,23 @@ jobs:
           coverage: none
           extensions: pdo_pgsql, pgsql, curl, mbstring
 
+      # The service is PostgreSQL 16. The runner image's own client can be newer, and a dump/restore made
+      # with a newer client carries settings 16 rejects (SET transaction_timeout), which failed the
+      # restore drill on 2026-10-27. The kit picks the client closest to the server, so a 16 client only
+      # has to be present; the image's archive may not carry it, PostgreSQL's apt repository does.
+      - name: PostgreSQL 16 client tools
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/pg_restore ]; then
+            . /etc/os-release
+            echo "runner: ${PRETTY_NAME} (${VERSION_CODENAME})"
+            sudo install -d /usr/share/postgresql-common/pgdg
+            sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+            echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+              | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client-16
+          fi
+          /usr/lib/postgresql/16/bin/pg_restore --version
+
       - name: PHP syntax check
         run: find server-php -name '*.php' -not -path '*/vendor/*' -print0 | xargs -0 -n1 php -l
 
