@@ -208,7 +208,13 @@ function aic_ops_find_pg_tool(string $tool, int $minMajor, string $preferred = '
             continue;
         }
         $major = (int) $m[1];
-        if ($major >= $minMajor && $major > $bestMajor) {
+        // Prefer the pg_dump whose major matches the server, and otherwise the LOWEST major above
+        // it, never the highest available. pg_dump must not be older than the server, but a newer
+        // one writes directives the server cannot read back: a pg_dump 17 dump restored into a
+        // PostgreSQL 16 server fails on `SET transaction_timeout = 0`, so the snapshot succeeds
+        // and the restore does not. A backup that cannot be restored is worse than none.
+        $closer = $minMajor > 0 ? ($bestMajor < 0 || $major < $bestMajor) : $major > $bestMajor;
+        if ($major >= $minMajor && $closer) {
             $best = $c;
             $bestMajor = $major;
         }
