@@ -1,0 +1,112 @@
+<?php
+declare(strict_types=1);
+
+/*
+ * Daily platform snapshot for a product whose DATABASE LOGIN DOES NOT LIVE IN .env.
+ *
+ * TEMPLATE for CodeIgniter 4 products. Copy to the product as
+ * server-php/scripts/analytics_platform_snapshot.php and change only the connection block
+ * marked CUSTOMISE below.
+ *
+ *   php server-php/scripts/analytics_platform_snapshot.php            # work it out, print it
+ *   php server-php/scripts/analytics_platform_snapshot.php --push     # and send it
+ *
+ * ## When to use this instead of the plain CLI
+ *
+ * analytics-platform-snapshot.php has a CLI of its own that reads DB_NAME / DB_USER straight out
+ * of .env, and for most products that is correct and this file is unnecessary.
+ *
+ * Several products are different: on a deployed server their live database name and login come
+ * from Console's SaaS Database Details at runtime, and the DB_* lines in .env are a local
+ * development fallback that points somewhere else entirely. On those hosts the plain CLI would
+ * connect to the wrong database and confidently report its size — a wrong number that looks
+ * exactly like a right one. So this wrapper opens the connection THE WAY THE APPLICATION DOES
+ * and hands the open handle to the same shared library.
+ *
+ * Cron, once a day, after midnight IST. Stagger the minute per product so forty hosts do not all
+ * start at once:
+ *
+ *   23 1 * * *  cd /home/<acct>/public_html && php server-php/scripts/analytics_platform_snapshot.php --push \
+ *                 >> writable/logs/analytics-platform.log 2>&1
+ */
+
+// The shared library: the counters, the dimension rules, and the push. Copy-don't-edit.
+require_once __DIR__ . '/../app/ThirdParty/AicountlyAnalytics/analytics-platform-snapshot.php';
+
+$opts = getopt('', ['push', 'date::', 'tables::', 'exact-under::']);
+$asOf = is_string($opts['date'] ?? null) && $opts['date'] !== '' ? $opts['date'] : date('Y-m-d');
+if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $asOf)) {
+    fwrite(STDERR, "--date must be YYYY-MM-DD\n");
+    exit(2);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CUSTOMISE — connect exactly the way this product connects
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Hand back [label => PDO]. The label is the DIMENSION shown on the dashboard, so make it the
+// database's real name: "aicbooks_prod" tells an operator something, "primary" does not.
+//
+// Most CI4 products in this estate can do this by booting the framework and asking it, which is
+// the whole point — whatever Console told the app at boot is what gets measured:
+//
+//     require __DIR__ . '/../vendor/autoload.php';
+//     $app = require __DIR__ . '/../app/Config/Boot/production.php';
+//     $db  = \Config\Database::connect();
+//     $pdo = $db->getConnection();            // the live PDO, on the live database
+//     $databases = [$db->getDatabase() => $pdo];
+//
+// A product that holds more than one database returns more than one entry.
+$databases = [];
+
+try {
+    require_once __DIR__ . '/../vendor/autoload.php';
+    $db  = \Config\Database::connect();
+    $pdo = $db->getConnection();
+    if (!$pdo instanceof PDO) {
+        throw new RuntimeException('this product does not use the PDO driver; connect by hand above');
+    }
+    $databases[(string) $db->getDatabase()] = $pdo;
+} catch (Throwable $e) {
+    fwrite(STDERR, 'analytics platform snapshot: cannot reach the database (' . $e->getMessage() . ")\n");
+    exit(1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// From here down nothing is product-specific
+// ─────────────────────────────────────────────────────────────────────────────
+
+$snapshots = aic_analytics_platform_snapshot($databases, [
+    'date'        => $asOf,
+    'tables'      => (int) ($opts['tables'] ?? 25),
+    'exact_under' => (int) ($opts['exact-under'] ?? 1000000),
+]);
+
+printf("%s  (%d counters, %d database(s))\n", $asOf, count($snapshots), count($databases));
+foreach ($snapshots as $s) {
+    printf("  %-26s %-28s %s\n", $s['metric'], $s['dimension'] ?? '-', number_format($s['value']));
+}
+
+if (!isset($opts['push'])) {
+    echo "\nDry run. Pass --push to send.\n";
+    exit(0);
+}
+
+// The analytics settings ARE ordinary .env values, unlike the database login, so env() is right
+// here even on a host where the database comes from Console.
+$key = (string) (env('AICOUNTLY_ANALYTICS_KEY') ?: '');
+if ($key === '') {
+    fwrite(STDERR, "AICOUNTLY_ANALYTICS_KEY is not set; nothing sent.\n");
+    exit(1);
+}
+[$code, $body] = aic_analytics_platform_push(
+    $snapshots,
+    (string) (env('AICOUNTLY_ANALYTICS_URL') ?: 'https://analytics.aicountly.org/api'),
+    $key,
+    (string) (env('AICOUNTLY_ANALYTICS_ENVIRONMENT') ?: 'production')
+);
+
+echo "\nHTTP {$code}\n" . substr($body, 0, 800) . "\n";
+// Not fatal: tomorrow's run reports the same day again and the upsert corrects it rather than
+// doubling it. Non-zero so cron mail says something went wrong.
+exit($code >= 200 && $code < 300 ? 0 : 1);
