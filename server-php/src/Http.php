@@ -63,6 +63,11 @@ final class Http
     /** @param array<string, mixed> $details */
     public static function error(int $status, string $code, string $message, array $details = []): never
     {
+        // A 429 is the one status where a client is certain to retry; tell it when, so it comes
+        // back as the allowance resets rather than at once or never.
+        if ($status === 429 && PHP_SAPI !== 'cli' && !headers_sent()) {
+            header('Retry-After: ' . max(1, (int) ($details['retry_after'] ?? 60)));
+        }
         self::json($status, [
             'error'   => ['code' => $code, 'message' => $message, 'details' => $details],
             'message' => $message,

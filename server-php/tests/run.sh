@@ -68,6 +68,10 @@ export TMPDIR="$STATE_DIR"
 # the one path that reaches it. No database, no network, so it runs before the migrations.
 php "$ROOT/tests/class_references.php" || status=1
 
+# The ceiling on the endpoints that cost something: which of this app's routes are held to which
+# bucket, and how an override in .env is read. No database and no network.
+php "$ROOT/tests/rate_limit.php" || status=1
+
 php "$ROOT/bin/migrate.php" > /dev/null
 
 # Where the database name and username come from (Console's SaaS Database Details, or DB_NAME / DB_USER) and what is

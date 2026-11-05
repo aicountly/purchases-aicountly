@@ -12,8 +12,27 @@ namespace Aicountly\Api;
  */
 final class Router
 {
-    /** @var list<array{method:string, segments:list<string>, handler:callable}> */
+    /** @var list<array{method:string, pattern:string, segments:list<string>, handler:callable}> */
     private array $routes = [];
+
+    /**
+     * The route currently being dispatched, as "METHOD pattern" — e.g. `GET v1/dashboards/{view}`.
+     *
+     * A cross-cutting rule (the rate-limit ceiling in `Controllers\Controller::enter()`) has to be
+     * able to say WHICH endpoint it is guarding without every endpoint telling it.
+     */
+    private static ?string $current = null;
+
+    public static function current(): ?string
+    {
+        return self::$current;
+    }
+
+    /** For the in-process test suite, which calls controllers without dispatching. */
+    public static function setCurrent(?string $route): void
+    {
+        self::$current = $route;
+    }
 
     public function get(string $pattern, callable $handler): self
     {
@@ -39,6 +58,7 @@ final class Router
     {
         $this->routes[] = [
             'method'   => $method,
+            'pattern'  => trim($pattern, '/'),
             'segments' => array_values(array_filter(explode('/', trim($pattern, '/')), static fn ($s) => $s !== '')),
             'handler'  => $handler,
         ];
@@ -83,6 +103,7 @@ final class Router
                 continue;
             }
 
+            self::$current = $route['method'] . ' ' . $route['pattern'];
             ($route['handler'])(...$args);
 
             return true;
