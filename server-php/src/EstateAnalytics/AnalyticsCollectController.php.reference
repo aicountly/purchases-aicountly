@@ -38,17 +38,18 @@ final class AnalyticsCollectController
         };
 
         try {
-            // Cookie-authenticated write: a browser Origin, when sent, must be this host.
+            // Cookie-authenticated write, so a browser Origin, when sent, must be one this
+            // deployment allows (CORS_ALLOWED_ORIGINS). HTTP_HOST is deliberately not consulted:
+            // it is the request's own Host header, set by the caller, so an Origin compared
+            // against it proves nothing. An unset list leaves nothing to check against — a
+            // same-origin POST carries an Origin too, so refusing on an empty list would drop
+            // every browser event on a deployment that has not set the variable.
             $origin = (string) ($_SERVER['HTTP_ORIGIN'] ?? '');
-            if ($origin !== '') {
-                $host = strtolower((string) parse_url($origin, PHP_URL_HOST));
-                $port = parse_url($origin, PHP_URL_PORT);
-                $originHost = $port ? "{$host}:{$port}" : $host;
-                if ($originHost !== strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''))) {
-                    $respond(403);
+            $allowed = array_filter(array_map('trim', explode(',', (string) getenv('CORS_ALLOWED_ORIGINS'))));
+            if ($origin !== '' && $allowed !== [] && !in_array($origin, $allowed, true)) {
+                $respond(403);
 
-                    return;
-                }
+                return;
             }
 
             $raw = (string) file_get_contents('php://input');
