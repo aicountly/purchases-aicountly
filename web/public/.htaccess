@@ -143,15 +143,27 @@ ErrorDocument 503 /maintenance.html
   # Sales (F311) and Inventory (#9) send it. frame-ancestors only: no other CSP directive is set, so
   # nothing the SPA loads is affected. X-Frame-Options is for browsers without CSP; every current
   # browser obeys frame-ancestors and ignores it when both are present.
-  # Content-Security-Policy, ENFORCED. Until 2026-11 this carried frame-ancestors and
-  # nothing else, so the app had no XSS mitigation at all: any injected script, from any
-  # origin, would have run. Every origin below is accounted for in
-  # docs/security/CONTENT_SECURITY_POLICY.md and the whole policy is proven against the
-  # built app by web/scripts/csp-sweep.mjs (`npm run csp-sweep`, and a CI step).
+  # What this app may load, not only who may frame it. The policy used to be frame-ancestors
+  # alone: with no default-src and no script-src, injected script ran unopposed. Every origin
+  # below is one this app's own source names — the portal and Manage for its session and company
+  # registry, Console for product icons (fetched as a manifest, and set as an <img> src), Connect
+  # for the embedded widget's loader, stylesheet and API, and GA4. 'unsafe-inline' stays on
+  # style-src because React and Tailwind set style attributes; it is deliberately NOT on
+  # script-src, which is where it would matter. Any sha256 below is an inline script in the BUILT
+  # index.html: rebuild changes it, and the app will not boot until it is updated here.
+  # Checked against the built app in headless Chromium with no violation (see the suite).
   #
-  # `always`, so an error page and a redirect carry it too. The same file ships to
-  # production and to the sandbox, so both hosts' origins are listed.
-  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' https://connect.aicountly.com https://connect.gh.aicountly.com https://*.googletagmanager.com; style-src 'self' 'unsafe-inline' https://connect.aicountly.com https://connect.gh.aicountly.com; img-src 'self' data: blob: https://console.aicountly.org https://*.google-analytics.com https://*.googletagmanager.com https://*.g.doubleclick.net; font-src 'self' data:; connect-src 'self' https://connect.aicountly.com https://connect.gh.aicountly.com https://my.aicountly.com https://sandbox.aicountly.com https://manage.aicountly.com https://manage.gh.aicountly.com https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com https://*.g.doubleclick.net; frame-src 'self'; child-src 'self'; worker-src 'self' blob:; media-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.aicountly.com; upgrade-insecure-requests"
+  # Two audits wrote a policy for this file within days of each other, and this is the UNION of
+  # both: every origin either pass found the app's own source naming is admitted, so neither one
+  # breaks the other. Every origin is accounted for in docs/security/CONTENT_SECURITY_POLICY.md,
+  # and the whole policy is walked over the built app by web/scripts/csp-sweep.mjs
+  # (`npm run csp-sweep`), which also proves the refusals. The same file ships to production and
+  # to the sandbox, so both hosts' origins are listed.
+  Header set Content-Security-Policy "default-src 'self'; script-src 'self' https://connect.aicountly.com https://connect.gh.aicountly.com https://*.googletagmanager.com; style-src 'self' 'unsafe-inline' https://connect.aicountly.com https://connect.gh.aicountly.com; img-src 'self' data: blob: https://console.aicountly.org https://*.google-analytics.com https://*.googletagmanager.com https://*.g.doubleclick.net; font-src 'self' data:; connect-src 'self' https://connect.aicountly.com https://connect.gh.aicountly.com https://my.aicountly.com https://sandbox.aicountly.com https://manage.aicountly.com https://manage.gh.aicountly.com https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com https://*.g.doubleclick.net blob: https://console.aicountly.org https://www.google.com https://www.google.co.in; frame-src 'self' blob:; child-src 'self' blob:; worker-src 'self' blob:; media-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.aicountly.com; upgrade-insecure-requests"
+  # Stated rather than left to the browser default: the embedded Connect widget places calls from
+  # inside this page, so camera and microphone stay with this origin, and the powerful features
+  # this app does not use are denied to it and to anything it frames.
+  Header set Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), midi=(), hid=(), idle-detection=()"
   Header set X-Frame-Options "SAMEORIGIN"
   # HTTPS only for a year on this host (no includeSubDomains, no preload — as Inventory).
   Header set Strict-Transport-Security "max-age=31536000"

@@ -47,10 +47,37 @@ The same file ships to production and to the sandbox, so both hosts' origins are
 ## Permissions-Policy and calling
 
 The embedded Connect widget runs in this page's origin, so Connect's calling needs `camera` and
-`microphone` delegated to `self` (connect-aicountly `docs/EMBED_SDK.md`, step 9). This app sets no
-`Permissions-Policy`, so nothing is denied and calling works; if one is ever added, it must
-delegate both to `self` or the call buttons will hide themselves while the widget goes on polling
-for calls nobody here can answer.
+`microphone` delegated to `self` (connect-aicountly `docs/EMBED_SDK.md`, step 9). A `Permissions-Policy` now ships, and it delegates
+both to `self`:
+
+```
+camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(),
+usb=(), serial=(), bluetooth=(), midi=(), hid=(), idle-detection=()
+```
+
+It came from the parallel audit on `main` and is kept as it stands: every powerful feature this
+app does not use is denied outright — to it and to anything it frames — rather than left to the
+browser's default, and `web/src/securityHeaders.test.ts` pins that. `display-capture` is granted
+to `self` for Connect's screen share. An empty allowlist denies a feature to **every** origin
+including self, so denying `camera` here would hide the widget's call buttons while it went on
+polling for calls nobody could answer.
+
+## Reconciled with the parallel audit on `main`
+
+A second audit (`claude/great-pascal-nfonmz`) wrote a policy for this app's `.htaccess` within
+days of this one. The shipped policy is the **union** of the two, so neither pass can break the
+other:
+
+| From `main` | Why it is kept |
+|---|---|
+| `connect-src https://console.aicountly.org` | The product-icon **manifest** is fetched before those icons are set as `<img>` srcs. |
+| `connect-src blob:` | A `fetch()` of an object URL. |
+| `connect-src https://www.google.com`, `https://www.google.co.in` | gtag's conversion endpoints. |
+| `frame-src blob:`, `child-src blob:` | A PDF or preview opened into a hidden iframe; without it, Print falls back to a download. |
+| The `Permissions-Policy` above | Longer and stricter than naming camera and microphone alone. |
+
+Nothing from this pass was given up, and no origin was admitted that neither audit could account
+for in the app's own source.
 
 ## How the sweep proves it
 
