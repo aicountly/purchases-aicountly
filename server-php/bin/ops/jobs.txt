@@ -21,4 +21,8 @@ company-lifecycle-expiry | 37 3 * * * | {php} bin/ops/run-job.php --name=company
 # the database reports them (analytics docs/08). Minutes are staggered per product so forty hosts do
 # not all wake together.
 analytics-flush         | * * * * *   | {php} src/EstateAnalytics/analytics-flush.php --env=.env
-analytics-platform      | 33 1 * * *  | {php} src/EstateAnalytics/analytics-platform-collect.php --env=.env --push
+# NOTE: the snapshot is bin/analytics-platform-snapshot.php, NOT the SDK's own
+# analytics-platform-collect.php. That CLI reads DB_NAME / DB_USER from .env, and on this product the
+# live database name and username come from Console's SaaS Database Details at runtime, so it would
+# measure whichever database .env happens to name. See src/EstateAnalytics/.no-env-cli.
+analytics-platform      | 33 1 * * *  | {php} bin/analytics-platform-snapshot.php --push
