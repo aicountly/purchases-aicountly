@@ -10,3 +10,15 @@ company-lifecycle | */5 * * * *   | {php} bin/ops/run-job.php --name=company-lif
 # then the orders / quotes / RFQs / requisitions nothing references any more. Monitor
 # purchases.company_lifecycle_expiry must be registered in Console's cron_monitors.
 company-lifecycle-expiry | 37 3 * * * | {php} bin/ops/run-job.php --name=company-lifecycle-expiry --every=86400 --monitor=purchases.company_lifecycle_expiry -- {php} lib/company-lifecycle/bin/worker.php --bootstrap=config/lifecycle-kit.php --expire-retained
+# Estate analytics (analytics-aicountly sdk/README.md). BOTH jobs are inert until
+# AICOUNTLY_ANALYTICS_ENABLED=1 in .env: the flush exits 0 immediately and the snapshot prints one
+# line and exits 0. That is why they are safe to install on every product, enabled or not — a job
+# that mailed an error nightly until somebody configured it is a job the operator would filter, and
+# then nobody would see the night it broke for a real reason.
+# The flush drains anything the after-response send could not deliver (Analytics briefly down, a CLI
+# process, a request that died before shutdown). The snapshot reports this product's own database
+# size, tables and row counts once a day — events can never answer those, so the product that owns
+# the database reports them (analytics docs/08). Minutes are staggered per product so forty hosts do
+# not all wake together.
+analytics-flush         | * * * * *   | {php} src/EstateAnalytics/analytics-flush.php --env=.env
+analytics-platform      | 33 1 * * *  | {php} src/EstateAnalytics/analytics-platform-collect.php --env=.env --push
