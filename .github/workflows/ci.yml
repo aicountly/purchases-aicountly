@@ -116,3 +116,11 @@ jobs:
 
       - name: Typecheck and build
         run: npm run build
+
+      # The Content-Security-Policy in web/public/.htaccess, proven against a production build of
+      # the app (docs/security/CONTENT_SECURITY_POLICY.md). A policy nothing walks under is a
+      # policy that quietly stops matching the app.
+      - name: CSP sweep (enforced policy + capability probes)
+        run: |
+          npx playwright install --with-deps chromium
+          npm run csp-sweep

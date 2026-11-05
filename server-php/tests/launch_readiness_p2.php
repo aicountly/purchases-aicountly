@@ -478,7 +478,14 @@ check('removal: a grant here or Manage\'s signed seat event replaces it; removin
 
 check('clickjacking: the SPA and the API send frame-ancestors, X-Frame-Options and HSTS', function () use ($repo) {
     $web = (string) file_get_contents($repo . '/web/public/.htaccess');
-    ok(str_contains($web, "Content-Security-Policy \"frame-ancestors 'self' https://*.aicountly.com\""), 'SPA: frame-ancestors as Sales and Inventory send it');
+    // The directive, wherever it sits in the policy. This used to pin the whole header, which
+    // was the entire policy at the time; the policy is now an enforced one with a dozen more
+    // directives, and frame-ancestors is still exactly this.
+    ok(
+        preg_match('/Content-Security-Policy "[^"]*frame-ancestors \'self\' https:\/\/\*\.aicountly\.com/', $web) === 1,
+        'SPA: frame-ancestors as Sales and Inventory send it',
+    );
+    ok(preg_match('/Content-Security-Policy "[^"]*script-src /', $web) === 1, 'SPA: and the policy is an enforced one, not frame-ancestors alone');
     ok(str_contains($web, 'X-Frame-Options "SAMEORIGIN"'), 'SPA: X-Frame-Options for browsers without CSP');
     ok(str_contains($web, 'Strict-Transport-Security "max-age=31536000"'), 'SPA: HSTS');
     $api = (string) file_get_contents($repo . '/server-php/.htaccess');

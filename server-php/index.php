@@ -149,6 +149,14 @@ try {
             send_json(404, ['message' => 'This path is not relayed. Call the portal API directly.']);
         }
 
+        // The portal sees THIS server's address for every relayed call, so whatever it limits per
+        // address would otherwise be one bucket for everybody. Limit per client here instead
+        // (RELAY_LIMIT_PER_MINUTE, default 60; 0 turns it off). Sign-in and refresh need a handful.
+        if (!Support\Throttle::allow('relay', (string) (Audit::clientIp() ?? 'unknown'), (int) Env::get('RELAY_LIMIT_PER_MINUTE', '60'))) {
+            header('Retry-After: 60');
+            send_json(429, ['message' => 'Too many sign-in requests from this address. Wait a minute and try again.']);
+        }
+
         $headers = [];
         $authorization = authorization_header();
         if ($authorization !== '') {
