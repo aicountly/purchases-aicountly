@@ -1,0 +1,11 @@
+Purchases's live database name and username come from Console's SaaS Database Details, not from DB_NAME
+and DB_USER in .env, so the SDK's .env-driven CLI (analytics-platform-collect.php) would report the
+size of whichever database .env happens to name — usually a developer's local one, or nothing at
+all, because .env here carries no DB_NAME to find.
+
+tests/console_database.php also asserts that exactly ONE file in src/ and bin/ builds a database
+connection (src/Db.php), so merely shipping that CLI fails the suite.
+
+bin/analytics-platform-snapshot.php reports this product's database figures instead, through
+Db::connect() — the same connection the API itself uses, on the database Console named.
+install-analytics-sdk.sh reads this marker on every run, so a refresh never puts the CLI back.
