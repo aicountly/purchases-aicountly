@@ -4,17 +4,15 @@ declare(strict_types=1);
 /*
  * What this product's database costs to hold — pushed to analytics.aicountly.org once a day.
  *
- *   php analytics-platform-snapshot.php --env=/path/to/api/.env                 # work it out, print it
- *   php analytics-platform-snapshot.php --env=… --push                          # and send it
- *   php analytics-platform-snapshot.php --env=… --push --date=2026-11-01        # backfill one day
- *   php analytics-platform-snapshot.php --env=… --db=DB --db=DB_AUTH            # name the databases
- *   php analytics-platform-snapshot.php --env=… --storage-dir=/home/x/uploads   # and object storage
  *
- * Copy unchanged beside AicountlyAnalytics.php (sdk/README.md §1). Cron, once a day, after
- * midnight IST — stagger the minute per product so forty hosts do not all start at once:
+ * THIS FILE IS A LIBRARY. It defines functions and opens nothing; the command-line entry point
+ * that reads a product's .env and connects is analytics-platform-collect.php beside it.
  *
- *   23 1 * * *  php /path/to/analytics-platform-snapshot.php --env=/path/to/api/.env --push \
- *                 >> /path/to/writable/logs/analytics-platform.log 2>&1
+ * They are separate files because some products forbid a database connection outside their own
+ * Core classes and TEST for it by scanning their source for one. Manage is the clearest case: its
+ * live database name and login come from Console's SaaS Database Details, so a connection built
+ * from .env would read whichever database that file happens to name. Those products take this
+ * library only, and hand it a connection their own application already opened.
  *
  * ## Why this exists
  *
@@ -298,122 +296,3 @@ function aic_analytics_read_env(string $path): array
 
     return $out;
 }
-
-
-if (PHP_SAPI !== 'cli' || !isset($argv) || basename((string) ($argv[0] ?? '')) !== basename(__FILE__)) {
-    return; // required as a library by a product's own wrapper: define the functions and stop.
-}
-
-$opts = getopt('', ['push', 'env::', 'date::', 'db::', 'tables::', 'exact-under::', 'storage-dir::', 'source::']);
-$argvRaw = array_slice($argv, 1);
-
-$envPath = is_string($opts['env'] ?? null) && $opts['env'] !== '' ? $opts['env'] : __DIR__ . '/../.env';
-if (!is_file($envPath) || !is_readable($envPath)) {
-    fwrite(STDERR, "analytics-platform-snapshot: cannot read {$envPath} (pass --env=/path/to/api/.env)\n");
-    exit(2);
-}
-$env = aic_analytics_read_env($envPath);
-$get = static fn (string $k, string $d = ''): string => $env[$k] ?? (string) (getenv($k) ?: $d);
-
-$asOf = is_string($opts['date'] ?? null) && $opts['date'] !== '' ? $opts['date'] : date('Y-m-d');
-if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $asOf)) {
-    fwrite(STDERR, "--date must be YYYY-MM-DD\n");
-    exit(2);
-}
-
-// Which databases. Named with --db=PREFIX (repeatable), or discovered from the .env: any
-// PREFIX_NAME that also has a PREFIX_USER beside it is a database this product connects to.
-$prefixes = [];
-foreach ($argvRaw as $arg) {
-    if (str_starts_with($arg, '--db=') && substr($arg, 5) !== '') {
-        $prefixes[] = substr($arg, 5);
-    }
-}
-if ($prefixes === []) {
-    foreach (array_keys($env) as $key) {
-        if (preg_match('/^(DB(?:_[A-Z0-9]+)*)_NAME$/', $key, $m) && isset($env[$m[1] . '_USER'])) {
-            $prefixes[] = $m[1];
-        }
-    }
-}
-if ($prefixes === []) {
-    fwrite(STDERR, "analytics-platform-snapshot: no database found in {$envPath}.\n"
-        . "  Expected DB_NAME and DB_USER (or PREFIX_NAME / PREFIX_USER), or pass --db=PREFIX.\n"
-        . "  If this product takes its database login from Console at runtime, use the wrapper in\n"
-        . "  templates/platform-snapshot.*.php instead of this CLI.\n");
-    exit(2);
-}
-
-$databases = [];
-foreach (array_unique($prefixes) as $prefix) {
-    $name = $get($prefix . '_NAME');
-    $user = $get($prefix . '_USER');
-    if ($name === '' || $user === '') {
-        fwrite(STDERR, "analytics-platform-snapshot: {$prefix}_NAME / {$prefix}_USER are not set; skipping.\n");
-        continue;
-    }
-    $dsn = sprintf('pgsql:host=%s;port=%s;dbname=%s',
-        $get($prefix . '_HOST', '127.0.0.1'), $get($prefix . '_PORT', '5432'), $name);
-    if ($get($prefix . '_SSLMODE') !== '') {
-        $dsn .= ';sslmode=' . $get($prefix . '_SSLMODE');
-    }
-    try {
-        // Keyed by the DATABASE's name, not the env prefix: the dashboard shows this, and
-        // "aicbooks_prod" means something to an operator where "DB_SECONDARY" does not.
-        $databases[$name] = new PDO($dsn, $user, $get($prefix . '_PASS'), [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        ]);
-    } catch (Throwable $e) {
-        // The message can carry the host and database name, never the password.
-        fwrite(STDERR, "analytics-platform-snapshot: cannot connect to {$name} ({$e->getMessage()})\n");
-    }
-}
-if ($databases === []) {
-    fwrite(STDERR, "analytics-platform-snapshot: no database could be reached; nothing to report.\n");
-    exit(1);
-}
-
-$storage = [];
-foreach ($argvRaw as $arg) {
-    if (str_starts_with($arg, '--storage-dir=') && substr($arg, 14) !== '') {
-        $dir = substr($arg, 14);
-        $storage[basename(rtrim($dir, '/')) ?: 'storage'] = $dir;
-    }
-}
-
-$snapshots = aic_analytics_platform_snapshot($databases, [
-    'date'        => $asOf,
-    'tables'      => (int) ($opts['tables'] ?? 25),
-    'exact_under' => (int) ($opts['exact-under'] ?? 1000000),
-    'storage'     => $storage,
-]);
-
-$source = is_string($opts['source'] ?? null) && $opts['source'] !== ''
-    ? $opts['source'] : $get('AICOUNTLY_ANALYTICS_SOURCE', '(from the service key)');
-
-printf("%s  %s  (%d counters, %d database(s))\n", $asOf, $source, count($snapshots), count($databases));
-foreach ($snapshots as $s) {
-    printf("  %-26s %-28s %s\n", $s['metric'], $s['dimension'] ?? '-', number_format($s['value']));
-}
-
-if (!isset($opts['push'])) {
-    echo "\nDry run. Pass --push to send.\n";
-    exit(0);
-}
-
-$key = $get('AICOUNTLY_ANALYTICS_KEY');
-if ($key === '') {
-    fwrite(STDERR, "AICOUNTLY_ANALYTICS_KEY is not set in {$envPath}; nothing sent.\n");
-    exit(1);
-}
-[$code, $body] = aic_analytics_platform_push(
-    $snapshots,
-    $get('AICOUNTLY_ANALYTICS_URL', 'https://analytics.aicountly.org/api'),
-    $key,
-    $get('AICOUNTLY_ANALYTICS_ENVIRONMENT', 'production')
-);
-
-echo "\nHTTP {$code}\n" . substr($body, 0, 800) . "\n";
-// A failed push is not fatal to anything: tomorrow's run reports the same day again and the
-// upsert makes that a correction rather than a duplicate. Exit non-zero so cron mail says so.
-exit($code >= 200 && $code < 300 ? 0 : 1);
