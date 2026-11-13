@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Purchases · Aicountly</title>
+    <!-- Icons come from Console's brand asset store: changing this product's logo
+         is an upload on one Console page, not a change in this repo. See
+         books-react-app docs/brand/BRAND_ASSETS.md.
+
+         This page declared no icon at all, so the tab fell back to whatever the
+         browser chose. It now shows this product's own mark.
+
+         No ?t= version: pinning a revision at build time is what this avoids.
+         These are served max-age=300, must-revalidate. Until a master is
+         uploaded Console stands in with this product's existing launcher icon,
+         so the tab is never blank. -->
+    <link rel="icon" type="image/png" sizes="16x16" href="https://console.aicountly.org/api/brand-assets/purchases/favicon-16" />
+    <link rel="icon" type="image/png" sizes="32x32" href="https://console.aicountly.org/api/brand-assets/purchases/favicon-32" />
+    <link rel="icon" type="image/png" sizes="48x48" href="https://console.aicountly.org/api/brand-assets/purchases/favicon-48" />
+    <link rel="icon" type="image/png" sizes="96x96" href="https://console.aicountly.org/api/brand-assets/purchases/favicon-96" />
   </head>
   <body>
     <div id="root"></div>
