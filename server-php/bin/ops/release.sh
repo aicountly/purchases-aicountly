@@ -100,8 +100,8 @@ PHP=""
 if [ -n "$php_bin" ]; then
   php_ok "$php_bin" && PHP="$php_bin"
 else
-  for c in /opt/cpanel/ea-php84/root/usr/bin/php /opt/cpanel/ea-php83/root/usr/bin/php \
-           /opt/cpanel/ea-php82/root/usr/bin/php /opt/cpanel/ea-php81/root/usr/bin/php \
+  for c in /opt/remi/php84/root/usr/bin/php /opt/remi/php83/root/usr/bin/php \
+           /opt/remi/php82/root/usr/bin/php /opt/remi/php81/root/usr/bin/php \
            /usr/local/bin/php /usr/bin/php "$(command -v php 2>/dev/null || true)"; do
     if [ -n "$c" ] && php_ok "$c"; then PHP="$c"; break; fi
   done
@@ -208,6 +208,11 @@ fi
 
 # One pass of each background job now, so health has a first heartbeat before the post-deploy check.
 # Not fatal: a job reporting work to do (exit 1) is the job working.
+if [ "${AICOUNTLY_S01_WEB_ONLY:-0}" = "1" ]; then
+  POST_SWITCH=()
+  jobs=skip
+  echo "S01: first-run background jobs and scheduling remain deferred."
+fi
 for s in "${POST_SWITCH[@]}"; do
   echo "--- first run: $s ---"
   # shellcheck disable=SC2086

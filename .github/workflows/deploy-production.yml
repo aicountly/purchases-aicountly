@@ -10,7 +10,7 @@
 # then rsyncs the built dist/ to the document root. No source, no node_modules, and no .env ever reach
 # the server.
 # ---------------------------------------------------------------------------
-name: Deploy to cPanel Production
+name: Deploy to S01 Production
 
 on:
   workflow_dispatch:
@@ -95,6 +95,16 @@ jobs:
 
       # E8-OPS (F096, F342, F344): production is deployed from main only — never from a branch or tag
       # someone dispatched by hand. The environment's deployment-branch rule says the same on GitHub's side.
+      - name: Verify S01 deployment target
+        id: s01_target
+        env:
+          AIC_S01_TARGETS: '[{"domain":"purchase.aicountly.com","account":"purchaseaic","root":"/home/purchaseaic/public_html","verified_blueprint":true,"ssh_login":"aicdd79ea170bc59cae7"}]'
+          AIC_TARGET_PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          AIC_TARGET_PROD_SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
+          AIC_TARGET_PROD_SSH_REMOTE_ROOT: ${{ secrets.PROD_SSH_REMOTE_ROOT }}
+          AIC_TARGET_PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
+        run: python3 "$GITHUB_WORKSPACE/.github/scripts/s01-target-guard.py"
+
       - name: Production deploys come from main only
         run: |
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
@@ -228,7 +238,7 @@ jobs:
           sed 's/^/    /' ~/.ssh/deploy_key.pub
 
           # Trust the host key the server presents (scanned on each run).
-          if ! ssh-keyscan -p "${SSH_PORT:-22}" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
+          if ! python3 "$GITHUB_WORKSPACE/.github/scripts/s01-keyscan.py" -p "${SSH_PORT:-9898}" -H "$SSH_HOST" > ~/.ssh/known_hosts 2>/tmp/keyscan.err; then
             echo "::error::ssh-keyscan could not reach the host on the configured port."
             sed 's/^/    /' /tmp/keyscan.err
             exit 1
@@ -248,7 +258,7 @@ jobs:
           Host deploy-target
             HostName $SSH_HOST
             User $SSH_USER
-            Port ${SSH_PORT:-22}
+            Port ${SSH_PORT:-9898}
             IdentityFile ~/.ssh/deploy_key
             IdentitiesOnly yes
             StrictHostKeyChecking yes

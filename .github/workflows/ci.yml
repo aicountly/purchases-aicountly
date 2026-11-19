@@ -7,13 +7,11 @@ name: CI
 # typecheck + build. The browser checks (test:ui, test:remediation) need a running stack and are
 # not run here.
 #
-# Runs on demand only (workflow_dispatch) and from the deploys (workflow_call). Deploys stay manual
-# (workflow_dispatch only) and call this same workflow first through workflow_call, so a
-# deploy cannot ship a commit whose suite is red. This workflow only tests and builds: it
-# never deploys, uploads to a host or calls a live service — the integration suite talks to
-# a throwaway PostgreSQL service container and a local stub (tests/stub) only.
+# Runs on every push and pull request. Deployment remains manual.
+
 on:
-  # push / pull_request removed: run on demand (or via workflow_call from a deploy); test locally before merging to save Actions minutes.
+  push:
+  pull_request:
   workflow_dispatch:
   workflow_call:
 
