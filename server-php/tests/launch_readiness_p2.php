@@ -11,7 +11,7 @@ declare(strict_types=1);
  *          CGST + SGST or IGST, the total in words, an embedded Unicode font; the parts add up
  *   P1-P8  a missing supplier is added from the order editor as a Books creditor ledger, once
  *   sticky removal: a workspace member an administrator removed is not seated again on their next request
- *   P1-P3 / P1-P7  clickjacking headers on the SPA and the API; web unit tests in the manual CI
+ *   P1-P3 / P1-P7  clickjacking headers on the SPA and the API; web unit tests on push/PR; manual deployments
  *
  *   server-php/tests/run.sh
  */
@@ -492,13 +492,24 @@ check('clickjacking: the SPA and the API send frame-ancestors, X-Frame-Options a
     ok(str_contains($api, "frame-ancestors 'self'") && str_contains($api, 'X-Frame-Options "SAMEORIGIN"') && str_contains($api, 'Strict-Transport-Security'), 'API: the same, same-origin only');
 });
 
-check('CI: the manual workflow runs the web unit tests, and no workflow runs on push or pull_request', function () use ($repo) {
-    $ci = (string) file_get_contents($repo . '/.github/workflows/ci.yml');
-    ok(preg_match('/run:\s*npm test\b/', $ci) === 1, 'ci.yml runs npm test in the web job');
-    foreach (glob($repo . '/.github/workflows/*.yml') ?: [] as $file) {
-        $yaml = (string) file_get_contents($file);
+check('CI: pushes and pull requests run checks; deployments remain manual', function () use ($repo) {
+    $events = static function (string $yaml): array {
         $on = preg_match('/^on:\s*\n((?:[ \t]+.*\n|\s*\n)*)/m', $yaml, $m) === 1 ? $m[1] : '';
-        ok(preg_match('/^\s+(push|pull_request|pull_request_target):/m', $on) !== 1, basename($file) . ' has no push / pull_request trigger');
+        preg_match_all('/^  ([a-z_]+):/m', $on, $matches);
+        return $matches[1];
+    };
+    $ci = (string) file_get_contents($repo . '/.github/workflows/ci.yml');
+    ok(preg_match('/run:\s*npm test\b/', $ci) === 1, 'ci.yml retains the web unit tests');
+    ok(str_contains($ci, 'server-php/tests/run.sh'), 'ci.yml retains the PHP integration suite');
+    $ciEvents = $events($ci);
+    ok(in_array('push', $ciEvents, true), 'pushes run checks');
+    ok(in_array('pull_request', $ciEvents, true), 'pull requests run checks');
+    ok(!in_array('pull_request_target', $ciEvents, true), 'untrusted PR checks do not use privileged pull_request_target');
+    $deployments = glob($repo . '/.github/workflows/deploy*.yml') ?: [];
+    ok(count($deployments) > 0, 'deployment workflow coverage is nonempty');
+    foreach ($deployments as $file) {
+        $yaml = (string) file_get_contents($file);
+        ok($events($yaml) === ['workflow_dispatch'], basename($file) . ' is manual-only, without push, PR or reusable deployment triggers');
     }
 });
 
