@@ -80,6 +80,9 @@ foreach ([
     ['GET', 'v1/workspaces/3/company-users'],
     ['POST', 'v1/workspaces/3/members/1f2e-uuid/move'],
     ['DELETE', 'v1/companies/74/members/1f2e-uuid'],
+    // 1.7.0: Add user — find a person by e-mail, mobile or account ID; invite them.
+    ['POST', 'v1/companies/74/people/lookup'],
+    ['POST', 'v1/companies/74/people/invite'],
 ] as [$method, $path]) {
     $check("{$method} {$path} is relayed", ManageRelay::isRelayed($method, $path));
 }
@@ -126,6 +129,16 @@ $refused = [
     ['DELETE', 'manage/v1/companies/74/members/%2E%2E', 'an encoded `..` as the person'],
     ['POST', 'manage/v1/workspaces/3/members/..%2F..%2Fbilling/move', 'an encoded slash in a move'],
     ['POST', 'manage/v1/workspaces/3/members/../move', 'a traversal in a move'],
+    // The two 1.7.0 routes, POST only and nothing wider.
+    ['GET', 'manage/v1/companies/74/people/lookup', 'a look-up is a POST (the value stays out of the URL)'],
+    ['GET', 'manage/v1/companies/74/people/invite', 'an invitation is a POST'],
+    ['PATCH', 'manage/v1/companies/74/people/invite', 'an invitation is a POST, never a PATCH'],
+    ['DELETE', 'manage/v1/companies/74/people/invite', 'an invitation is never withdrawn here'],
+    ['POST', 'manage/v1/companies/74/people', 'the people list is not a call the screens make'],
+    ['POST', 'manage/v1/companies/74/people/search', 'only lookup and invite under people'],
+    ['POST', 'manage/v1/companies/74/people/lookup/extra', 'an extra level after a look-up'],
+    ['POST', 'manage/v1/companies/abc/people/invite', 'a company id is a number'],
+    ['POST', 'manage/v1/workspaces/3/people/lookup', 'a look-up is per company, not per workspace'],
 ];
 foreach ($refused as [$method, $path, $why]) {
     $check("refused: {$method} {$path} ({$why})", ManageRelay::upstreamUrl($method, $path, '', 'https://manage.example') === null);
@@ -256,6 +269,12 @@ try {
     $r = $http($apiPort, 'DELETE', 'manage/v1/companies/74/members/1f2e', ['Authorization: Bearer person-ses-key', 'Content-Type: application/json'], '{}');
     $check('DELETE v1/companies/{id}/members/{ref} is relayed', ($r['json']['method'] ?? '') === 'DELETE'
         && str_ends_with((string) ($r['json']['uri'] ?? ''), '/v1/companies/74/members/1f2e'), $r['raw']);
+    // 1.7.0: Add user — the look-up and the invitation, with their bodies.
+    foreach (['lookup' => '{"kind":"email","value":"bob@example.com"}', 'invite' => '{"email":"bob@example.com","role_key":"member"}'] as $what => $body) {
+        $r = $http($apiPort, 'POST', 'manage/v1/companies/74/people/' . $what, ['Authorization: Bearer person-ses-key', 'Content-Type: application/json'], $body);
+        $check("POST v1/companies/{id}/people/{$what} is relayed with its body", $r['status'] === 200 && ($r['json']['method'] ?? '') === 'POST'
+            && str_ends_with((string) ($r['json']['uri'] ?? ''), '/v1/companies/74/people/' . $what) && ($r['json']['body'] ?? '') === $body, $r['raw']);
+    }
 
     foreach ([
         ['DELETE', 'manage/v1/companies/74/permissions'],
@@ -266,6 +285,8 @@ try {
         ['GET', 'manage/v1/workspaces/3/members/1f2e/move'],
         ['DELETE', 'manage/v1/companies/74/members'],
         ['POST', 'manage/v1/workspaces/3/company-users'],
+        ['GET', 'manage/v1/companies/74/people/lookup'],
+        ['GET', 'manage/v1/companies/74/people/invite'],
     ] as [$method, $path]) {
         $r = $http($apiPort, $method, $path, ['Authorization: Bearer person-ses-key']);
         $check("over HTTP, {$method} {$path} is 404 and Manage is not called", $r['status'] === 404 && !isset($r['json']['method']), $r['status'] . ' ' . $r['raw']);
