@@ -841,7 +841,7 @@ check('A13: under All branches Purchase tells Books the company\'s GST state (Ma
     reset();
     $scope = Context::of(88, 6, 0);
     $scope->assertAllowed($owner);
-    same('29', $scope->companyStateCode(), 'Manage\'s ro_state, read from the same answer that confirmed access');
+    same('29', $scope->companyStateCode(), 'Manage\'s ro_state (Manage id 9 = Karnataka), mapped to the GST code, read from the same answer that confirmed access');
     $po = orderOf($scope, $owner);
     $lineId = (int) $po['lines'][0]['line_id'];
     receive($scope, $owner, (int) $po['po_id'], $lineId, 10);
@@ -869,6 +869,18 @@ check('A13: under All branches Purchase tells Books the company\'s GST state (Ma
     truthy(str_contains($r['message'], 'Manage') && str_contains($r['message'], 'branch it belongs to'), 'names the remedies');
     // A refused bill holds nothing and cancels in one step.
     same('CANCELLED', (new BillService($scope, $owner))->cancel((int) $b['request_id'], ['reason' => 'Re-enter under the Pune branch'])['status'], 'cancelled in one step');
+});
+
+check('A13: ro_state is Manage\'s state master id, not a GST code — Manage 18 is Punjab (GST 03), not Assam; 38 (Other Country) is no Indian state', function () use ($owner) {
+    foreach (['18' => '03', '12' => '27', '9' => '29', '40' => '36', '38' => null] as $manageId => $gst) {
+        Context::forgetVerified();
+        stubMode(['manage_ro_state' => (string) $manageId]);
+        $scope = Context::of(88, 6, 0);
+        $scope->assertAllowed($owner);
+        same($gst, $scope->companyStateCode(), "Manage ro_state {$manageId}");
+    }
+    stubMode([]);
+    Context::forgetVerified();
 });
 
 // ---------------------------------------------------------------------------

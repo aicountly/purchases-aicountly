@@ -33,6 +33,7 @@ require_once __DIR__ . '/../lib/company-lifecycle/autoload.php';
 use Aicountly\Api\Controllers\AccessController;
 use Aicountly\Api\Controllers\SuppliersController;
 use Aicountly\Api\Domain\PurchaseOrderService;
+use Aicountly\Api\ManageStateMaster;
 use Aicountly\Api\Ops\OpsStatus;
 use Aicountly\Api\Pdf\AmountInWords;
 use Aicountly\Api\Pdf\PdfText;
@@ -318,7 +319,7 @@ check('GST split: 500 random orders — the printed parts always add up to the p
 check('the purchase order prints GSTINs, HSN/SAC, place of supply, bill-to / ship-to, the split and the words, in an embedded font', function () {
     $po = order([[10, 250, 0, 18], [4, 250, 0, 5]]);
     $po['lines'][1]['hsn_sac'] = '9973';
-    $pdf = PurchaseOrderDocument::render($po, ['comp_name' => 'Stub Trading Co', 'ro_adrs1' => '12 MG Road', 'ro_city' => 'Bengaluru', 'ro_pin' => '560001', 'ro_state' => '29'], [201 => 'TMT Bar 12mm', 202 => 'Café Müller chairs'], str_repeat('a', 64), [
+    $pdf = PurchaseOrderDocument::render($po, ['comp_name' => 'Stub Trading Co', 'ro_adrs1' => '12 MG Road', 'ro_city' => 'Bengaluru', 'ro_pin' => '560001', 'ro_state' => '9'], [201 => 'TMT Bar 12mm', 202 => 'Café Müller chairs'], str_repeat('a', 64), [
         'buyer'    => ['gstin' => '29AAACS1234A1ZY', 'state_code' => '29'],
         'supplier' => ['gstin' => '29AAACS1234A1ZY', 'state_code' => '29', 'supply_nature' => null, 'address' => 'Plot 4, Peenya, Bengaluru'],
         'ship_to'  => ['name' => 'Main Store', 'address' => 'Whitefield, Bengaluru'],
@@ -334,12 +335,45 @@ check('the purchase order prints GSTINs, HSN/SAC, place of supply, bill-to / shi
     ok(str_contains($pdf, '/FontFile2') && str_contains($pdf, '/Subtype /Type0'), 'a Unicode font is embedded');
     ok(!str_contains($pdf, '/BaseFont /Helvetica'), 'not Helvetica, which cannot print ₹');
 
-    $inter = PdfText::extract(PurchaseOrderDocument::render($po, ['comp_name' => 'Stub Trading Co', 'ro_state' => '29'], [], str_repeat('b', 64), [
+    $inter = PdfText::extract(PurchaseOrderDocument::render($po, ['comp_name' => 'Stub Trading Co', 'ro_state' => '9'], [], str_repeat('b', 64), [
         'supplier' => ['gstin' => '27AAPFU0939F1ZV', 'state_code' => '27', 'supply_nature' => null],
     ]));
     ok(str_contains($inter, 'IGST @ 18% on 2,500.00') && !str_contains($inter, 'CGST'), 'another state: IGST only');
     ok(str_contains($inter, 'GSTIN Not known'), 'a buyer GSTIN that could not be read says so');
     ok(str_contains($inter, 'Supplier in another state: IGST.'), 'and the basis of the split is printed');
+});
+
+check('Manage\'s ro_state is its own state master id, not a GST code: 18 is Punjab (03), not Assam; 38 is no Indian state; a GSTIN wins', function () {
+    // The map itself.
+    same('03', ManageStateMaster::gstCode('18'), 'Manage 18 = Punjab = GST 03');
+    same('03', ManageStateMaster::gstCode(18), 'as an int too');
+    same('18', ManageStateMaster::gstCode('2'), 'Manage 2 = Assam = GST 18');
+    same('', ManageStateMaster::gstCode('38'), 'Manage 38 = Other Country: no Indian state');
+    same('', ManageStateMaster::gstCode('36'), 'Manage 36 is not an id');
+    same('', ManageStateMaster::gstCode(''), 'empty');
+    same('03', ManageStateMaster::gstCode('Punjab'), 'a state name is still read as a name');
+    same('01', ManageStateMaster::gstCode('Jammu & Kashmir'), 'with an ampersand');
+    same('03', ManageStateMaster::companyGstCode(['ro_state' => '18']), 'company: ro_state mapped');
+    same(null, ManageStateMaster::companyGstCode(['ro_state' => '38']), 'company: Other Country is none');
+    same('27', ManageStateMaster::companyGstCode(['ro_state' => '18', 'gstin' => '27AAPFU0939F1ZV']), 'company: a GSTIN prefix wins over ro_state');
+    same('27', ManageStateMaster::companyGstCode(['ro_state' => '18', 'identifiers' => [['type' => 'gstin', 'value' => '27AAPFU0939F1ZV']]]), 'company: a GSTIN among Manage identifiers wins too');
+
+    // On the document: a company-level order (no buyer from Books) of a Punjab company.
+    $po = order([[10, 250, 0, 18]]);
+    $punjab = PdfText::extract(PurchaseOrderDocument::render($po, ['comp_name' => 'Jalandhar Traders', 'ro_state' => '18'], [], str_repeat('c', 64), [
+        'supplier' => ['gstin' => '03AAPFU0939F1ZV', 'state_code' => '03', 'supply_nature' => null],
+    ]));
+    ok(str_contains($punjab, 'State Punjab (03)') && !str_contains($punjab, 'Assam'), 'ro_state 18 prints Punjab (03), not Assam');
+    ok(str_contains($punjab, 'Place of supply Punjab (03)'), 'and Punjab is the place of supply');
+    ok(str_contains($punjab, 'CGST @ 9% on 2,500.00') && !str_contains($punjab, 'IGST'), 'a Punjab supplier to a Punjab company: CGST + SGST, not IGST');
+
+    $abroad = PdfText::extract(PurchaseOrderDocument::render($po, ['comp_name' => 'Stub Trading Co', 'ro_state' => '38'], [], str_repeat('d', 64), []));
+    ok(str_contains($abroad, 'State Not known'), 'ro_state 38 (Other Country) names no Indian state');
+
+    $gstinWins = PdfText::extract(PurchaseOrderDocument::render($po, ['comp_name' => 'Stub Trading Co', 'ro_state' => '18'], [], str_repeat('e', 64), [
+        'buyer' => ['gstin' => '27AAACS1234A1ZY', 'state_code' => ''],
+    ]));
+    ok(str_contains($gstinWins, 'State Maharashtra (27)') && !str_contains($gstinWins, 'Punjab'), 'the buyer GSTIN prefix wins over ro_state');
 });
 
 check('the order\'s document reads the supplier\'s ledger, the branch GST, the warehouse and HSN live (stub Books / Inventory)', function () {

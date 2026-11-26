@@ -539,9 +539,10 @@ if (str_contains($path, '/companyinfo')) {
         'comp_id' => $cmpId,
         'cmp_id' => $cmpId,
         'comp_name' => 'Stub Trading Co',
-        // The registered office's state (Manage: ghm_company_address.state_id), a GST state code
-        // here; mode manage_no_ro_state answers as a company that never filled it in.
-        'ro_state' => empty($modes['manage_no_ro_state']) ? '29' : '',
+        // The registered office's state (Manage: ghm_company_address.state_id) — Manage's OWN state
+        // master id, not a GST code, as real Manage sends it: 9 = Karnataka (GST 29). Mode
+        // manage_ro_state sends another id; manage_no_ro_state answers as a company that never filled it in.
+        'ro_state' => !empty($modes['manage_no_ro_state']) ? '' : (string) ($modes['manage_ro_state'] ?? '9'),
         // Manage sends its years newest first; the launcher relies on that
         // ordering to preselect the current one.
         'fy_list' => [
