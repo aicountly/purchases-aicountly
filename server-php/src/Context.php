@@ -35,8 +35,10 @@ final class Context
     private static array $answers = [];
 
     /**
-     * The company's registered-office GST state as Manage reported it (companyinfo ro_state), when
-     * it is a GST state code — per company, from the same answer that confirmed access.
+     * The company's registered-office GST state, per company, from the same companyinfo answer that
+     * confirmed access: its GSTIN's state when it has one, else its ro_state. ro_state is Manage's
+     * own state master id (Punjab = 18), NOT a GST code (18 = Assam), so it is mapped through
+     * ManageStateMaster and never read as a code.
      *
      * @var array<int, ?string>
      */
@@ -111,10 +113,9 @@ final class Context
             self::$answers[$key] = $this->askManage($auth);
         }
         $company = self::$answers[$key]['company'];
-        $roState = trim((string) ($company['ro_state'] ?? ''));
-        self::$companyStates[$this->cmpId] = preg_match('/^\d{1,2}$/', $roState) === 1 && (int) $roState >= 1 && ((int) $roState <= 38 || (int) $roState === 97)
-            ? str_pad($roState, 2, '0', STR_PAD_LEFT)
-            : null;
+        // ro_state is a Manage state master id, not a GST code (Manage 18 = Punjab = GST 03; GST 18
+        // is Assam): mapped, with the company's GSTIN prefix winning when it has one.
+        self::$companyStates[$this->cmpId] = ManageStateMaster::companyGstCode($company);
 
         // The year and branch are claims too, and the same answer settles them. A year that
         // is not this company's would scope every query to rows that belong to nobody, and
@@ -262,7 +263,8 @@ final class Context
     /**
      * The company's own GST state (its registered office), for a company-level document — one
      * entered under "All branches" (bo_id 0), which has no branch GSTIN to take it from (A13).
-     * Null when Manage did not report one as a GST state code, or was not asked on this request.
+     * Null when Manage reported no Indian state (no GSTIN, ro_state empty or "Other Country"), or
+     * was not asked on this request.
      */
     public function companyStateCode(): ?string
     {

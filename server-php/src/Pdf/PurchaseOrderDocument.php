@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Aicountly\Api\Pdf;
 
+use Aicountly\Api\ManageStateMaster;
+
 /**
  * The purchase order as the supplier receives it.
  *
@@ -52,7 +54,12 @@ final class PurchaseOrderDocument
 
         $companyName = (string) ($company['comp_name'] ?? $company['print_name'] ?? ('Company ' . ($po['cmp_id'] ?? '')));
         $companyAddress = self::joinAddress([$company['ro_adrs1'] ?? '', $company['ro_adrs2'] ?? '', $company['ro_city'] ?? '', $company['ro_pin'] ?? '']);
-        $buyerState = self::code($buyer['state_code'] ?? null) ?? self::code($company['ro_state'] ?? null);
+        // The buyer's GSTIN prefix wins, then Books' branch GST state code. Manage's ro_state is its own
+        // state master id (Punjab = 18), not a GST code (18 = Assam): mapped via ManageStateMaster,
+        // which also prefers the company's own GSTIN, never read through self::code().
+        $buyerState = self::gstinState($buyer['gstin'] ?? null)
+            ?? self::code($buyer['state_code'] ?? null)
+            ?? ManageStateMaster::companyGstCode($company);
         $placeOfSupply = self::code($parties['place_of_supply'] ?? null) ?? $buyerState;
         $supplierDecision = $supplier === [] ? null : [
             'pos_state_code' => self::code($supplier['state_code'] ?? null),
@@ -245,6 +252,14 @@ final class PurchaseOrderDocument
         $code = str_pad($raw, 2, '0', STR_PAD_LEFT);
 
         return isset(PurchaseOrderTax::STATES[$code]) ? $code : null;
+    }
+
+    /** The state a GSTIN's first two digits name, or null when it is not a GSTIN. */
+    private static function gstinState(mixed $gstin): ?string
+    {
+        $g = is_scalar($gstin) ? strtoupper(trim((string) $gstin)) : '';
+
+        return preg_match('/^(\d{2})[A-Z0-9]{13}$/', $g, $m) === 1 ? self::code($m[1]) : null;
     }
 
     private static function orNotKnown(mixed $value): string
